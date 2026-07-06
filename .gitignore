@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+out/
+release/
+*.dmg
+*.pkg
+*.zip
+*.app/
+*.exe
+!electron/bin/AccordProcessLoopback.exe
+
+# Local env / secrets
+.env
+.env.*
+!.env.example
+server.env
+server.env.backup.*
+*.local
+*.pem
+*.key
+*.p12
+*.mobileprovision
+.cert/
+
+# Logs / temp / debug dumps
+*.log
+*.tmp
+*.bak
+logs*.txt
+what.txt
+coverage/
+
+# Local tool config
+.claude/
+.agents/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

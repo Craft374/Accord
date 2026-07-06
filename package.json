@@ -1,0 +1,55 @@
+{
+  "name": "accord",
+  "version": "0.2.42",
+  "private": true,
+  "description": "Low-latency private voice chat",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "node server.js",
+    "server": "node server.js",
+    "server:https": "node scripts/start-https.js",
+    "server:open": "node scripts/start-server.js",
+    "client": "electron .",
+    "check": "node scripts/check-v2.js",
+    "icons": "node scripts/generate-icons.js",
+    "build:mac": "node scripts/fix-mac-builder-permissions.js && npm run icons && node node_modules/electron-builder/cli.js --mac zip --arm64",
+    "build:win": "node scripts/build-windows-helper.js && npm run icons && node node_modules/electron-builder/cli.js --win portable --x64",
+    "build": "npm run check && npm run build:mac && npm run build:win && node scripts/prune-dist.js"
+  },
+  "devDependencies": {
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "craft374.accord",
+    "productName": "Accord",
+    "asar": true,
+    "asarUnpack": [
+      "electron/bin/AccordProcessLoopback.exe"
+    ],
+    "icon": "assets/icon",
+    "files": [
+      "electron/**/*",
+      "shell/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "target": [
+        "zip"
+      ],
+      "artifactName": "Accord Mac ${arch}.${ext}",
+      "category": "public.app-category.utilities",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Accord needs microphone access for calls.",
+        "NSScreenCaptureUsageDescription": "Accord can capture system audio when sound sharing is enabled."
+      }
+    },
+    "win": {
+      "target": [
+        "portable"
+      ],
+      "artifactName": "Accord Windows ${arch} Portable.${ext}"
+    }
+  }
+}

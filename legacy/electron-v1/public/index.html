@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Accord</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="app-header">
+        <div>
+          <p class="eyebrow">Accord</p>
+          <h1>통화방</h1>
+        </div>
+        <div class="status" id="statusBadge">
+          <span class="status-dot"></span>
+          <span id="statusText">대기</span>
+        </div>
+      </header>
+
+      <section class="server-panel">
+        <label class="field">
+          <span>서버</span>
+          <input id="serverInput" autocomplete="off" spellcheck="false" />
+        </label>
+        <label class="field name-field">
+          <span>이름</span>
+          <input id="nameInput" autocomplete="off" maxlength="24" />
+        </label>
+        <button class="primary" id="connectButton" type="button">연결</button>
+      </section>
+
+      <div class="layout">
+        <aside class="side-panel">
+          <form class="create-room" id="createRoomForm">
+            <label class="field">
+              <span>방 이름</span>
+              <input id="roomNameInput" autocomplete="off" maxlength="32" />
+            </label>
+            <label class="field limit-field">
+              <span>인원</span>
+              <input id="roomLimitInput" type="number" min="2" max="8" value="2" />
+            </label>
+            <button class="primary" id="createRoomButton" type="submit">방 만들기</button>
+          </form>
+
+          <section class="rooms" aria-label="방 목록">
+            <div class="section-head">
+              <h2>방 목록</h2>
+              <button class="icon-button" id="refreshRoomsButton" type="button" title="새로고침">
+                ↻
+              </button>
+            </div>
+            <div class="room-list" id="roomList"></div>
+          </section>
+        </aside>
+
+        <section class="main-panel">
+          <div class="section-head call-head">
+            <div>
+              <h2 id="currentRoomName">통화 없음</h2>
+              <p id="currentRoomMeta">서버에 연결한 뒤 방에 들어가세요.</p>
+            </div>
+            <button class="danger" id="leaveButton" type="button" disabled>나가기</button>
+          </div>
+
+          <section class="settings-grid" aria-label="오디오 설정">
+            <label class="field">
+              <span>입력 장치</span>
+              <select id="inputDeviceSelect"></select>
+            </label>
+            <label class="field">
+              <span>출력 장치</span>
+              <select id="outputDeviceSelect"></select>
+            </label>
+            <label class="field gain-field">
+              <span>마이크 증폭 <b id="micGainValue">3.0x</b></span>
+              <input id="micGainInput" type="range" min="0.5" max="6" step="0.25" value="3" />
+            </label>
+            <button class="secondary" id="refreshDevicesButton" type="button">장치 새로고침</button>
+          </section>
+
+          <section class="toggle-grid" aria-label="통화 옵션">
+            <label class="switch">
+              <input id="noiseSuppressionToggle" type="checkbox" checked />
+              <span>잡음 제거</span>
+            </label>
+            <label class="switch">
+              <input id="echoCancellationToggle" type="checkbox" checked />
+              <span>에코 제거</span>
+            </label>
+            <label class="switch">
+              <input id="autoGainToggle" type="checkbox" checked />
+              <span>자동 증폭</span>
+            </label>
+            <label class="switch">
+              <input id="systemAudioToggle" type="checkbox" />
+              <span>컴퓨터 사운드</span>
+            </label>
+            <label class="switch">
+              <input id="lowLatencyToggle" type="checkbox" checked />
+              <span>저지연</span>
+            </label>
+            <label class="switch">
+              <input id="highQualityToggle" type="checkbox" checked />
+              <span>고음질</span>
+            </label>
+          </section>
+
+          <section class="meter-grid" aria-label="음량">
+            <article class="meter-card">
+              <div>
+                <p class="label">내 소리</p>
+                <strong id="localState">꺼짐</strong>
+              </div>
+              <div class="meter" id="localMeter"><span></span></div>
+            </article>
+            <article class="meter-card">
+              <div>
+                <p class="label">상대 소리</p>
+                <strong id="remoteState">대기</strong>
+              </div>
+              <div class="meter" id="remoteMeter"><span></span></div>
+            </article>
+          </section>
+
+          <section class="volume-grid" aria-label="상대 볼륨">
+            <label class="field volume-field">
+              <span>상대 마이크 <b id="remoteMicVolumeValue">100%</b></span>
+              <input id="remoteMicVolumeInput" type="range" min="0" max="200" step="5" value="100" />
+            </label>
+            <label class="field volume-field">
+              <span>상대 컴퓨터 <b id="remoteSystemVolumeValue">100%</b></span>
+              <input id="remoteSystemVolumeInput" type="range" min="0" max="200" step="5" value="100" />
+            </label>
+          </section>
+
+          <div class="call-actions">
+            <button class="secondary" id="muteButton" type="button" disabled>마이크 끄기</button>
+          </div>
+
+          <section class="participants" aria-label="참가자">
+            <div class="section-head">
+              <h2>참가자</h2>
+            </div>
+            <div class="participant-list" id="participantList"></div>
+          </section>
+
+          <section class="quality-panel" aria-label="품질">
+            <div class="section-head">
+              <h2>현재 품질</h2>
+            </div>
+            <dl class="quality-grid">
+              <div>
+                <dt>송신</dt>
+                <dd id="statSend">0 kbps</dd>
+              </div>
+              <div>
+                <dt>수신</dt>
+                <dd id="statReceive">0 kbps</dd>
+              </div>
+              <div>
+                <dt>RTT</dt>
+                <dd id="statRtt">-</dd>
+              </div>
+              <div>
+                <dt>지터</dt>
+                <dd id="statJitter">-</dd>
+              </div>
+              <div>
+                <dt>손실</dt>
+                <dd id="statLoss">-</dd>
+              </div>
+              <div>
+                <dt>코덱</dt>
+                <dd id="statCodec">-</dd>
+              </div>
+              <div>
+                <dt>샘플레이트</dt>
+                <dd id="statSampleRate">-</dd>
+              </div>
+              <div>
+                <dt>채널</dt>
+                <dd id="statChannels">-</dd>
+              </div>
+            </dl>
+          </section>
+
+          <p class="message" id="message" role="status"></p>
+        </section>
+      </div>
+    </main>
+
+    <audio id="localAudio" autoplay muted playsinline></audio>
+    <div id="remoteAudios"></div>
+    <script src="app.js"></script>
+  </body>
+</html>

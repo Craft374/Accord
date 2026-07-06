@@ -1,0 +1,46 @@
+{
+  "name": "accord-legacy-v1",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Simple low-latency WebRTC voice chat",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "node server.js",
+    "server": "node server.js",
+    "server:open": "node scripts/start-server.js",
+    "client": "electron .",
+    "build:mac": "electron-builder --mac zip --arm64",
+    "build:win": "electron-builder --win portable --x64",
+    "build": "npm run build:mac && npm run build:win"
+  },
+  "devDependencies": {
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "craft374.accord.legacy-v1",
+    "productName": "Accord",
+    "files": [
+      "electron/**/*",
+      "public/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "target": [
+        "zip"
+      ],
+      "artifactName": "Accord Mac ${arch}.${ext}",
+      "category": "public.app-category.utilities",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Accord needs microphone access for calls.",
+        "NSScreenCaptureUsageDescription": "Accord can capture system audio when sound sharing is enabled."
+      }
+    },
+    "win": {
+      "target": [
+        "portable"
+      ],
+      "artifactName": "Accord Windows ${arch}.${ext}"
+    }
+  }
+}

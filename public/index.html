@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Accord</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">A</div>
+          <div>
+            <p class="eyebrow" id="versionLabel">Accord</p>
+            <h1>통화방</h1>
+          </div>
+        </div>
+        <div class="top-actions">
+          <button class="ghost" id="settingsButton" type="button">설정</button>
+          <button class="ghost" id="launcherButton" type="button" hidden>서버 변경</button>
+          <div class="status" id="statusBadge">
+            <span></span>
+            <strong id="statusText">연결 중</strong>
+          </div>
+        </div>
+      </header>
+
+      <div class="layout">
+        <aside class="side-panel">
+          <label class="field">
+            <span>이름</span>
+            <input id="nameInput" autocomplete="off" maxlength="24" />
+          </label>
+
+          <form class="create-room" id="createRoomForm">
+            <label class="field">
+              <span>방 이름</span>
+              <input id="roomNameInput" autocomplete="off" maxlength="32" />
+            </label>
+            <label class="field">
+              <span>인원</span>
+              <input id="roomLimitInput" type="number" min="2" max="8" value="2" />
+            </label>
+            <button class="primary" id="createRoomButton" type="submit">방 만들기</button>
+          </form>
+
+          <section class="room-section">
+            <div class="section-head">
+              <h2>방 목록</h2>
+              <button class="ghost small" id="refreshRoomsButton" type="button">새로고침</button>
+            </div>
+            <div class="room-list" id="roomList"></div>
+          </section>
+        </aside>
+
+        <!-- 통화 전에는 오른쪽을 비워 둔다 -->
+        <section class="main-empty" aria-hidden="true">
+          <div class="main-empty-mark">A</div>
+          <p>방에 들어가면 통화 화면이 표시됩니다.</p>
+        </section>
+
+        <section class="main-panel">
+          <div class="call-head">
+            <div class="call-title">
+              <h2 id="currentRoomName">통화 없음</h2>
+              <p id="currentRoomMeta">방에 들어가면 마이크가 켜집니다.</p>
+            </div>
+            <div class="call-head-actions">
+              <label class="inline-field">
+                <span>인원</span>
+                <select id="roomLimitLiveSelect">
+                  <option value="2">2명</option>
+                  <option value="3">3명</option>
+                  <option value="4">4명</option>
+                  <option value="5">5명</option>
+                  <option value="6">6명</option>
+                  <option value="7">7명</option>
+                  <option value="8">8명</option>
+                </select>
+              </label>
+              <button class="danger" id="leaveButton" type="button" disabled>나가기</button>
+            </div>
+          </div>
+
+          <section class="screen-stage" id="screenStage" hidden>
+            <div class="screen-stage-head">
+              <strong id="screenViewerTitle">화면 공유</strong>
+              <div class="screen-stage-actions">
+                <button class="secondary" id="screenFitButton" type="button">채우기</button>
+                <button class="secondary" id="screenFullscreenButton" type="button">전체화면</button>
+                <button class="secondary" id="screenViewerCloseButton" type="button">닫기</button>
+              </div>
+            </div>
+            <video id="screenViewer" autoplay playsinline></video>
+            <div class="screen-share-list" id="screenShareList"></div>
+          </section>
+
+          <section class="participants">
+            <div class="participant-list" id="participantList"></div>
+          </section>
+
+          <div class="call-actions">
+            <button class="secondary" id="muteButton" type="button" disabled>마이크 끄기</button>
+            <label class="switch action-switch" id="systemAudioAction">
+              <input id="systemAudioToggle" type="checkbox" />
+              <span>컴퓨터 사운드</span>
+            </label>
+            <button class="secondary" id="screenShareButton" type="button" disabled>화면 공유</button>
+            <button class="secondary" id="repairAudioButton" type="button" disabled>오디오 복구</button>
+          </div>
+
+          <section class="program-audio-panel" id="programAudioPanel" hidden>
+            <div class="program-audio-head">
+              <div class="capture-mode-group">
+                <label class="radio-option">
+                  <input id="systemCaptureFullRadio" name="systemCaptureMode" type="radio" value="full" checked />
+                  <span>전체 컴퓨터</span>
+                </label>
+                <label class="radio-option">
+                  <input id="systemCaptureProgramRadio" name="systemCaptureMode" type="radio" value="program" />
+                  <span>선택한 프로그램</span>
+                </label>
+              </div>
+              <div class="program-audio-tools">
+                <input id="programAudioSearchInput" type="search" placeholder="프로그램 검색" autocomplete="off" />
+                <button class="secondary" id="refreshProgramAudioButton" type="button" hidden>새로고침</button>
+              </div>
+            </div>
+            <p class="program-audio-status" id="programAudioStatus"></p>
+            <div class="program-audio-selected" id="programAudioSelectedList" hidden></div>
+            <div class="program-audio-list" id="programAudioList" hidden></div>
+          </section>
+
+          <details class="screen-share-panel" id="screenSharePanel" hidden>
+            <summary>화면 공유 설정 <span class="quality-summary">기본 1080p / 30fps</span></summary>
+            <section class="screen-share-grid">
+              <label class="field">
+                <span>해상도</span>
+                <select id="screenResolutionSelect">
+                  <option value="720">720p</option>
+                  <option value="1080" selected>1080p</option>
+                  <option value="1440">1440p / 2K</option>
+                  <option value="2160">2160p / 4K</option>
+                  <option value="native">모니터 크기</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>프레임</span>
+                <select id="screenFpsSelect">
+                  <option value="15">15fps</option>
+                  <option value="30" selected>30fps</option>
+                  <option value="60">60fps</option>
+                </select>
+              </label>
+              <label class="field" id="screenCaptureModeField">
+                <span>캡처 방식</span>
+                <select id="screenCaptureModeSelect">
+                  <option value="auto" selected>자동</option>
+                  <option value="handler">Screen Test 방식</option>
+                  <option value="browser">브라우저 기본</option>
+                  <option value="electron">Electron 직접 캡처</option>
+                </select>
+              </label>
+              <label class="switch screen-preview-switch">
+                <input id="screenPreviewToggle" type="checkbox" checked />
+                <span>로컬 미리보기</span>
+              </label>
+              <label class="switch screen-probe-switch">
+                <input id="screenProbeToggle" type="checkbox" checked />
+                <span>캡처 Probe</span>
+              </label>
+              <button class="secondary screen-test-button" id="openScreenTestButton" type="button">최소 화면 테스트</button>
+              <p class="screen-share-note">60fps는 PC 성능과 인터넷 상태에 따라 불안정할 수 있습니다.</p>
+            </section>
+          </details>
+
+          <p class="message" id="message" aria-live="polite"></p>
+        </section>
+      </div>
+
+      <section class="dev-strip">
+        <details class="quality-panel">
+          <summary>진단 · 품질 <span class="quality-summary" id="qualitySummary">대기</span></summary>
+          <dl class="quality-grid">
+              <div>
+                <dt>송신</dt>
+                <dd id="statSend">0 kbps</dd>
+              </div>
+              <div>
+                <dt>수신</dt>
+                <dd id="statReceive">0 kbps</dd>
+              </div>
+              <div>
+                <dt>RTT</dt>
+                <dd id="statRtt">-</dd>
+              </div>
+              <div>
+                <dt>지터</dt>
+                <dd id="statJitter">-</dd>
+              </div>
+              <div>
+                <dt>손실</dt>
+                <dd id="statLoss">-</dd>
+              </div>
+              <div>
+                <dt>코덱</dt>
+                <dd id="statCodec">-</dd>
+              </div>
+              <div>
+                <dt>버퍼</dt>
+                <dd id="statBuffer">-</dd>
+              </div>
+              <div>
+                <dt>은닉</dt>
+                <dd id="statConcealment">-</dd>
+              </div>
+              <div>
+                <dt>레벨</dt>
+                <dd id="statAudioLevel">-</dd>
+              </div>
+              <div>
+                <dt>샘플레이트</dt>
+                <dd id="statSampleRate">-</dd>
+              </div>
+              <div>
+                <dt>채널</dt>
+                <dd id="statChannels">-</dd>
+              </div>
+              <div>
+                <dt>처리</dt>
+                <dd id="statProcessing">-</dd>
+              </div>
+              <div>
+                <dt>입력</dt>
+                <dd id="statInput">-</dd>
+              </div>
+              <div>
+                <dt>설정</dt>
+                <dd id="statSetup">-</dd>
+              </div>
+              <div>
+                <dt>보안</dt>
+                <dd id="statSecurity">-</dd>
+              </div>
+              <div>
+                <dt>화면</dt>
+                <dd id="statScreenShare">-</dd>
+              </div>
+              <div>
+                <dt>연결</dt>
+                <dd id="statConnection">-</dd>
+              </div>
+              <div>
+                <dt>최근 오류</dt>
+                <dd id="statLastError">-</dd>
+              </div>
+              <div>
+                <dt>상태</dt>
+                <dd id="statHealth">-</dd>
+              </div>
+            </dl>
+          <button class="diagnostics-copy" id="copyDiagnosticsButton" type="button">진단 복사</button>
+        </details>
+
+        <details class="client-log-panel" id="clientLogPanel">
+          <summary>진단 로그</summary>
+          <div class="client-log-actions">
+            <button class="secondary" id="copyLogButton" type="button">로그 복사</button>
+            <button class="secondary" id="clearLogButton" type="button">로그 지우기</button>
+          </div>
+          <pre id="clientLogOutput">로그 없음</pre>
+        </details>
+      </section>
+    </main>
+
+    <div class="modal-backdrop" id="settingsModal" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+        <header class="modal-head">
+          <h2 id="settingsTitle">설정</h2>
+          <button class="ghost small" id="settingsCloseButton" type="button">닫기</button>
+        </header>
+        <div class="modal-body">
+          <section class="modal-section">
+            <h3>오디오 장치</h3>
+            <div class="settings-grid">
+              <label class="field">
+                <span>입력 장치</span>
+                <select id="inputDeviceSelect"></select>
+              </label>
+              <label class="field">
+                <span>출력 장치</span>
+                <select id="outputDeviceSelect"></select>
+              </label>
+              <label class="field" id="systemInputField" hidden>
+                <span>컴퓨터 입력</span>
+                <select id="systemInputDeviceSelect"></select>
+              </label>
+              <label class="field">
+                <span>마이크 증폭 <b id="micGainValue">100%</b></span>
+                <input id="micGainInput" type="range" min="50" max="200" step="5" value="100" />
+              </label>
+              <label class="field">
+                <span>잡음 컷 <b id="noiseGateValue">부드럽게</b></span>
+                <input id="noiseGateInput" type="range" min="0" max="100" step="5" value="25" />
+              </label>
+            </div>
+            <div class="modal-actions">
+              <button class="secondary" id="refreshDevicesButton" type="button">장치 새로고침</button>
+              <button class="secondary" id="testAudioButton" type="button">오디오 진단</button>
+            </div>
+          </section>
+          <section class="modal-section">
+            <h3>음성 처리</h3>
+            <div class="toggle-grid">
+              <label class="switch">
+                <input id="noiseSuppressionToggle" type="checkbox" />
+                <span>잡음 제거</span>
+              </label>
+              <label class="switch">
+                <input id="echoCancellationToggle" type="checkbox" />
+                <span>에코 제거</span>
+              </label>
+              <label class="switch">
+                <input id="autoGainToggle" type="checkbox" checked />
+                <span>자동 증폭</span>
+              </label>
+              <label class="switch">
+                <input id="lowLatencyToggle" type="checkbox" checked />
+                <span>저지연</span>
+              </label>
+              <label class="switch">
+                <input id="highQualityToggle" type="checkbox" checked />
+                <span>고음질</span>
+              </label>
+              <label class="switch" hidden>
+                <input id="loopbackEchoReductionToggle" type="checkbox" />
+                <span>헤드셋 반향 보정</span>
+              </label>
+            </div>
+            <p class="modal-hint">마이크 음소거 단축키: Ctrl+Shift+M</p>
+          </section>
+        </div>
+      </div>
+    </div>
+
+    <div class="toast-stack" id="toastStack" aria-live="polite"></div>
+
+    <div hidden>
+      <b id="remoteMicVolumeValue">100%</b>
+      <input id="remoteMicVolumeInput" type="range" min="0" max="200" step="5" value="100" />
+      <b id="remoteSystemVolumeValue">100%</b>
+      <input id="remoteSystemVolumeInput" type="range" min="0" max="200" step="5" value="100" />
+      <strong id="localState">꺼짐</strong>
+      <span id="localMeter"></span>
+      <span id="systemMeter"></span>
+      <strong id="remoteState">대기</strong>
+      <span id="remoteMeter"></span>
+    </div>
+    <audio id="localMonitor" autoplay muted playsinline></audio>
+    <div id="remoteAudios"></div>
+    <script src="app.js"></script>
+  </body>
+</html>

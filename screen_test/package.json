@@ -1,0 +1,15 @@
+{
+  "scripts": {
+    "start": "electron ."
+  },
+  "main": "main.js",
+  "devDependencies": {
+    "electron": "^43.0.0"
+  },
+  "name": "test",
+  "version": "1.0.0",
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": ""
+}
