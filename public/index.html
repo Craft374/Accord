@@ -199,6 +199,31 @@
           </div>
         </section>
 
+        <section class="memo-panel" id="memoPanel" aria-hidden="true">
+          <header class="memo-head">
+            <div class="memo-title">
+              <span class="memo-title-icon">📝</span>
+              <h2 id="memoRoomName">메모장</h2>
+            </div>
+            <div class="memo-head-actions">
+              <span class="memo-status" id="memoStatus"></span>
+              <div class="memo-view-toggle" role="group" aria-label="보기 방식">
+                <button class="memo-view-btn active" id="memoViewSplit" type="button" data-memo-view="split">나란히</button>
+                <button class="memo-view-btn" id="memoViewEdit" type="button" data-memo-view="edit">편집</button>
+                <button class="memo-view-btn" id="memoViewPreview" type="button" data-memo-view="preview">미리보기</button>
+              </div>
+            </div>
+          </header>
+          <div class="memo-remote-notice" id="memoRemoteNotice" hidden>
+            <span id="memoRemoteText"></span>
+            <button class="secondary small" id="memoApplyRemote" type="button">불러오기</button>
+          </div>
+          <div class="memo-body" id="memoBody">
+            <textarea id="memoEditor" class="memo-editor" spellcheck="false" placeholder="마크다운으로 메모를 작성하세요. 채널 멤버와 함께 편집됩니다."></textarea>
+            <div class="memo-preview markdown-body" id="memoPreview"></div>
+          </div>
+        </section>
+
         <aside class="member-list" id="memberList" hidden></aside>
       </div>
 

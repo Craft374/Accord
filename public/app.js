@@ -118,6 +118,8 @@ const state = {
   chatUnread: {}, // roomId -> 안 읽은 메시지 수
   chatTypers: new Map(), // userId -> { name, timer }
   chatTypingSentAt: 0,
+  // 메모장
+  memo: null, // { roomId, channelId, name, rev, remotePending, saveTimer, view }
 };
 
 const dom = {
@@ -163,6 +165,18 @@ const dom = {
   chatSendButton: document.querySelector("#chatSendButton"),
   chatComposerHint: document.querySelector("#chatComposerHint"),
   chatDropOverlay: document.querySelector("#chatDropOverlay"),
+  memoPanel: document.querySelector("#memoPanel"),
+  memoRoomName: document.querySelector("#memoRoomName"),
+  memoStatus: document.querySelector("#memoStatus"),
+  memoBody: document.querySelector("#memoBody"),
+  memoEditor: document.querySelector("#memoEditor"),
+  memoPreview: document.querySelector("#memoPreview"),
+  memoRemoteNotice: document.querySelector("#memoRemoteNotice"),
+  memoRemoteText: document.querySelector("#memoRemoteText"),
+  memoApplyRemote: document.querySelector("#memoApplyRemote"),
+  memoViewSplit: document.querySelector("#memoViewSplit"),
+  memoViewEdit: document.querySelector("#memoViewEdit"),
+  memoViewPreview: document.querySelector("#memoViewPreview"),
   channelMenuModal: document.querySelector("#channelMenuModal"),
   channelMenuClose: document.querySelector("#channelMenuClose"),
   channelInviteCode: document.querySelector("#channelInviteCode"),
@@ -377,6 +391,7 @@ function bindEvents() {
   bindAuthEvents();
   bindChannelEvents();
   bindChatEvents();
+  bindMemoEvents();
 
   dom.inputDeviceSelect.addEventListener("change", () => {
     resetEchoProbe();
@@ -1239,6 +1254,7 @@ async function handleSocketMessage(message) {
     reconcileCurrentChannel(message.selectId);
     renderChannels();
     verifyActiveChat();
+    verifyActiveMemo();
     return;
   }
 
@@ -1277,6 +1293,34 @@ async function handleSocketMessage(message) {
 
   if (message.type === "chat-error") {
     if (state.activeChat) setChatHint(message.message || "채팅 오류가 발생했습니다.");
+    return;
+  }
+
+  if (message.type === "memo:state") {
+    handleMemoState(message);
+    return;
+  }
+
+  if (message.type === "memo:saved") {
+    if (state.memo?.roomId === message.roomId && message.rev > state.memo.rev) {
+      state.memo.rev = message.rev;
+      // 내 저장이 더 최신이면, 쌓여 있던 원격 변경 알림은 낡은 것이므로 치운다.
+      if (state.memo.remotePending && state.memo.remotePending.rev <= message.rev) {
+        state.memo.remotePending = null;
+        hideMemoRemoteNotice();
+      }
+    }
+    setMemoStatus("저장됨", "ok");
+    return;
+  }
+
+  if (message.type === "memo:changed") {
+    handleMemoChanged(message);
+    return;
+  }
+
+  if (message.type === "memo-error") {
+    if (state.memo) setMemoStatus(message.message || "메모 오류", "bad");
     return;
   }
 
@@ -5855,6 +5899,7 @@ function renderRooms() {
     item.className = "room-item";
     if (state.currentRoom?.id === room.id) item.classList.add("active");
     if (state.activeChat?.roomId === room.id) item.classList.add("active");
+    if (state.memo?.roomId === room.id) item.classList.add("active");
 
     const head = document.createElement("button");
     head.className = "room-item-head";
@@ -6135,8 +6180,9 @@ function bindChannelEvents() {
 
 function selectChannel(channelId) {
   if (!channelId || channelId === state.currentChannelId) return;
-  // 다른 채널의 채팅을 보고 있었다면 닫는다(방 목록이 새 채널로 바뀌므로).
+  // 다른 채널의 방을 보고 있었다면 닫는다(방 목록이 새 채널로 바뀌므로).
   if (state.activeChat && state.activeChat.channelId !== channelId) closeChatView();
+  if (state.memo && state.memo.channelId !== channelId) closeMemoView();
   state.currentChannelId = channelId;
   renderChannels();
 }
@@ -6144,11 +6190,17 @@ function selectChannel(channelId) {
 function openRoom(roomId, roomType) {
   if (roomType === "voice") {
     closeChatView();
+    closeMemoView();
     joinRoom(roomId);
   } else if (roomType === "chat") {
+    closeMemoView();
     openChatRoom(roomId);
+  } else if (roomType === "memo") {
+    closeChatView();
+    openMemoRoom(roomId);
   } else {
     closeChatView();
+    closeMemoView();
     const meta = ROOM_TYPE_META[roomType] || {};
     setMessage(`${meta.label || "이 방"}은 다음 단계에서 열립니다. (준비 중)`);
   }
@@ -6597,6 +6649,274 @@ function bindChatDragDrop() {
     if (overlay) overlay.hidden = true;
     if (event.dataTransfer?.files?.length) handleChatFiles(event.dataTransfer.files);
   });
+}
+
+// ===== 공동 메모장 =====
+const MEMO_SAVE_DEBOUNCE = 700;
+
+function openMemoRoom(roomId) {
+  const found = findRoomInChannels(roomId);
+  if (!found) return;
+  if (state.memo?.roomId === roomId) {
+    document.body.classList.add("memo-open");
+    dom.memoEditor?.focus();
+    return;
+  }
+  clearMemoSaveTimer();
+  state.memo = {
+    roomId,
+    channelId: found.channel.id,
+    name: found.room.name,
+    rev: 0,
+    remotePending: null,
+    saveTimer: 0,
+    view: state.memo?.view || "split",
+    lastSentText: "",
+  };
+  document.body.classList.add("memo-open");
+  if (dom.memoRoomName) dom.memoRoomName.textContent = found.room.name;
+  if (dom.memoEditor) { dom.memoEditor.value = ""; dom.memoEditor.disabled = true; }
+  if (dom.memoPreview) dom.memoPreview.innerHTML = "";
+  hideMemoRemoteNotice();
+  applyMemoView(state.memo.view);
+  setMemoStatus("불러오는 중…", "muted");
+  sendSocket({ type: "memo:open", roomId });
+  renderRooms();
+}
+
+function closeMemoView() {
+  if (!state.memo) return;
+  flushMemoSave(); // 닫기 전에 마지막 편집을 저장
+  sendSocket({ type: "memo:close" });
+  clearMemoSaveTimer();
+  state.memo = null;
+  document.body.classList.remove("memo-open");
+  renderRooms();
+}
+
+// 채널 목록 갱신 후, 보고 있던 메모방이 사라졌거나 이름이 바뀌었는지 확인.
+function verifyActiveMemo() {
+  if (!state.memo) return;
+  const found = findRoomInChannels(state.memo.roomId);
+  if (!found || found.room.type !== "memo") { closeMemoView(); return; }
+  state.memo.name = found.room.name;
+  state.memo.channelId = found.channel.id;
+  if (dom.memoRoomName) dom.memoRoomName.textContent = found.room.name;
+}
+
+function handleMemoState(message) {
+  if (state.memo?.roomId !== message.roomId) return;
+  state.memo.rev = message.rev || 0;
+  state.memo.lastSentText = message.text || "";
+  if (dom.memoEditor) { dom.memoEditor.disabled = false; dom.memoEditor.value = message.text || ""; }
+  renderMemoPreview();
+  if (message.updatedAt) {
+    setMemoStatus(`마지막 편집 ${message.updatedByName || "?"} · ${formatChatTime(message.updatedAt)}`, "muted");
+  } else {
+    setMemoStatus("빈 메모 — 함께 편집됩니다", "muted");
+  }
+}
+
+function handleMemoChanged(message) {
+  if (state.memo?.roomId !== message.roomId) return;
+  if (message.rev <= state.memo.rev) return; // 이미 반영된(또는 내 저장으로 앞선) 변경은 무시
+  const editing = document.activeElement === dom.memoEditor;
+  if (editing) {
+    // 편집 중이면 덮어쓰지 않고 알림만 — 사용자가 직접 불러오기
+    state.memo.remotePending = { text: message.text, rev: message.rev, name: message.updatedByName || "" };
+    showMemoRemoteNotice(message.updatedByName || "다른 사용자");
+  } else {
+    applyRemoteMemo(message.text, message.rev, message.updatedByName, message.updatedAt);
+  }
+}
+
+function applyRemoteMemo(text, rev, name, at) {
+  if (!state.memo) return;
+  state.memo.rev = rev;
+  state.memo.lastSentText = text;
+  state.memo.remotePending = null;
+  if (dom.memoEditor) dom.memoEditor.value = text;
+  renderMemoPreview();
+  hideMemoRemoteNotice();
+  setMemoStatus(`${name || "다른 사용자"}님이 편집함 · ${formatChatTime(at || Date.now())}`, "muted");
+}
+
+function applyMemoRemotePending() {
+  const pending = state.memo?.remotePending;
+  if (!pending) { hideMemoRemoteNotice(); return; }
+  applyRemoteMemo(pending.text, pending.rev, pending.name, Date.now());
+}
+
+function showMemoRemoteNotice(name) {
+  if (!dom.memoRemoteNotice) return;
+  if (dom.memoRemoteText) dom.memoRemoteText.textContent = `${name}님이 편집했습니다. 불러오면 현재 편집 내용이 대체됩니다.`;
+  dom.memoRemoteNotice.hidden = false;
+}
+function hideMemoRemoteNotice() {
+  if (dom.memoRemoteNotice) dom.memoRemoteNotice.hidden = true;
+}
+
+function onMemoInput() {
+  if (!state.memo) return;
+  renderMemoPreview();
+  setMemoStatus("편집 중…", "muted");
+  clearMemoSaveTimer();
+  state.memo.saveTimer = window.setTimeout(sendMemoUpdate, MEMO_SAVE_DEBOUNCE);
+}
+
+function sendMemoUpdate() {
+  if (!state.memo) return;
+  clearMemoSaveTimer();
+  const text = dom.memoEditor?.value ?? "";
+  if (text === state.memo.lastSentText) return;
+  state.memo.lastSentText = text;
+  sendSocket({ type: "memo:update", roomId: state.memo.roomId, text });
+  setMemoStatus("저장 중…", "muted");
+}
+
+function flushMemoSave() {
+  if (!state.memo || !dom.memoEditor) return;
+  if (dom.memoEditor.value !== state.memo.lastSentText) sendMemoUpdate();
+}
+
+function clearMemoSaveTimer() {
+  if (state.memo?.saveTimer) {
+    window.clearTimeout(state.memo.saveTimer);
+    state.memo.saveTimer = 0;
+  }
+}
+
+function renderMemoPreview() {
+  if (dom.memoPreview) dom.memoPreview.innerHTML = renderMarkdown(dom.memoEditor?.value || "");
+}
+
+function setMemoStatus(text, tone) {
+  if (!dom.memoStatus) return;
+  dom.memoStatus.textContent = text || "";
+  dom.memoStatus.className = "memo-status" + (tone ? ` ${tone}` : "");
+}
+
+function applyMemoView(view) {
+  const v = ["split", "edit", "preview"].includes(view) ? view : "split";
+  if (state.memo) state.memo.view = v;
+  if (dom.memoBody) dom.memoBody.className = `memo-body view-${v}`;
+  dom.memoViewSplit?.classList.toggle("active", v === "split");
+  dom.memoViewEdit?.classList.toggle("active", v === "edit");
+  dom.memoViewPreview?.classList.toggle("active", v === "preview");
+  if (v !== "edit") renderMemoPreview();
+}
+
+function bindMemoEvents() {
+  dom.memoEditor?.addEventListener("input", onMemoInput);
+  dom.memoEditor?.addEventListener("blur", flushMemoSave);
+  dom.memoApplyRemote?.addEventListener("click", applyMemoRemotePending);
+  dom.memoViewSplit?.addEventListener("click", () => applyMemoView("split"));
+  dom.memoViewEdit?.addEventListener("click", () => applyMemoView("edit"));
+  dom.memoViewPreview?.addEventListener("click", () => applyMemoView("preview"));
+  dom.memoEditor?.addEventListener("keydown", (event) => {
+    if (event.key !== "Tab") return;
+    event.preventDefault();
+    const el = dom.memoEditor;
+    const start = el.selectionStart;
+    const end = el.selectionEnd;
+    el.value = `${el.value.slice(0, start)}  ${el.value.slice(end)}`;
+    el.selectionStart = el.selectionEnd = start + 2;
+    onMemoInput();
+  });
+}
+
+// ── 안전한 마크다운 렌더러(외부 의존성 없음, HTML 이스케이프 후 변환) ──
+function escapeHtmlText(str) {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function renderMarkdown(src) {
+  // 1) 코드펜스(```)를 먼저 빼내 보호
+  const codeBlocks = [];
+  let text = String(src || "").replace(/```([\s\S]*?)```/g, (m, code) => {
+    codeBlocks.push(code.replace(/^\n/, "").replace(/\n$/, ""));
+    return `\u0000CODE${codeBlocks.length - 1}\u0000`;
+  });
+  // 2) 전체 HTML 이스케이프(이후 삽입되는 태그는 우리가 만든 안전한 것뿐)
+  text = escapeHtmlText(text);
+
+  const lines = text.split("\n");
+  const html = [];
+  let listType = null;
+  let inQuote = false;
+  const closeList = () => { if (listType) { html.push(`</${listType}>`); listType = null; } };
+  const closeQuote = () => { if (inQuote) { html.push("</blockquote>"); inQuote = false; } };
+
+  for (const line of lines) {
+    const codeMatch = line.match(/^\u0000CODE(\d+)\u0000$/);
+    if (codeMatch) {
+      closeList(); closeQuote();
+      html.push(`<pre><code>${escapeHtmlText(codeBlocks[Number(codeMatch[1])])}</code></pre>`);
+      continue;
+    }
+    if (/^\s*$/.test(line)) { closeList(); closeQuote(); continue; }
+    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { closeList(); closeQuote(); html.push("<hr />"); continue; }
+
+    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
+      closeList(); closeQuote();
+      html.push(`<h${heading[1].length}>${inlineMarkdown(heading[2])}</h${heading[1].length}>`);
+      continue;
+    }
+    const quote = line.match(/^&gt;\s?(.*)$/); // '>' 는 이미 이스케이프됨
+    if (quote) {
+      closeList();
+      if (!inQuote) { html.push("<blockquote>"); inQuote = true; }
+      html.push(`<p>${inlineMarkdown(quote[1])}</p>`);
+      continue;
+    }
+    const ul = line.match(/^\s*[-*+]\s+(.*)$/);
+    if (ul) {
+      closeQuote();
+      if (listType !== "ul") { closeList(); html.push("<ul>"); listType = "ul"; }
+      html.push(`<li>${inlineMarkdown(ul[1])}</li>`);
+      continue;
+    }
+    const ol = line.match(/^\s*\d+\.\s+(.*)$/);
+    if (ol) {
+      closeQuote();
+      if (listType !== "ol") { closeList(); html.push("<ol>"); listType = "ol"; }
+      html.push(`<li>${inlineMarkdown(ol[1])}</li>`);
+      continue;
+    }
+    closeList(); closeQuote();
+    html.push(`<p>${inlineMarkdown(line)}</p>`);
+  }
+  closeList(); closeQuote();
+  return html.join("\n");
+}
+
+function inlineMarkdown(str) {
+  const links = [];
+  let out = str;
+  // 명시적 링크 [text](http…)를 먼저 자리표시자로 보호
+  out = out.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (m, label, url) => {
+    links.push(`<a href="${url}" target="_blank" rel="noopener">${label}</a>`);
+    return `\u0001L${links.length - 1}\u0001`;
+  });
+  // 맨 URL 자동 링크
+  out = out.replace(/(https?:\/\/[^\s<]+)/g, (m, url) => {
+    links.push(`<a href="${url}" target="_blank" rel="noopener">${url}</a>`);
+    return `\u0001L${links.length - 1}\u0001`;
+  });
+  out = out.replace(/`([^`]+)`/g, "<code>$1</code>");
+  out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  out = out.replace(/__([^_]+)__/g, "<strong>$1</strong>");
+  out = out.replace(/\*([^*\s][^*]*?)\*/g, "<em>$1</em>");
+  out = out.replace(/(^|[^a-zA-Z0-9])_([^_\s][^_]*?)_(?=[^a-zA-Z0-9]|$)/g, "$1<em>$2</em>");
+  out = out.replace(/~~([^~]+)~~/g, "<del>$1</del>");
+  out = out.replace(/\u0001L(\d+)\u0001/g, (m, i) => links[Number(i)]);
+  return out;
 }
 
 function openChannelModal() {

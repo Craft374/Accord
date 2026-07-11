@@ -11,8 +11,10 @@ const SESSIONS_FILE = path.join(DATA_DIR, "sessions.json");
 const CHANNELS_FILE = path.join(DATA_DIR, "channels.json");
 const MESSAGES_DIR = path.join(DATA_DIR, "messages");
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
+const MEMO_DIR = path.join(DATA_DIR, "memo");
 const MAX_MESSAGES_PER_ROOM = 1000; // 방별 보관 메시지 상한(초과 시 오래된 것부터 정리)
 const UPLOAD_MAX_BYTES = 50 * 1024 * 1024; // 파일 업로드 최대 50MB
+const MEMO_MAX_LEN = 200000; // 메모장 최대 길이(약 200KB)
 
 const CODE_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"; // base36
 const INVITE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 혼동 문자 제외
@@ -482,6 +484,7 @@ function removeRoom(channelId, roomId) {
   channel.rooms = channel.rooms.filter((r) => r.id !== roomId);
   persistChannels();
   deleteRoomMessages(roomId); // 방 삭제 시 저장된 채팅도 정리
+  deleteRoomMemo(roomId);
   return { channel };
 }
 
@@ -505,7 +508,7 @@ function renameChannel(channelId, name) {
 
 function deleteChannel(channelId) {
   const channel = getChannel(channelId);
-  if (channel) for (const room of channel.rooms) deleteRoomMessages(room.id);
+  if (channel) for (const room of channel.rooms) { deleteRoomMessages(room.id); deleteRoomMemo(room.id); }
   const before = channelsDb.channels.length;
   channelsDb.channels = channelsDb.channels.filter((c) => c.id !== channelId);
   if (channelsDb.channels.length !== before) persistChannels();
@@ -611,6 +614,47 @@ function getUploadPath(fileName) {
   return filePath;
 }
 
+// ===== 공동 메모장 =====
+// 방 단위 공유 마크다운 텍스트. server-data/memo/<roomId>.json 에 저장.
+function memoFile(roomId) {
+  return path.join(MEMO_DIR, `${roomId}.json`);
+}
+
+function getMemo(roomId) {
+  if (!isSafeRoomId(roomId)) return { text: "", rev: 0, updatedBy: "", updatedAt: 0 };
+  const memo = readJson(memoFile(roomId), null);
+  if (!memo || typeof memo !== "object") return { text: "", rev: 0, updatedBy: "", updatedAt: 0 };
+  return {
+    text: String(memo.text || ""),
+    rev: Number(memo.rev) || 0,
+    updatedBy: String(memo.updatedBy || ""),
+    updatedAt: Number(memo.updatedAt) || 0,
+  };
+}
+
+function saveMemo(roomId, text, userId) {
+  if (!isSafeRoomId(roomId)) return { error: "잘못된 방입니다." };
+  fs.mkdirSync(MEMO_DIR, { recursive: true });
+  const current = getMemo(roomId);
+  const memo = {
+    text: String(text || "").slice(0, MEMO_MAX_LEN),
+    rev: current.rev + 1,
+    updatedBy: String(userId || ""),
+    updatedAt: Date.now(),
+  };
+  writeJsonAtomic(memoFile(roomId), memo);
+  return { memo };
+}
+
+function deleteRoomMemo(roomId) {
+  if (!isSafeRoomId(roomId)) return;
+  try {
+    fs.unlinkSync(memoFile(roomId));
+  } catch {
+    /* 파일 없으면 무시 */
+  }
+}
+
 module.exports = {
   init,
   createUser,
@@ -657,4 +701,8 @@ module.exports = {
   saveUpload,
   getUploadPath,
   UPLOAD_MAX_BYTES,
+  // 메모장
+  getMemo,
+  saveMemo,
+  deleteRoomMemo,
 };

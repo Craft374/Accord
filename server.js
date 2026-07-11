@@ -246,6 +246,7 @@ function handleUpgrade(req, socket) {
     userId: "",
     isAdmin: false,
     chatRoomId: "", // 현재 보고 있는 채팅방(입력중 표시 대상 판별용)
+    memoRoomId: "", // 현재 보고 있는 메모장(실시간 동기화 대상 판별용)
   };
 
   clients.set(client.id, client);
@@ -337,6 +338,7 @@ function handleMessage(client, message) {
   if (handleAdminMessage(client, message)) return;
   if (handleChannelMessage(client, message)) return;
   if (handleChatMessage(client, message)) return;
+  if (handleMemoMessage(client, message)) return;
 
   if (message.type === "set-name") {
     client.name = cleanName(message.name);
@@ -999,6 +1001,74 @@ function broadcastChat(channel, payload) {
     if (!c.userId) continue;
     if (store.isChannelMember(channel.id, c.userId, c.isAdmin)) send(c, payload);
   }
+}
+
+// ===== 공동 메모장 =====
+function handleMemoMessage(client, message) {
+  if (typeof message.type !== "string" || !message.type.startsWith("memo:")) return false;
+  if (!client.userId) {
+    send(client, { type: "memo-error", message: "로그인이 필요합니다." });
+    return true;
+  }
+
+  switch (message.type) {
+    case "memo:open": {
+      const ctx = resolveMemoRoom(client, message.roomId);
+      if (!ctx) return true;
+      client.memoRoomId = ctx.room.id;
+      const memo = store.getMemo(ctx.room.id);
+      send(client, { type: "memo:state", roomId: ctx.room.id, ...memoPayload(memo) });
+      return true;
+    }
+    case "memo:close": {
+      client.memoRoomId = "";
+      return true;
+    }
+    case "memo:update": {
+      const ctx = resolveMemoRoom(client, message.roomId);
+      if (!ctx) return true;
+      const result = store.saveMemo(ctx.room.id, message.text, client.userId);
+      if (result.error) {
+        send(client, { type: "memo-error", message: result.error });
+        return true;
+      }
+      const memo = result.memo;
+      // 저장한 본인에게는 새 rev만 확인(ack), 같은 방을 보는 다른 사람에게는 내용을 반영.
+      send(client, { type: "memo:saved", roomId: ctx.room.id, rev: memo.rev });
+      const payload = { type: "memo:changed", roomId: ctx.room.id, ...memoPayload(memo) };
+      for (const c of clients.values()) {
+        if (c.id === client.id || c.memoRoomId !== ctx.room.id) continue;
+        send(c, payload);
+      }
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
+function resolveMemoRoom(client, roomId) {
+  const found = store.findRoom(String(roomId || ""));
+  if (!found || found.room.type !== "memo") {
+    send(client, { type: "memo-error", message: "메모장을 찾지 못했습니다." });
+    return null;
+  }
+  if (!store.isChannelMember(found.channel.id, client.userId, client.isAdmin)) {
+    send(client, { type: "memo-error", message: "채널 멤버만 이용할 수 있습니다." });
+    return null;
+  }
+  return found;
+}
+
+function memoPayload(memo) {
+  const user = memo.updatedBy ? store.findById(memo.updatedBy) : null;
+  return {
+    text: memo.text,
+    rev: memo.rev,
+    updatedBy: memo.updatedBy,
+    updatedByName: user ? user.displayName : "",
+    updatedAt: memo.updatedAt,
+  };
 }
 
 function cleanName(value) {
