@@ -45,3 +45,4 @@ coverage/
 Thumbs.db
 .vscode/
 .idea/
+electron/bin/AccordProcessLoopback.exe
