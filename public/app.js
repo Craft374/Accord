@@ -111,6 +111,13 @@ const state = {
   currentChannelId: "",
   presence: {},
   online: [],
+  // 채팅
+  activeChat: null, // { roomId, channelId, name }
+  chatMessages: [],
+  chatPendingFiles: [], // 업로드 완료돼 전송 대기 중인 파일 메타
+  chatUnread: {}, // roomId -> 안 읽은 메시지 수
+  chatTypers: new Map(), // userId -> { name, timer }
+  chatTypingSentAt: 0,
 };
 
 const dom = {
@@ -143,6 +150,19 @@ const dom = {
   roomModalName: document.querySelector("#roomModalName"),
   roomModalConfirm: document.querySelector("#roomModalConfirm"),
   roomModalMessage: document.querySelector("#roomModalMessage"),
+  chatPanel: document.querySelector("#chatPanel"),
+  chatRoomName: document.querySelector("#chatRoomName"),
+  chatSubtitle: document.querySelector("#chatSubtitle"),
+  chatScroll: document.querySelector("#chatScroll"),
+  chatMessages: document.querySelector("#chatMessages"),
+  chatTyping: document.querySelector("#chatTyping"),
+  chatAttachments: document.querySelector("#chatAttachments"),
+  chatAttachButton: document.querySelector("#chatAttachButton"),
+  chatFileInput: document.querySelector("#chatFileInput"),
+  chatInput: document.querySelector("#chatInput"),
+  chatSendButton: document.querySelector("#chatSendButton"),
+  chatComposerHint: document.querySelector("#chatComposerHint"),
+  chatDropOverlay: document.querySelector("#chatDropOverlay"),
   channelMenuModal: document.querySelector("#channelMenuModal"),
   channelMenuClose: document.querySelector("#channelMenuClose"),
   channelInviteCode: document.querySelector("#channelInviteCode"),
@@ -356,6 +376,7 @@ function bindEvents() {
 
   bindAuthEvents();
   bindChannelEvents();
+  bindChatEvents();
 
   dom.inputDeviceSelect.addEventListener("change", () => {
     resetEchoProbe();
@@ -1217,6 +1238,7 @@ async function handleSocketMessage(message) {
     state.channels = message.channels || [];
     reconcileCurrentChannel(message.selectId);
     renderChannels();
+    verifyActiveChat();
     return;
   }
 
@@ -1231,6 +1253,30 @@ async function handleSocketMessage(message) {
     setChannelModalMessage(message.message || "채널 작업에 실패했습니다.");
     setChannelMenuMessage(message.message || "채널 작업에 실패했습니다.");
     setRoomModalMessage(message.message || "방 작업에 실패했습니다.");
+    return;
+  }
+
+  if (message.type === "chat:history") {
+    if (state.activeChat?.roomId === message.roomId) {
+      state.chatMessages = message.messages || [];
+      renderChatMessages();
+      scrollChatToBottom();
+    }
+    return;
+  }
+
+  if (message.type === "chat:message") {
+    handleIncomingChat(message.message);
+    return;
+  }
+
+  if (message.type === "chat:typing") {
+    handleChatTyping(message);
+    return;
+  }
+
+  if (message.type === "chat-error") {
+    if (state.activeChat) setChatHint(message.message || "채팅 오류가 발생했습니다.");
     return;
   }
 
@@ -5808,6 +5854,7 @@ function renderRooms() {
     const item = document.createElement("div");
     item.className = "room-item";
     if (state.currentRoom?.id === room.id) item.classList.add("active");
+    if (state.activeChat?.roomId === room.id) item.classList.add("active");
 
     const head = document.createElement("button");
     head.className = "room-item-head";
@@ -5827,6 +5874,13 @@ function renderRooms() {
       count.className = "room-count";
       count.textContent = String(occupants.length);
       head.append(count);
+    }
+    const unread = room.type === "chat" ? (state.chatUnread[room.id] || 0) : 0;
+    if (unread > 0 && state.activeChat?.roomId !== room.id) {
+      const badge = document.createElement("span");
+      badge.className = "room-unread";
+      badge.textContent = unread > 99 ? "99+" : String(unread);
+      head.append(badge);
     }
     if (owner) {
       const del = document.createElement("button");
@@ -6081,17 +6135,468 @@ function bindChannelEvents() {
 
 function selectChannel(channelId) {
   if (!channelId || channelId === state.currentChannelId) return;
+  // 다른 채널의 채팅을 보고 있었다면 닫는다(방 목록이 새 채널로 바뀌므로).
+  if (state.activeChat && state.activeChat.channelId !== channelId) closeChatView();
   state.currentChannelId = channelId;
   renderChannels();
 }
 
 function openRoom(roomId, roomType) {
   if (roomType === "voice") {
+    closeChatView();
     joinRoom(roomId);
+  } else if (roomType === "chat") {
+    openChatRoom(roomId);
   } else {
+    closeChatView();
     const meta = ROOM_TYPE_META[roomType] || {};
     setMessage(`${meta.label || "이 방"}은 다음 단계에서 열립니다. (준비 중)`);
   }
+}
+
+// ===== 채팅방 =====
+const CHAT_UPLOAD_MAX = 50 * 1024 * 1024; // 50MB
+const CHAT_GROUP_GAP = 5 * 60 * 1000; // 5분 이내 같은 사람 메시지는 묶어서 표시
+const CHAT_TYPING_TTL = 5000;
+const CHAT_MAX_FILES = 10;
+
+function findRoomInChannels(roomId) {
+  for (const channel of state.channels) {
+    const room = (channel.rooms || []).find((r) => r.id === roomId);
+    if (room) return { channel, room };
+  }
+  return null;
+}
+
+function openChatRoom(roomId) {
+  const found = findRoomInChannels(roomId);
+  if (!found) return;
+  if (state.activeChat?.roomId === roomId) {
+    document.body.classList.add("chat-open");
+    dom.chatInput?.focus();
+    return;
+  }
+  state.activeChat = { roomId, channelId: found.channel.id, name: found.room.name };
+  state.chatMessages = [];
+  state.chatPendingFiles = [];
+  clearChatTypers();
+  delete state.chatUnread[roomId];
+  document.body.classList.add("chat-open");
+  if (dom.chatRoomName) dom.chatRoomName.textContent = found.room.name;
+  if (dom.chatSubtitle) dom.chatSubtitle.textContent = found.channel.name;
+  if (dom.chatMessages) dom.chatMessages.innerHTML = '<p class="chat-loading">불러오는 중…</p>';
+  renderChatAttachments();
+  setChatHint("");
+  if (dom.chatInput) { dom.chatInput.value = ""; autoResizeChatInput(); }
+  sendSocket({ type: "chat:open", roomId });
+  renderRooms();
+  dom.chatInput?.focus();
+}
+
+function closeChatView() {
+  if (!state.activeChat) return;
+  sendSocket({ type: "chat:close" });
+  state.activeChat = null;
+  state.chatPendingFiles = [];
+  clearChatTypers();
+  document.body.classList.remove("chat-open");
+  renderRooms();
+}
+
+// 채널 목록 갱신 후, 보고 있던 채팅방이 사라졌거나 이름이 바뀌었는지 확인한다.
+function verifyActiveChat() {
+  if (!state.activeChat) return;
+  const found = findRoomInChannels(state.activeChat.roomId);
+  if (!found || found.room.type !== "chat") { closeChatView(); return; }
+  state.activeChat.name = found.room.name;
+  state.activeChat.channelId = found.channel.id;
+  if (dom.chatRoomName) dom.chatRoomName.textContent = found.room.name;
+  if (dom.chatSubtitle) dom.chatSubtitle.textContent = found.channel.name;
+  renderChatMessages(); // 멤버 정보가 새로 도착했을 수 있어 아바타 갱신
+}
+
+function handleIncomingChat(msg) {
+  if (!msg || !msg.roomId) return;
+  if (state.activeChat?.roomId === msg.roomId) {
+    const nearBottom = isChatNearBottom();
+    state.chatMessages.push(msg);
+    if (state.chatMessages.length > 1000) state.chatMessages.shift();
+    removeChatTyper(msg.userId);
+    renderChatMessages();
+    if (nearBottom || msg.userId === state.auth.user?.id) scrollChatToBottom();
+  } else {
+    state.chatUnread[msg.roomId] = (state.chatUnread[msg.roomId] || 0) + 1;
+    renderRooms();
+  }
+}
+
+function resolveChatUser(msg) {
+  const channel = state.channels.find((c) => c.id === state.activeChat?.channelId);
+  const member = channel?.members?.find((m) => m.id === msg.userId);
+  return member || { displayName: msg.name, avatar: "" };
+}
+
+function renderChatMessages() {
+  const container = dom.chatMessages;
+  if (!container) return;
+  container.innerHTML = "";
+  if (!state.chatMessages.length) {
+    const empty = document.createElement("p");
+    empty.className = "chat-empty";
+    empty.textContent = "아직 메시지가 없습니다. 첫 메시지를 남겨보세요.";
+    container.append(empty);
+    return;
+  }
+  let prev = null;
+  let currentBody = null;
+  for (const msg of state.chatMessages) {
+    const grouped = prev && prev.userId === msg.userId && (msg.at - prev.at) < CHAT_GROUP_GAP;
+    if (!grouped) {
+      const group = document.createElement("div");
+      group.className = "chat-group";
+      const avatar = document.createElement("span");
+      avatar.className = "chat-avatar account-avatar small";
+      setAvatar(avatar, resolveChatUser(msg));
+      currentBody = document.createElement("div");
+      currentBody.className = "chat-group-body";
+      const head = document.createElement("div");
+      head.className = "chat-msg-head";
+      const name = document.createElement("b");
+      name.className = "chat-msg-name";
+      name.textContent = msg.name || "이름없음";
+      const time = document.createElement("span");
+      time.className = "chat-msg-time";
+      time.textContent = formatChatTime(msg.at);
+      head.append(name, time);
+      currentBody.append(head);
+      group.append(avatar, currentBody);
+      container.append(group);
+    }
+    currentBody.append(renderChatMessageBody(msg));
+    prev = msg;
+  }
+}
+
+function renderChatMessageBody(msg) {
+  const wrap = document.createElement("div");
+  wrap.className = "chat-msg";
+  if (msg.text) {
+    const text = document.createElement("div");
+    text.className = "chat-msg-text";
+    text.textContent = msg.text; // textContent 사용 → XSS 안전, CSS pre-wrap로 줄바꿈 유지
+    wrap.append(text);
+  }
+  if (Array.isArray(msg.files) && msg.files.length) {
+    const files = document.createElement("div");
+    files.className = "chat-files";
+    for (const file of msg.files) files.append(renderChatFile(file));
+    wrap.append(files);
+  }
+  return wrap;
+}
+
+function renderChatFile(file) {
+  const url = String(file.url || "");
+  const isImage = file.kind === "image" || /^image\//.test(file.mime || "");
+  if (isImage) {
+    const link = document.createElement("a");
+    link.className = "chat-image-link";
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noopener";
+    const img = document.createElement("img");
+    img.className = "chat-image";
+    img.loading = "lazy";
+    img.alt = file.name || "이미지";
+    img.src = url;
+    link.append(img);
+    return link;
+  }
+  const a = document.createElement("a");
+  a.className = "chat-file";
+  a.href = url;
+  a.download = file.name || "file";
+  a.target = "_blank";
+  a.rel = "noopener";
+  const icon = document.createElement("span");
+  icon.className = "chat-file-icon";
+  icon.textContent = "📄";
+  const info = document.createElement("span");
+  info.className = "chat-file-info";
+  const name = document.createElement("b");
+  name.textContent = file.name || "파일";
+  const size = document.createElement("em");
+  size.textContent = formatBytes(file.size || 0);
+  info.append(name, size);
+  a.append(icon, info);
+  return a;
+}
+
+function formatChatTime(at) {
+  if (!at) return "";
+  const d = new Date(at);
+  const now = new Date();
+  const time = d.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false });
+  if (d.toDateString() === now.toDateString()) return `오늘 ${time}`;
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (d.toDateString() === yesterday.toDateString()) return `어제 ${time}`;
+  return `${d.toLocaleDateString("ko-KR", { month: "2-digit", day: "2-digit" })} ${time}`;
+}
+
+function formatBytes(n) {
+  if (!n) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let value = n;
+  let i = 0;
+  while (value >= 1024 && i < units.length - 1) { value /= 1024; i++; }
+  return `${value.toFixed(i === 0 || value >= 10 ? 0 : 1)} ${units[i]}`;
+}
+
+function isChatNearBottom() {
+  const el = dom.chatScroll;
+  if (!el) return true;
+  return el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+}
+
+function scrollChatToBottom() {
+  const el = dom.chatScroll;
+  if (el) el.scrollTop = el.scrollHeight;
+}
+
+// ── 입력 중 표시 ──
+function handleChatTyping(message) {
+  if (!state.activeChat || message.roomId !== state.activeChat.roomId) return;
+  if (message.userId === state.auth.user?.id) return;
+  const existing = state.chatTypers.get(message.userId);
+  if (existing?.timer) clearTimeout(existing.timer);
+  const timer = setTimeout(() => {
+    state.chatTypers.delete(message.userId);
+    renderChatTyping();
+  }, CHAT_TYPING_TTL);
+  state.chatTypers.set(message.userId, { name: message.name, timer });
+  renderChatTyping();
+}
+
+function removeChatTyper(userId) {
+  const entry = state.chatTypers.get(userId);
+  if (entry?.timer) clearTimeout(entry.timer);
+  if (state.chatTypers.delete(userId)) renderChatTyping();
+}
+
+function clearChatTypers() {
+  for (const entry of state.chatTypers.values()) if (entry.timer) clearTimeout(entry.timer);
+  state.chatTypers.clear();
+  renderChatTyping();
+}
+
+function renderChatTyping() {
+  if (!dom.chatTyping) return;
+  const names = [...state.chatTypers.values()].map((e) => e.name).filter(Boolean);
+  if (!names.length) {
+    dom.chatTyping.textContent = "";
+    dom.chatTyping.classList.remove("active");
+    return;
+  }
+  let text;
+  if (names.length === 1) text = `${names[0]}님이 입력 중…`;
+  else if (names.length === 2) text = `${names[0]}, ${names[1]}님이 입력 중…`;
+  else text = `${names.length}명이 입력 중…`;
+  dom.chatTyping.textContent = text;
+  dom.chatTyping.classList.add("active");
+}
+
+// ── 전송 ──
+function sendChatMessage() {
+  if (!state.activeChat) return;
+  if (state.chatPendingFiles.some((f) => f.uploading)) {
+    setChatHint("파일 업로드가 끝난 뒤 보낼 수 있습니다.");
+    return;
+  }
+  const text = (dom.chatInput?.value || "").replace(/\s+$/, "");
+  const files = state.chatPendingFiles
+    .filter((f) => f.url)
+    .map((f) => ({ url: f.url, name: f.name, size: f.size, mime: f.mime, kind: f.kind }));
+  if (!text && !files.length) return;
+  sendSocket({ type: "chat:send", roomId: state.activeChat.roomId, text, files });
+  if (dom.chatInput) { dom.chatInput.value = ""; autoResizeChatInput(); }
+  state.chatPendingFiles = [];
+  renderChatAttachments();
+  setChatHint("");
+  state.chatTypingSentAt = 0;
+  dom.chatInput?.focus();
+}
+
+function onChatInput() {
+  autoResizeChatInput();
+  const now = Date.now();
+  if (state.activeChat && now - state.chatTypingSentAt > 2500) {
+    state.chatTypingSentAt = now;
+    sendSocket({ type: "chat:typing", roomId: state.activeChat.roomId });
+  }
+}
+
+function autoResizeChatInput() {
+  const el = dom.chatInput;
+  if (!el) return;
+  el.style.height = "auto";
+  el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+}
+
+function setChatHint(text) {
+  if (dom.chatComposerHint) dom.chatComposerHint.textContent = text || "";
+}
+
+// ── 파일 첨부/업로드 ──
+async function handleChatFiles(fileList) {
+  if (!state.activeChat) return;
+  for (const file of [...fileList]) {
+    if (state.chatPendingFiles.length >= CHAT_MAX_FILES) {
+      setChatHint(`한 번에 최대 ${CHAT_MAX_FILES}개까지 첨부할 수 있습니다.`);
+      break;
+    }
+    if (file.size > CHAT_UPLOAD_MAX) {
+      setChatHint(`${file.name}: 50MB를 넘어 첨부할 수 없습니다.`);
+      continue;
+    }
+    const entry = {
+      name: file.name,
+      size: file.size,
+      mime: file.type || "application/octet-stream",
+      kind: (file.type || "").startsWith("image/") ? "image" : "file",
+      uploading: true,
+      progress: 0,
+      url: "",
+    };
+    state.chatPendingFiles.push(entry);
+    renderChatAttachments();
+    setChatHint("");
+    try {
+      const result = await uploadChatFile(file, (p) => { entry.progress = p; renderChatAttachments(); });
+      entry.url = result.url;
+      entry.size = Number.isFinite(result.size) ? result.size : entry.size;
+      entry.mime = result.mime || entry.mime;
+      entry.uploading = false;
+      renderChatAttachments();
+    } catch (error) {
+      state.chatPendingFiles = state.chatPendingFiles.filter((f) => f !== entry);
+      renderChatAttachments();
+      setChatHint(error.message || "업로드에 실패했습니다.");
+    }
+  }
+}
+
+function uploadChatFile(file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const token = state.auth.token;
+    if (!token) { reject(new Error("로그인이 필요합니다.")); return; }
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${serverUrl}/upload?token=${encodeURIComponent(token)}`);
+    xhr.setRequestHeader("content-type", file.type || "application/octet-stream");
+    xhr.setRequestHeader("x-file-name", encodeURIComponent(file.name));
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && onProgress) onProgress(event.loaded / event.total);
+    };
+    xhr.onload = () => {
+      let data = {};
+      try { data = JSON.parse(xhr.responseText); } catch { /* ignore */ }
+      if (xhr.status >= 200 && xhr.status < 300 && data.url) resolve(data);
+      else reject(new Error(data.error || `업로드 실패 (${xhr.status})`));
+    };
+    xhr.onerror = () => reject(new Error("업로드 중 네트워크 오류가 발생했습니다."));
+    xhr.send(file);
+  });
+}
+
+function renderChatAttachments() {
+  const box = dom.chatAttachments;
+  if (!box) return;
+  box.innerHTML = "";
+  if (!state.chatPendingFiles.length) { box.hidden = true; return; }
+  box.hidden = false;
+  for (const f of state.chatPendingFiles) {
+    const chip = document.createElement("div");
+    chip.className = "chat-attach-chip" + (f.uploading ? " uploading" : "");
+    const label = document.createElement("span");
+    label.className = "chat-attach-name";
+    label.textContent = f.uploading
+      ? `${f.name} · ${Math.round((f.progress || 0) * 100)}%`
+      : `${f.name} · ${formatBytes(f.size)}`;
+    chip.append(label);
+    if (!f.uploading) {
+      const remove = document.createElement("button");
+      remove.className = "chat-attach-remove";
+      remove.type = "button";
+      remove.textContent = "×";
+      remove.addEventListener("click", () => {
+        state.chatPendingFiles = state.chatPendingFiles.filter((x) => x !== f);
+        renderChatAttachments();
+      });
+      chip.append(remove);
+    }
+    box.append(chip);
+  }
+}
+
+function bindChatEvents() {
+  dom.chatSendButton?.addEventListener("click", sendChatMessage);
+  dom.chatInput?.addEventListener("input", onChatInput);
+  dom.chatInput?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      sendChatMessage();
+    }
+  });
+  dom.chatInput?.addEventListener("paste", (event) => {
+    const items = event.clipboardData?.items;
+    if (!items) return;
+    const files = [];
+    for (const item of items) {
+      if (item.kind === "file") {
+        const file = item.getAsFile();
+        if (file) files.push(file);
+      }
+    }
+    if (files.length) {
+      event.preventDefault();
+      handleChatFiles(files);
+    }
+  });
+  dom.chatAttachButton?.addEventListener("click", () => dom.chatFileInput?.click());
+  dom.chatFileInput?.addEventListener("change", () => {
+    if (dom.chatFileInput.files?.length) handleChatFiles(dom.chatFileInput.files);
+    dom.chatFileInput.value = "";
+  });
+  bindChatDragDrop();
+}
+
+function bindChatDragDrop() {
+  const panel = dom.chatPanel;
+  const overlay = dom.chatDropOverlay;
+  if (!panel) return;
+  let depth = 0;
+  const dragHasFiles = (event) => [...(event.dataTransfer?.types || [])].includes("Files");
+  panel.addEventListener("dragenter", (event) => {
+    if (!state.activeChat || !dragHasFiles(event)) return;
+    event.preventDefault();
+    depth++;
+    if (overlay) overlay.hidden = false;
+  });
+  panel.addEventListener("dragover", (event) => {
+    if (state.activeChat && dragHasFiles(event)) event.preventDefault();
+  });
+  panel.addEventListener("dragleave", (event) => {
+    if (!dragHasFiles(event)) return;
+    depth = Math.max(0, depth - 1);
+    if (depth === 0 && overlay) overlay.hidden = true;
+  });
+  panel.addEventListener("drop", (event) => {
+    if (!state.activeChat) return;
+    event.preventDefault();
+    depth = 0;
+    if (overlay) overlay.hidden = true;
+    if (event.dataTransfer?.files?.length) handleChatFiles(event.dataTransfer.files);
+  });
 }
 
 function openChannelModal() {

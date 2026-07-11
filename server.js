@@ -11,7 +11,7 @@ loadServerEnvFiles();
 store.init();
 seedAdminAccount();
 
-const VERSION = "0.2.43";
+const VERSION = "0.2.44";
 const PORT = Number(process.env.PORT || 25565);
 const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_HOST = cleanHost(process.env.PUBLIC_HOST || "");
@@ -60,13 +60,27 @@ function handleRequest(req, res) {
     return;
   }
 
+  const base = `${tlsOptions ? "https" : "http"}://${req.headers.host || "localhost"}`;
+  const url = new URL(req.url, base);
+
+  if (req.method === "POST") {
+    if (url.pathname === "/upload") {
+      handleUpload(req, res, url);
+      return;
+    }
+    sendText(res, 404, "Not found");
+    return;
+  }
+
   if (req.method !== "GET") {
     sendText(res, 405, "Method not allowed");
     return;
   }
 
-  const base = `${tlsOptions ? "https" : "http"}://${req.headers.host || "localhost"}`;
-  const url = new URL(req.url, base);
+  if (url.pathname.startsWith("/uploads/")) {
+    serveUpload(res, url.pathname);
+    return;
+  }
 
   if (url.pathname === "/health") {
     sendJson(res, 200, { ok: true, version: VERSION, secure: Boolean(tlsOptions) });
@@ -115,6 +129,82 @@ function handleRequest(req, res) {
   });
 }
 
+// 채팅 파일/이미지 업로드. 바이너리 본문 + 헤더(x-file-name)로 받는다.
+function handleUpload(req, res, url) {
+  const token = url.searchParams.get("token") || req.headers["x-auth-token"] || "";
+  const user = store.getUserByToken(token);
+  if (!user) {
+    sendJson(res, 401, { error: "인증이 필요합니다." });
+    return;
+  }
+  const mime = String(req.headers["content-type"] || "application/octet-stream").split(";")[0].trim();
+  let rawName = "file";
+  try {
+    rawName = decodeURIComponent(String(req.headers["x-file-name"] || "file"));
+  } catch {
+    rawName = String(req.headers["x-file-name"] || "file");
+  }
+
+  const chunks = [];
+  let size = 0;
+  let aborted = false;
+  req.on("data", (chunk) => {
+    if (aborted) return;
+    size += chunk.length;
+    if (size > store.UPLOAD_MAX_BYTES) {
+      aborted = true;
+      sendJson(res, 413, { error: "파일이 너무 큽니다. 50MB 이하만 올릴 수 있습니다." });
+      req.destroy();
+      return;
+    }
+    chunks.push(chunk);
+  });
+  req.on("end", () => {
+    if (aborted) return;
+    if (!size) {
+      sendJson(res, 400, { error: "빈 파일입니다." });
+      return;
+    }
+    try {
+      const saved = store.saveUpload({ buffer: Buffer.concat(chunks), name: rawName, mime });
+      logServer(`upload file=${saved.fileName} size=${saved.size} by=${user.username}`);
+      sendJson(res, 200, { url: `/uploads/${saved.fileName}`, name: saved.name, size: saved.size, mime: saved.mime });
+    } catch (error) {
+      logServer(`upload failed: ${error.message || error}`);
+      sendJson(res, 500, { error: "업로드에 실패했습니다." });
+    }
+  });
+  req.on("error", () => {
+    if (!aborted) sendJson(res, 500, { error: "업로드 중 오류가 발생했습니다." });
+  });
+}
+
+function serveUpload(res, pathname) {
+  let fileName = "";
+  try {
+    fileName = decodeURIComponent(pathname.slice("/uploads/".length));
+  } catch {
+    sendText(res, 400, "Bad request");
+    return;
+  }
+  const filePath = store.getUploadPath(fileName);
+  if (!filePath) {
+    sendText(res, 403, "Forbidden");
+    return;
+  }
+  fs.readFile(filePath, (error, data) => {
+    if (error) {
+      sendText(res, 404, "Not found");
+      return;
+    }
+    sendCors(res, 200, {
+      "content-type": getContentType(filePath),
+      "cache-control": "public, max-age=31536000, immutable",
+    });
+    res.end(data);
+  });
+}
+
 function handleUpgrade(req, socket) {
   const base = `${tlsOptions ? "https" : "http"}://${req.headers.host || "localhost"}`;
   const url = new URL(req.url, base);
@@ -155,6 +245,7 @@ function handleUpgrade(req, socket) {
     ip: cleanIp(req.socket.remoteAddress),
     userId: "",
     isAdmin: false,
+    chatRoomId: "", // 현재 보고 있는 채팅방(입력중 표시 대상 판별용)
   };
 
   clients.set(client.id, client);
@@ -245,6 +336,7 @@ function handleMessage(client, message) {
   if (handleAuthMessage(client, message)) return;
   if (handleAdminMessage(client, message)) return;
   if (handleChannelMessage(client, message)) return;
+  if (handleChatMessage(client, message)) return;
 
   if (message.type === "set-name") {
     client.name = cleanName(message.name);
@@ -803,6 +895,112 @@ function forceLeaveChannelRooms(client, channelId) {
   }
 }
 
+// ===== 채팅 메시지 =====
+const CHAT_TEXT_MAX = 4000;
+const CHAT_FILES_MAX = 10;
+
+function handleChatMessage(client, message) {
+  if (typeof message.type !== "string" || !message.type.startsWith("chat:")) return false;
+  if (!client.userId) {
+    send(client, { type: "chat-error", message: "로그인이 필요합니다." });
+    return true;
+  }
+
+  switch (message.type) {
+    case "chat:open": {
+      const ctx = resolveChatRoom(client, message.roomId);
+      if (!ctx) return true;
+      client.chatRoomId = ctx.room.id;
+      send(client, {
+        type: "chat:history",
+        roomId: ctx.room.id,
+        messages: store.getMessages(ctx.room.id),
+      });
+      return true;
+    }
+    case "chat:close": {
+      client.chatRoomId = "";
+      return true;
+    }
+    case "chat:send": {
+      const ctx = resolveChatRoom(client, message.roomId);
+      if (!ctx) return true;
+      const text = String(message.text || "").slice(0, CHAT_TEXT_MAX).replace(/\s+$/, "");
+      const files = cleanChatFiles(message.files);
+      if (!text && !files.length) {
+        send(client, { type: "chat-error", message: "빈 메시지는 보낼 수 없습니다." });
+        return true;
+      }
+      const user = store.findById(client.userId);
+      const msg = {
+        id: crypto.randomBytes(8).toString("hex"),
+        roomId: ctx.room.id,
+        userId: client.userId,
+        name: user ? user.displayName : client.name,
+        code: user ? user.code : "",
+        text,
+        files,
+        at: Date.now(),
+      };
+      store.addMessage(ctx.room.id, msg);
+      broadcastChat(ctx.channel, { type: "chat:message", message: msg });
+      return true;
+    }
+    case "chat:typing": {
+      const ctx = resolveChatRoom(client, message.roomId);
+      if (!ctx) return true;
+      // 같은 방을 보고 있는 다른 사람에게만 입력중을 알린다.
+      for (const c of clients.values()) {
+        if (c.id === client.id || c.chatRoomId !== ctx.room.id) continue;
+        send(c, { type: "chat:typing", roomId: ctx.room.id, userId: client.userId, name: client.name });
+      }
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
+// roomId 로 채팅방과 채널을 찾고 멤버십을 확인한다. 실패 시 에러 전송 후 null.
+function resolveChatRoom(client, roomId) {
+  const found = store.findRoom(String(roomId || ""));
+  if (!found || found.room.type !== "chat") {
+    send(client, { type: "chat-error", message: "채팅방을 찾지 못했습니다." });
+    return null;
+  }
+  if (!store.isChannelMember(found.channel.id, client.userId, client.isAdmin)) {
+    send(client, { type: "chat-error", message: "채널 멤버만 이용할 수 있습니다." });
+    return null;
+  }
+  return found;
+}
+
+function cleanChatFiles(files) {
+  if (!Array.isArray(files)) return [];
+  const out = [];
+  for (const file of files.slice(0, CHAT_FILES_MAX)) {
+    const url = String(file?.url || "");
+    // 우리 업로드 엔드포인트가 발급한 경로만 허용한다.
+    if (!/^\/uploads\/[a-f0-9]{24}_[A-Za-z0-9._-]+$/.test(url)) continue;
+    out.push({
+      url,
+      name: String(file?.name || "file").slice(0, 200),
+      size: Number(file?.size) || 0,
+      mime: String(file?.mime || "").slice(0, 100),
+      kind: file?.kind === "image" ? "image" : "file",
+    });
+  }
+  return out;
+}
+
+// 채널의 온라인 멤버(관리자 포함) 전원에게 채팅 이벤트를 보낸다.
+function broadcastChat(channel, payload) {
+  for (const c of clients.values()) {
+    if (!c.userId) continue;
+    if (store.isChannelMember(channel.id, c.userId, c.isAdmin)) send(c, payload);
+  }
+}
+
 function cleanName(value) {
   return String(value || "Guest").trim().slice(0, 24) || "Guest";
 }
@@ -823,8 +1021,8 @@ function sendText(res, status, text) {
 function sendCors(res, status, headers = {}) {
   res.writeHead(status, {
     "access-control-allow-origin": "*",
-    "access-control-allow-methods": "GET, OPTIONS",
-    "access-control-allow-headers": "content-type",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-headers": "content-type, x-file-name, x-auth-token",
     ...headers,
   });
 }
@@ -839,6 +1037,22 @@ function getContentType(filePath) {
     ".svg": "image/svg+xml",
     ".png": "image/png",
     ".ico": "image/x-icon",
+    // 업로드 파일용
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".mov": "video/quicktime",
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".ogg": "audio/ogg",
+    ".m4a": "audio/mp4",
+    ".pdf": "application/pdf",
+    ".txt": "text/plain; charset=utf-8",
+    ".zip": "application/zip",
   }[ext] || "application/octet-stream";
 }
 

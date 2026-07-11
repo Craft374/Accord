@@ -9,6 +9,10 @@ const DATA_DIR = path.join(__dirname, "server-data");
 const USERS_FILE = path.join(DATA_DIR, "users.json");
 const SESSIONS_FILE = path.join(DATA_DIR, "sessions.json");
 const CHANNELS_FILE = path.join(DATA_DIR, "channels.json");
+const MESSAGES_DIR = path.join(DATA_DIR, "messages");
+const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
+const MAX_MESSAGES_PER_ROOM = 1000; // 방별 보관 메시지 상한(초과 시 오래된 것부터 정리)
+const UPLOAD_MAX_BYTES = 50 * 1024 * 1024; // 파일 업로드 최대 50MB
 
 const CODE_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"; // base36
 const INVITE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 혼동 문자 제외
@@ -477,6 +481,7 @@ function removeRoom(channelId, roomId) {
   if (!channel) return { error: "채널을 찾을 수 없습니다." };
   channel.rooms = channel.rooms.filter((r) => r.id !== roomId);
   persistChannels();
+  deleteRoomMessages(roomId); // 방 삭제 시 저장된 채팅도 정리
   return { channel };
 }
 
@@ -499,6 +504,8 @@ function renameChannel(channelId, name) {
 }
 
 function deleteChannel(channelId) {
+  const channel = getChannel(channelId);
+  if (channel) for (const room of channel.rooms) deleteRoomMessages(room.id);
   const before = channelsDb.channels.length;
   channelsDb.channels = channelsDb.channels.filter((c) => c.id !== channelId);
   if (channelsDb.channels.length !== before) persistChannels();
@@ -526,6 +533,82 @@ function channelSummary(channel) {
     rooms: channel.rooms.map((r) => ({ id: r.id, name: r.name, type: r.type })),
     createdAt: channel.createdAt,
   };
+}
+
+// ===== 채팅 메시지 =====
+// 방 단위로 server-data/messages/<roomId>.json 에 저장한다(방마다 파일 1개).
+function isSafeRoomId(roomId) {
+  return /^[a-f0-9]{4,64}$/.test(String(roomId || ""));
+}
+
+function messagesFile(roomId) {
+  return path.join(MESSAGES_DIR, `${roomId}.json`);
+}
+
+function getMessages(roomId, limit = MAX_MESSAGES_PER_ROOM) {
+  if (!isSafeRoomId(roomId)) return [];
+  const list = readJson(messagesFile(roomId), []);
+  if (!Array.isArray(list)) return [];
+  return limit && list.length > limit ? list.slice(-limit) : list;
+}
+
+function addMessage(roomId, message) {
+  if (!isSafeRoomId(roomId)) return { error: "잘못된 방입니다." };
+  fs.mkdirSync(MESSAGES_DIR, { recursive: true });
+  const list = readJson(messagesFile(roomId), []);
+  const messages = Array.isArray(list) ? list : [];
+  messages.push(message);
+  if (messages.length > MAX_MESSAGES_PER_ROOM) {
+    messages.splice(0, messages.length - MAX_MESSAGES_PER_ROOM);
+  }
+  writeJsonAtomic(messagesFile(roomId), messages);
+  return { message };
+}
+
+function deleteRoomMessages(roomId) {
+  if (!isSafeRoomId(roomId)) return;
+  try {
+    fs.unlinkSync(messagesFile(roomId));
+  } catch {
+    /* 파일 없으면 무시 */
+  }
+}
+
+// ===== 파일 업로드 =====
+function sanitizeUploadName(name) {
+  let base = String(name || "file").split(/[/\\]/).pop() || "file";
+  base = base.replace(/[^A-Za-z0-9._-]/g, "_").replace(/^_+/, "");
+  if (base.length > 60) {
+    const dot = base.lastIndexOf(".");
+    const ext = dot > 0 ? base.slice(dot) : "";
+    base = base.slice(0, Math.max(1, 60 - ext.length)) + ext;
+  }
+  return base || "file";
+}
+
+function saveUpload({ buffer, name, mime }) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+  const id = crypto.randomBytes(12).toString("hex"); // 24 hex chars
+  const safe = sanitizeUploadName(name);
+  const fileName = `${id}_${safe}`;
+  fs.writeFileSync(path.join(UPLOADS_DIR, fileName), buffer);
+  return {
+    id,
+    fileName,
+    name: String(name || safe).slice(0, 200),
+    size: buffer.length,
+    mime: String(mime || "application/octet-stream").slice(0, 100),
+  };
+}
+
+// 업로드 파일명을 검증해 안전한 절대경로를 돌려준다(경로 탈출 차단).
+function getUploadPath(fileName) {
+  const name = String(fileName || "");
+  if (!/^[a-f0-9]{24}_[A-Za-z0-9._-]+$/.test(name)) return null;
+  const filePath = path.normalize(path.join(UPLOADS_DIR, name));
+  const rel = path.relative(UPLOADS_DIR, filePath);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) return null;
+  return filePath;
 }
 
 module.exports = {
@@ -567,4 +650,11 @@ module.exports = {
   deleteChannel,
   findRoom,
   channelSummary,
+  // 채팅 · 업로드
+  getMessages,
+  addMessage,
+  deleteRoomMessages,
+  saveUpload,
+  getUploadPath,
+  UPLOAD_MAX_BYTES,
 };
