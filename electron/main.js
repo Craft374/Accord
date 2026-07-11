@@ -1,4 +1,4 @@
-const { app, BrowserWindow, desktopCapturer, ipcMain, session, Menu, MessageChannelMain, powerSaveBlocker, screen: electronScreen } = require("electron");
+const { app, BrowserWindow, desktopCapturer, ipcMain, session, Menu, MessageChannelMain, powerSaveBlocker, screen: electronScreen, net } = require("electron");
 const { spawn, execFile } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -238,8 +238,19 @@ function setupNavigation() {
   ipcMain.handle("load-voice-url", async (event, rawUrl) => {
     const target = normalizeServerUrl(rawUrl);
     if (!target || !mainWindow) return { ok: false, error: "서버 주소가 올바르지 않습니다." };
-    await mainWindow.loadURL(target);
-    return { ok: true };
+    // 서버가 살아 있는지 먼저 확인한다. 죽어 있으면 런처에 그대로 머문다(앱 재시작 불필요).
+    const reachable = await checkServerReachable(target);
+    if (!reachable) {
+      return { ok: false, error: "서버에 연결할 수 없습니다. 서버가 켜져 있는지 확인해 주세요." };
+    }
+    try {
+      await mainWindow.loadURL(target);
+      return { ok: true };
+    } catch (error) {
+      // 로딩이 중간에 실패하면 런처로 되돌려 앱을 껐다 켜지 않아도 되게 한다.
+      try { await mainWindow.loadFile(path.join(__dirname, "../shell/index.html")); } catch {}
+      return { ok: false, error: "서버 연결에 실패했습니다. 다시 시도해 주세요." };
+    }
   });
 
   ipcMain.handle("back-to-launcher", async () => {
@@ -685,6 +696,39 @@ function normalizeServerUrl(value) {
   } catch {
     return "";
   }
+}
+
+function checkServerReachable(target) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      resolve(ok);
+    };
+    const healthUrl = `${String(target).replace(/\/$/, "")}/health`;
+    try {
+      const request = net.request({ method: "GET", url: healthUrl });
+      const timer = setTimeout(() => {
+        try { request.abort(); } catch {}
+        finish(false);
+      }, 4000);
+      request.on("response", (response) => {
+        clearTimeout(timer);
+        finish(response.statusCode >= 200 && response.statusCode < 500);
+        response.on("data", () => {});
+        response.on("end", () => {});
+        response.on("error", () => {});
+      });
+      request.on("error", () => {
+        clearTimeout(timer);
+        finish(false);
+      });
+      request.end();
+    } catch {
+      finish(false);
+    }
+  });
 }
 
 function safeHost(rawUrl) {

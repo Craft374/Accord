@@ -97,6 +97,8 @@ const state = {
   },
   adminUsers: [],
   adminOnline: [],
+  adminCodeTarget: "",
+  codeChangePending: false,
 };
 
 const dom = {
@@ -237,6 +239,13 @@ const dom = {
   adminModal: document.querySelector("#adminModal"),
   adminCloseButton: document.querySelector("#adminCloseButton"),
   adminUiToggle: document.querySelector("#adminUiToggle"),
+  adminUiToggleRow: document.querySelector("#adminUiToggleRow"),
+  codePromptModal: document.querySelector("#codePromptModal"),
+  codePromptCancel: document.querySelector("#codePromptCancel"),
+  codePromptSubtitle: document.querySelector("#codePromptSubtitle"),
+  codePromptInput: document.querySelector("#codePromptInput"),
+  codePromptMessage: document.querySelector("#codePromptMessage"),
+  codePromptConfirm: document.querySelector("#codePromptConfirm"),
   adminSearchInput: document.querySelector("#adminSearchInput"),
   adminRefreshButton: document.querySelector("#adminRefreshButton"),
   adminUserList: document.querySelector("#adminUserList"),
@@ -603,6 +612,18 @@ function bindAuthEvents() {
     applyAdminVisibility();
   });
   dom.adminUserList?.addEventListener("click", handleAdminListClick);
+
+  dom.codePromptCancel?.addEventListener("click", closeCodePrompt);
+  dom.codePromptConfirm?.addEventListener("click", confirmCodePrompt);
+  dom.codePromptModal?.addEventListener("click", (event) => {
+    if (event.target === dom.codePromptModal) closeCodePrompt();
+  });
+  dom.codePromptInput?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      confirmCodePrompt();
+    }
+  });
 }
 
 function attemptAuthResume() {
@@ -630,10 +651,25 @@ function handleAuthSocketMessage(message) {
     case "admin-users":
       state.adminUsers = message.users || [];
       state.adminOnline = message.online || [];
+      if (state.codeChangePending) closeCodePrompt();
       renderAdminUsers();
       return true;
     case "admin-error":
-      setAdminMessage(message.message || "관리자 작업에 실패했습니다.");
+      if (state.codeChangePending) {
+        // 코드 변경 모달이 열려 있으면 그 안에 오류를 표시하고 유지한다.
+        state.codeChangePending = false;
+        if (dom.codePromptMessage) {
+          dom.codePromptMessage.textContent = message.message || "코드를 변경하지 못했습니다.";
+          dom.codePromptMessage.classList.remove("ok");
+        }
+      } else {
+        setAdminMessage(message.message || "관리자 작업에 실패했습니다.");
+      }
+      return true;
+    case "account-updated":
+      // 관리자가 내 권한/코드를 바꾼 경우 즉시 반영(재접속 불필요).
+      state.auth.user = message.user;
+      applyAuthedUser(message.user);
       return true;
     default:
       return false;
@@ -703,7 +739,10 @@ function applyAdminVisibility() {
   const show = isAdmin && state.auth.adminUiEnabled;
   if (dom.adminPanelButton) dom.adminPanelButton.hidden = !show;
   if (dom.adminUiToggle) dom.adminUiToggle.checked = state.auth.adminUiEnabled;
-  if (!show && dom.adminModal && !dom.adminModal.hidden && !isAdmin) toggleAdminModal(false);
+  // 관리자 UI 토글은 설정창(항상 접근 가능)에 있고, 관리자에게만 보인다.
+  if (dom.adminUiToggleRow) dom.adminUiToggleRow.hidden = !isAdmin;
+  // 관리자가 아니게 되면 열려 있던 관리자 창을 닫는다.
+  if (!isAdmin && dom.adminModal && !dom.adminModal.hidden) toggleAdminModal(false);
 }
 
 function submitLogin(event) {
@@ -839,11 +878,48 @@ function handleAdminListClick(event) {
   if (action === "toggle-admin") {
     sendSocket({ type: "admin:set-admin", userId, value: button.dataset.value === "1" });
   } else if (action === "set-code") {
-    const current = button.dataset.code || "";
-    const next = window.prompt("새 고유 코드 (영문/숫자 4자)", current);
-    if (next == null) return;
-    sendSocket({ type: "admin:set-code", userId, code: next.trim() });
+    const user = (state.adminUsers || []).find((u) => u.id === userId);
+    openCodePrompt(userId, button.dataset.code || "", user);
   }
+}
+
+function openCodePrompt(userId, currentCode, user) {
+  if (!dom.codePromptModal) return;
+  state.adminCodeTarget = userId;
+  state.codeChangePending = false;
+  const label = user ? `${user.displayName || user.username} (@${user.username})` : "";
+  if (dom.codePromptSubtitle) dom.codePromptSubtitle.textContent = `${label} · 현재 #${currentCode}`;
+  if (dom.codePromptInput) dom.codePromptInput.value = currentCode;
+  if (dom.codePromptMessage) {
+    dom.codePromptMessage.textContent = "";
+    dom.codePromptMessage.classList.remove("ok");
+  }
+  dom.codePromptModal.hidden = false;
+  dom.codePromptInput?.focus();
+  dom.codePromptInput?.select();
+}
+
+function closeCodePrompt() {
+  if (dom.codePromptModal) dom.codePromptModal.hidden = true;
+  state.adminCodeTarget = "";
+  state.codeChangePending = false;
+}
+
+function confirmCodePrompt() {
+  const code = (dom.codePromptInput?.value || "").trim().toUpperCase();
+  if (!/^[0-9A-Z]{4}$/.test(code)) {
+    if (dom.codePromptMessage) {
+      dom.codePromptMessage.textContent = "코드는 영문/숫자 4자여야 합니다.";
+      dom.codePromptMessage.classList.remove("ok");
+    }
+    return;
+  }
+  state.codeChangePending = true;
+  if (dom.codePromptMessage) {
+    dom.codePromptMessage.textContent = "변경 중...";
+    dom.codePromptMessage.classList.add("ok");
+  }
+  sendSocket({ type: "admin:set-code", userId: state.adminCodeTarget, code });
 }
 
 function renderAdminUsers() {

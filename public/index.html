@@ -358,6 +358,10 @@
               </div>
               <button class="secondary" id="logoutButton" type="button">로그아웃</button>
             </div>
+            <label class="switch admin-ui-toggle-row" id="adminUiToggleRow" hidden>
+              <input id="adminUiToggle" type="checkbox" checked />
+              <span>관리자 전용 UI 표시 (상단 관리자 버튼)</span>
+            </label>
             <div class="settings-grid">
               <label class="field">
                 <span>닉네임</span>
@@ -402,10 +406,6 @@
         <header class="modal-head">
           <h2 id="adminTitle">관리자 · 유저 관리</h2>
           <div class="admin-head-actions">
-            <label class="switch">
-              <input id="adminUiToggle" type="checkbox" checked />
-              <span>관리자 UI 표시</span>
-            </label>
             <button class="ghost small" id="adminCloseButton" type="button">닫기</button>
           </div>
         </header>
@@ -416,6 +416,26 @@
           </div>
           <p class="admin-message" id="adminMessage" aria-live="polite"></p>
           <div class="admin-user-list" id="adminUserList"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-backdrop" id="codePromptModal" hidden>
+      <div class="modal code-prompt-modal" role="dialog" aria-modal="true" aria-labelledby="codePromptTitle">
+        <header class="modal-head">
+          <h2 id="codePromptTitle">고유 코드 변경</h2>
+          <button class="ghost small" id="codePromptCancel" type="button">닫기</button>
+        </header>
+        <div class="modal-body">
+          <p class="modal-hint" id="codePromptSubtitle"></p>
+          <label class="field">
+            <span>새 코드 (영문/숫자 4자)</span>
+            <input id="codePromptInput" maxlength="4" autocomplete="off" spellcheck="false" />
+          </label>
+          <p class="account-message" id="codePromptMessage" aria-live="polite"></p>
+          <div class="modal-actions">
+            <button class="primary" id="codePromptConfirm" type="button">변경</button>
+          </div>
         </div>
       </div>
     </div>

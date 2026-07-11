@@ -397,7 +397,7 @@ function handleAdminMessage(client, message) {
         send(client, { type: "admin-error", message: result.error });
         return true;
       }
-      applyAdminFlagToOnline(message.userId, Boolean(message.value));
+      notifyUserUpdate(message.userId);
       sendAdminUsers(client);
       return true;
     }
@@ -407,6 +407,7 @@ function handleAdminMessage(client, message) {
         send(client, { type: "admin-error", message: result.error });
         return true;
       }
+      notifyUserUpdate(message.userId);
       sendAdminUsers(client);
       return true;
     }
@@ -425,8 +426,18 @@ function onlineUserIds() {
   return [...ids];
 }
 
-function applyAdminFlagToOnline(userId, value) {
-  for (const c of clients.values()) if (c.userId === userId) c.isAdmin = value;
+// 관리자 지정/코드 변경 등으로 계정이 바뀌면, 접속 중인 해당 유저 클라이언트에 즉시 반영한다.
+function notifyUserUpdate(userId) {
+  const user = store.findById(userId);
+  if (!user) return;
+  const payload = { type: "account-updated", user: store.sanitizeUser(user) };
+  for (const c of clients.values()) {
+    if (c.userId !== userId) continue;
+    c.name = user.displayName;
+    c.isAdmin = Boolean(user.isAdmin);
+    send(c, payload);
+  }
+  broadcastRooms();
 }
 
 function seedAdminAccount() {
