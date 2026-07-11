@@ -152,6 +152,15 @@ const dom = {
   channelLeaveButton: document.querySelector("#channelLeaveButton"),
   channelDeleteButton: document.querySelector("#channelDeleteButton"),
   channelMenuMessage: document.querySelector("#channelMenuMessage"),
+  channelIconRow: document.querySelector("#channelIconRow"),
+  channelIconPreview: document.querySelector("#channelIconPreview"),
+  channelIconInput: document.querySelector("#channelIconInput"),
+  cropModal: document.querySelector("#cropModal"),
+  cropCanvas: document.querySelector("#cropCanvas"),
+  cropCancel: document.querySelector("#cropCancel"),
+  cropApply: document.querySelector("#cropApply"),
+  cropZoom: document.querySelector("#cropZoom"),
+  cropZoomValue: document.querySelector("#cropZoomValue"),
   currentRoomName: document.querySelector("#currentRoomName"),
   currentRoomMeta: document.querySelector("#currentRoomMeta"),
   leaveButton: document.querySelector("#leaveButton"),
@@ -580,33 +589,29 @@ function bindAuthEvents() {
   dom.authTabRegister?.addEventListener("click", () => setAuthTab("register"));
   dom.loginForm?.addEventListener("submit", submitLogin);
   dom.registerForm?.addEventListener("submit", submitRegister);
-  dom.registerAvatar?.addEventListener("change", async () => {
+  dom.registerAvatar?.addEventListener("change", () => {
     const file = dom.registerAvatar.files?.[0];
     if (!file) return;
-    try {
-      const dataUrl = await fileToDataUrl(file, 300000);
+    openCropModal(file, (dataUrl) => {
       state.auth.pendingRegisterAvatar = dataUrl;
       setAvatar(dom.registerAvatarPreview, { avatar: dataUrl, displayName: dom.registerDisplayName.value });
-    } catch (error) {
-      setAuthMessage(error.message || "이미지를 불러오지 못했습니다.");
-    }
+    });
+    dom.registerAvatar.value = "";
   });
 
   dom.profileChipButton?.addEventListener("click", () => toggleSettingsModal(true));
   dom.saveProfileButton?.addEventListener("click", saveProfile);
   dom.changePasswordButton?.addEventListener("click", changePassword);
   dom.logoutButton?.addEventListener("click", logout);
-  dom.accountAvatarInput?.addEventListener("change", async () => {
+  dom.accountAvatarInput?.addEventListener("change", () => {
     const file = dom.accountAvatarInput.files?.[0];
     if (!file) return;
-    try {
-      const dataUrl = await fileToDataUrl(file, 300000);
+    openCropModal(file, (dataUrl) => {
       state.auth.pendingProfileAvatar = dataUrl;
       setAvatar(dom.accountAvatar, { avatar: dataUrl, displayName: dom.accountDisplayNameInput.value });
       setAccountMessage("저장을 누르면 프로필 이미지가 적용됩니다.", true);
-    } catch (error) {
-      setAccountMessage(error.message || "이미지를 불러오지 못했습니다.");
-    }
+    });
+    dom.accountAvatarInput.value = "";
   });
 
   dom.adminPanelButton?.addEventListener("click", () => toggleAdminModal(true));
@@ -1066,6 +1071,101 @@ function fileToDataUrl(file, maxBytes) {
     reader.onerror = () => reject(new Error("이미지를 읽지 못했습니다."));
     reader.readAsDataURL(file);
   });
+}
+
+// ===== 이미지 크롭(정사각형) — 프로필/채널 아이콘 공용 =====
+const cropState = { img: null, scale: 1, fitScale: 1, offX: 0, offY: 0, dragging: false, lastX: 0, lastY: 0, onDone: null };
+const CROP_SIZE = 256;
+
+function bindCropEvents() {
+  const c = dom.cropCanvas;
+  if (!c) return;
+  c.addEventListener("pointerdown", (e) => {
+    cropState.dragging = true;
+    cropState.lastX = e.clientX;
+    cropState.lastY = e.clientY;
+    c.setPointerCapture?.(e.pointerId);
+  });
+  c.addEventListener("pointermove", (e) => {
+    if (!cropState.dragging) return;
+    const rect = c.getBoundingClientRect();
+    const sx = CROP_SIZE / rect.width;
+    cropState.offX += (e.clientX - cropState.lastX) * sx;
+    cropState.offY += (e.clientY - cropState.lastY) * sx;
+    cropState.lastX = e.clientX;
+    cropState.lastY = e.clientY;
+    clampCrop();
+    renderCrop();
+  });
+  const stop = () => { cropState.dragging = false; };
+  c.addEventListener("pointerup", stop);
+  c.addEventListener("pointercancel", stop);
+  dom.cropZoom?.addEventListener("input", () => {
+    const zoom = Number(dom.cropZoom.value || 100) / 100;
+    if (dom.cropZoomValue) dom.cropZoomValue.textContent = `${zoom.toFixed(1)}x`;
+    const prev = cropState.scale;
+    cropState.scale = cropState.fitScale * zoom;
+    // 중심 기준으로 확대되도록 오프셋 보정
+    const k = cropState.scale / prev;
+    cropState.offX = CROP_SIZE / 2 - (CROP_SIZE / 2 - cropState.offX) * k;
+    cropState.offY = CROP_SIZE / 2 - (CROP_SIZE / 2 - cropState.offY) * k;
+    clampCrop();
+    renderCrop();
+  });
+  dom.cropCancel?.addEventListener("click", () => { dom.cropModal.hidden = true; cropState.onDone = null; });
+  dom.cropModal?.addEventListener("click", (e) => { if (e.target === dom.cropModal) { dom.cropModal.hidden = true; cropState.onDone = null; } });
+  dom.cropApply?.addEventListener("click", () => {
+    const url = dom.cropCanvas.toDataURL("image/jpeg", 0.85);
+    const done = cropState.onDone;
+    dom.cropModal.hidden = true;
+    cropState.onDone = null;
+    if (done) done(url);
+  });
+}
+
+function openCropModal(file, onDone) {
+  if (!file || !dom.cropModal) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const img = new Image();
+    img.onload = () => {
+      cropState.img = img;
+      cropState.fitScale = CROP_SIZE / Math.min(img.width, img.height);
+      cropState.scale = cropState.fitScale;
+      cropState.offX = (CROP_SIZE - img.width * cropState.scale) / 2;
+      cropState.offY = (CROP_SIZE - img.height * cropState.scale) / 2;
+      cropState.onDone = onDone;
+      if (dom.cropZoom) dom.cropZoom.value = "100";
+      if (dom.cropZoomValue) dom.cropZoomValue.textContent = "1.0x";
+      dom.cropModal.hidden = false;
+      renderCrop();
+    };
+    img.onerror = () => setMessage("이미지를 불러오지 못했습니다.");
+    img.src = String(reader.result || "");
+  };
+  reader.onerror = () => setMessage("이미지를 읽지 못했습니다.");
+  reader.readAsDataURL(file);
+}
+
+function clampCrop() {
+  if (!cropState.img) return;
+  const w = cropState.img.width * cropState.scale;
+  const h = cropState.img.height * cropState.scale;
+  cropState.offX = Math.min(0, Math.max(CROP_SIZE - w, cropState.offX));
+  cropState.offY = Math.min(0, Math.max(CROP_SIZE - h, cropState.offY));
+}
+
+function renderCrop() {
+  const ctx = dom.cropCanvas?.getContext("2d");
+  if (!ctx || !cropState.img) return;
+  ctx.clearRect(0, 0, CROP_SIZE, CROP_SIZE);
+  ctx.drawImage(
+    cropState.img,
+    cropState.offX,
+    cropState.offY,
+    cropState.img.width * cropState.scale,
+    cropState.img.height * cropState.scale,
+  );
 }
 
 function bindClientDiagnostics() {
@@ -5629,7 +5729,14 @@ function currentChannel() {
 
 function isChannelOwner(channel) {
   if (!channel) return false;
-  return channel.ownerId === state.auth.user?.id || Boolean(state.auth.user?.isAdmin);
+  if (state.auth.user?.isAdmin) return true;
+  const uid = state.auth.user?.id;
+  return channel.ownerId === uid || (channel.managerIds || []).includes(uid);
+}
+
+function isChannelCreator(channel) {
+  if (!channel) return false;
+  return Boolean(state.auth.user?.isAdmin) || channel.ownerId === state.auth.user?.id;
 }
 
 function reconcileCurrentChannel(preferId) {
@@ -5665,8 +5772,13 @@ function renderChannelRail() {
     const btn = document.createElement("button");
     btn.className = "channel-icon" + (channel.id === state.currentChannelId ? " active" : "");
     btn.dataset.channelId = channel.id;
-    btn.title = channel.name;
-    btn.textContent = channelInitials(channel.name);
+    btn.title = `${channel.name} (우클릭: 채널 설정)`;
+    if (channel.icon) {
+      btn.classList.add("has-icon");
+      btn.style.backgroundImage = `url("${channel.icon}")`;
+    } else {
+      btn.textContent = channelInitials(channel.name);
+    }
     dom.channelRail.append(btn);
   }
   const add = document.createElement("button");
@@ -5777,6 +5889,8 @@ function renderMemberList() {
   dom.memberList.append(head);
 
   const owner = isChannelOwner(channel);
+  const creator = isChannelCreator(channel);
+  const myId = state.auth.user?.id;
   for (const member of members) {
     const isOnline = online.has(member.id);
     const row = document.createElement("div");
@@ -5793,12 +5907,10 @@ function renderMemberList() {
     info.className = "member-info";
     const name = document.createElement("b");
     name.textContent = member.displayName;
-    if (member.id === channel.ownerId) {
-      const badge = document.createElement("span");
-      badge.className = "owner-badge";
-      badge.textContent = "대표";
-      name.append(" ");
-      name.append(badge);
+    if (member.isCreator) {
+      name.append(" ", makeBadge("창설자"));
+    } else if (member.isManager) {
+      name.append(" ", makeBadge("대표"));
     }
     const code = document.createElement("em");
     code.textContent = `#${member.code}`;
@@ -5806,25 +5918,63 @@ function renderMemberList() {
 
     row.append(avatar, info);
 
-    if (owner && member.id !== channel.ownerId && member.id !== state.auth.user?.id) {
+    const actions = document.createElement("div");
+    actions.className = "member-actions";
+    // 창설자(또는 관리자)만 공동대표 지정/해제
+    if (creator && !member.isCreator) {
+      const mgr = document.createElement("button");
+      mgr.className = "member-action-btn";
+      mgr.dataset.managerUserId = member.id;
+      mgr.dataset.managerValue = member.isManager ? "0" : "1";
+      mgr.textContent = member.isManager ? "대표 해제" : "대표 지정";
+      actions.append(mgr);
+    }
+    if (owner && !member.isCreator && member.id !== myId) {
       const kick = document.createElement("button");
-      kick.className = "member-kick";
+      kick.className = "member-action-btn kick";
       kick.dataset.kickUserId = member.id;
       kick.title = "채널에서 내보내기";
       kick.textContent = "내보내기";
-      row.append(kick);
+      actions.append(kick);
     }
+    if (actions.childElementCount) row.append(actions);
     dom.memberList.append(row);
   }
 }
 
+function makeBadge(text) {
+  const badge = document.createElement("span");
+  badge.className = "owner-badge";
+  badge.textContent = text;
+  return badge;
+}
+
 // ===== 채널 이벤트 · 모달 =====
 function bindChannelEvents() {
+  bindCropEvents();
+  dom.channelIconInput?.addEventListener("change", () => {
+    const file = dom.channelIconInput.files?.[0];
+    const channel = currentChannel();
+    if (!file || !channel) return;
+    openCropModal(file, (dataUrl) => {
+      sendSocket({ type: "channel:set-icon", channelId: channel.id, icon: dataUrl });
+      setChannelMenuMessage("아이콘을 저장했습니다.", true);
+    });
+    dom.channelIconInput.value = "";
+  });
   dom.channelRail?.addEventListener("click", (event) => {
     const add = event.target?.closest?.("[data-channel-add]");
     if (add) { openChannelModal(); return; }
     const icon = event.target?.closest?.("[data-channel-id]");
     if (icon) selectChannel(icon.dataset.channelId);
+  });
+  // 우클릭으로 채널 설정 열기(#6)
+  dom.channelRail?.addEventListener("contextmenu", (event) => {
+    const icon = event.target?.closest?.("[data-channel-id]");
+    if (!icon) return;
+    event.preventDefault();
+    selectChannel(icon.dataset.channelId);
+    openChannelMenu();
   });
 
   dom.roomList?.addEventListener("click", (event) => {
@@ -5843,10 +5993,15 @@ function bindChannelEvents() {
   });
 
   dom.memberList?.addEventListener("click", (event) => {
-    const kick = event.target?.closest?.("[data-kick-user-id]");
-    if (!kick) return;
     const channel = currentChannel();
     if (!channel) return;
+    const mgr = event.target?.closest?.("[data-manager-user-id]");
+    if (mgr) {
+      sendSocket({ type: "channel:set-manager", channelId: channel.id, userId: mgr.dataset.managerUserId, value: mgr.dataset.managerValue === "1" });
+      return;
+    }
+    const kick = event.target?.closest?.("[data-kick-user-id]");
+    if (!kick) return;
     if (window.confirm("이 멤버를 채널에서 내보낼까요?")) {
       sendSocket({ type: "channel:kick", channelId: channel.id, userId: kick.dataset.kickUserId });
     }
@@ -5982,13 +6137,16 @@ function setRoomModalMessage(text, ok = false) {
 function openChannelMenu() {
   const channel = currentChannel();
   if (!channel || !dom.channelMenuModal) return;
-  const owner = isChannelOwner(channel);
+  const owner = isChannelOwner(channel); // 대표자(공동대표 포함)
+  const creator = isChannelCreator(channel); // 창설자만
   dom.channelInviteCode.textContent = channel.inviteCode || "------";
   dom.channelRenameInput.value = channel.name || "";
-  // 대표자/관리자만 이름변경·삭제 가능
   if (dom.channelRenameInput) dom.channelRenameInput.disabled = !owner;
   if (dom.channelRenameButton) dom.channelRenameButton.hidden = !owner;
-  if (dom.channelDeleteButton) dom.channelDeleteButton.hidden = !owner;
+  if (dom.channelDeleteButton) dom.channelDeleteButton.hidden = !creator; // 삭제는 창설자만
+  // 채널 아이콘: 대표자만 변경 가능
+  if (dom.channelIconRow) dom.channelIconRow.hidden = !owner;
+  setAvatar(dom.channelIconPreview, { avatar: channel.icon, displayName: channel.name });
   setChannelMenuMessage("");
   dom.channelMenuModal.hidden = false;
 }

@@ -150,6 +150,8 @@ function handleUpgrade(req, socket) {
     socket,
     buffer: Buffer.alloc(0),
     closed: false,
+    fragments: null,
+    fragmentOpcode: 0,
     ip: cleanIp(req.socket.remoteAddress),
     userId: "",
     isAdmin: false,
@@ -204,15 +206,35 @@ function readFrames(client, chunk) {
       payload = Buffer.from(payload.map((byte, index) => byte ^ mask[index % 4]));
     }
     client.buffer = client.buffer.slice(frameLength);
+    const fin = (first & 0x80) === 0x80;
 
     if (opcode === 8) {
       closeClient(client);
       return;
     }
-    if (opcode !== 1) continue;
+    if (opcode === 9 || opcode === 10) continue; // ping/pong 무시
+
+    // 큰 메시지(예: 이미지 data URL)는 브라우저가 여러 프레임으로 쪼개 보낸다.
+    // 연속(continuation) 프레임을 이어붙여 완성된 뒤에 처리한다.
+    if (opcode === 0) {
+      if (!Array.isArray(client.fragments)) continue; // 시작 없는 연속 프레임은 버린다.
+      client.fragments.push(payload);
+    } else if (opcode === 1 || opcode === 2) {
+      client.fragments = [payload];
+      client.fragmentOpcode = opcode;
+    } else {
+      continue;
+    }
+
+    if (!fin) continue;
+
+    const full = client.fragments.length === 1 ? client.fragments[0] : Buffer.concat(client.fragments);
+    const op = client.fragmentOpcode;
+    client.fragments = null;
+    if (op !== 1) continue; // 텍스트 메시지만 처리
 
     try {
-      handleMessage(client, JSON.parse(payload.toString("utf8")));
+      handleMessage(client, JSON.parse(full.toString("utf8")));
     } catch {
       send(client, { type: "error", message: "잘못된 메시지입니다." });
     }
@@ -686,6 +708,20 @@ function handleChannelMessage(client, message) {
         notifyChannelMembers(message.channelId);
         return true;
       });
+    case "channel:set-manager":
+      return creatorAction(client, message.channelId, () => {
+        const r = store.setManager(message.channelId, message.userId, Boolean(message.value));
+        if (r.error) return channelError(client, r.error);
+        notifyChannelMembers(message.channelId);
+        return true;
+      });
+    case "channel:set-icon":
+      return ownerAction(client, message.channelId, () => {
+        const r = store.setChannelIcon(message.channelId, message.icon);
+        if (r.error) return channelError(client, r.error);
+        notifyChannelMembers(message.channelId);
+        return true;
+      });
     default:
       return false;
   }
@@ -703,19 +739,30 @@ function ownerAction(client, channelId, fn) {
   return fn();
 }
 
+function creatorAction(client, channelId, fn) {
+  if (!store.isChannelCreator(channelId, client.userId, client.isAdmin)) {
+    return channelError(client, "채널 창설자(또는 관리자)만 할 수 있습니다.");
+  }
+  return fn();
+}
+
 function sendChannels(client) {
   const channels = store.listChannelsForUser(client.userId, client.isAdmin).map(expandChannel);
   send(client, { type: "channels", channels, me: client.userId, isAdmin: Boolean(client.isAdmin) });
 }
 
 function expandChannel(summary) {
+  const managerSet = new Set(summary.managerIds || []);
   return {
     ...summary,
     members: summary.memberIds.map((id) => {
       const u = store.findById(id);
-      return u
+      const base = u
         ? { id: u.id, displayName: u.displayName, code: u.code, avatar: u.avatar, isAdmin: Boolean(u.isAdmin) }
         : { id, displayName: "(삭제된 계정)", code: "----", avatar: "", isAdmin: false };
+      base.isManager = managerSet.has(id);
+      base.isCreator = id === summary.ownerId;
+      return base;
     }),
   };
 }

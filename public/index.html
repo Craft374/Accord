@@ -499,6 +499,13 @@
             <strong class="invite-code" id="channelInviteCode">------</strong>
             <button class="secondary" id="copyInviteButton" type="button">복사</button>
           </div>
+          <div class="channel-icon-row" id="channelIconRow">
+            <span class="channel-icon-preview" id="channelIconPreview" aria-hidden="true"></span>
+            <label class="field channel-icon-field">
+              <span>채널 아이콘</span>
+              <input id="channelIconInput" type="file" accept="image/*" />
+            </label>
+          </div>
           <label class="field" id="channelRenameField">
             <span>채널 이름 변경</span>
             <input id="channelRenameInput" autocomplete="off" maxlength="32" />
@@ -509,6 +516,28 @@
             <button class="danger" id="channelDeleteButton" type="button">채널 삭제</button>
           </div>
           <p class="account-message" id="channelMenuMessage" aria-live="polite"></p>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-backdrop" id="cropModal" hidden>
+      <div class="modal crop-modal" role="dialog" aria-modal="true" aria-labelledby="cropTitle">
+        <header class="modal-head">
+          <h2 id="cropTitle">이미지 자르기</h2>
+          <button class="ghost small" id="cropCancel" type="button">취소</button>
+        </header>
+        <div class="modal-body">
+          <p class="modal-hint">드래그로 위치, 슬라이더로 확대해서 정사각형 영역을 맞추세요.</p>
+          <div class="crop-stage">
+            <canvas id="cropCanvas" width="256" height="256"></canvas>
+          </div>
+          <label class="field">
+            <span>확대 <b id="cropZoomValue">1.0x</b></span>
+            <input id="cropZoom" type="range" min="100" max="300" step="5" value="100" />
+          </label>
+          <div class="modal-actions">
+            <button class="primary" id="cropApply" type="button">적용</button>
+          </div>
         </div>
       </div>
     </div>

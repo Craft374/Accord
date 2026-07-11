@@ -1,4 +1,4 @@
-const { app, BrowserWindow, desktopCapturer, ipcMain, session, Menu, MessageChannelMain, powerSaveBlocker, screen: electronScreen, net } = require("electron");
+const { app, BrowserWindow, desktopCapturer, ipcMain, session, Menu, Tray, MessageChannelMain, powerSaveBlocker, screen: electronScreen, net } = require("electron");
 const { spawn, execFile } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -54,6 +54,8 @@ function getCommandLineSwitches() {
 
 let mainWindow = null;
 let screenTestWindow = null;
+let tray = null;
+let isQuitting = false;
 let programAudioCapture = new Map();
 let programAudioPort = null;
 let screenSharePowerBlockerId = null;
@@ -76,20 +78,53 @@ app.whenReady().then(() => {
   setupDisplayMedia();
   setupNavigation();
   createWindow();
+  createTray();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    else showMainWindow();
   });
 });
 
+// 창을 닫아도(트레이로 최소화) 통화가 끊기지 않도록 앱을 종료하지 않는다.
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
+  // 트레이에 상주. 종료는 트레이 메뉴 또는 명시적 quit으로만.
 });
 
 app.on("before-quit", () => {
+  isQuitting = true;
   stopProgramAudioCapture();
   stopScreenSharePowerBlocker();
 });
+
+function createTray() {
+  if (tray) return;
+  try {
+    const icon = getWindowIcon();
+    tray = new Tray(icon || path.join(__dirname, "../assets/icon.png"));
+    tray.setToolTip("Accord");
+    const menu = Menu.buildFromTemplate([
+      { label: "Accord 열기", click: () => showMainWindow() },
+      { type: "separator" },
+      { label: "종료", click: () => { isQuitting = true; app.quit(); } },
+    ]);
+    tray.setContextMenu(menu);
+    tray.on("click", () => showMainWindow());
+    tray.on("double-click", () => showMainWindow());
+  } catch (error) {
+    // 트레이 생성 실패는 치명적이지 않다.
+  }
+}
+
+function showMainWindow() {
+  if (!mainWindow) {
+    createWindow();
+    return;
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -112,6 +147,12 @@ function createWindow() {
 
   mainWindow.setMenuBarVisibility(false);
   mainWindow.setAutoHideMenuBar(true);
+  // 창 닫기(X) = 트레이로 최소화. 실제 종료는 트레이 메뉴에서.
+  mainWindow.on("close", (event) => {
+    if (isQuitting) return;
+    event.preventDefault();
+    mainWindow.hide();
+  });
   mainWindow.loadFile(path.join(__dirname, "../shell/index.html"));
 }
 

@@ -356,6 +356,8 @@ function createChannel(ownerId, name) {
     id: newId(),
     name: cleanChannelName(name),
     ownerId,
+    managers: [], // 추가 대표자(공동 관리자) 목록
+    icon: "", // 채널 아이콘 이미지(data URL)
     inviteCode: makeInviteCode(),
     members: [ownerId],
     rooms: [
@@ -379,10 +381,42 @@ function getChannelByInvite(code) {
   return channelsDb.channels.find((x) => x.inviteCode === c) || null;
 }
 
+// 대표자 권한(방 추가/삭제, 강퇴, 이름변경 등). 창설자 + 공동대표 + 관리자.
 function isChannelOwner(channelId, userId, isAdmin = false) {
   if (isAdmin) return true;
   const channel = getChannel(channelId);
+  if (!channel) return false;
+  return channel.ownerId === userId || (channel.managers || []).includes(userId);
+}
+
+// 창설자 전용(채널 삭제, 공동대표 지정/해제). 창설자 + 관리자만.
+function isChannelCreator(channelId, userId, isAdmin = false) {
+  if (isAdmin) return true;
+  const channel = getChannel(channelId);
   return Boolean(channel && channel.ownerId === userId);
+}
+
+function setManager(channelId, userId, value) {
+  const channel = getChannel(channelId);
+  if (!channel) return { error: "채널을 찾을 수 없습니다." };
+  if (channel.ownerId === userId) return { error: "창설자는 항상 대표자입니다." };
+  if (!channel.members.includes(userId)) return { error: "채널 멤버만 대표자로 지정할 수 있습니다." };
+  channel.managers = channel.managers || [];
+  if (value) {
+    if (!channel.managers.includes(userId)) channel.managers.push(userId);
+  } else {
+    channel.managers = channel.managers.filter((id) => id !== userId);
+  }
+  persistChannels();
+  return { channel };
+}
+
+function setChannelIcon(channelId, icon) {
+  const channel = getChannel(channelId);
+  if (!channel) return { error: "채널을 찾을 수 없습니다." };
+  channel.icon = cleanAvatar(icon); // 아바타와 동일한 data URL 검증 재사용
+  persistChannels();
+  return { channel };
 }
 
 function isChannelMember(channelId, userId, isAdmin = false) {
@@ -421,8 +455,9 @@ function addMember(channelId, userId) {
 function removeMember(channelId, userId) {
   const channel = getChannel(channelId);
   if (!channel) return { error: "채널을 찾을 수 없습니다." };
-  if (channel.ownerId === userId) return { error: "대표자는 내보낼 수 없습니다." };
+  if (channel.ownerId === userId) return { error: "창설자는 내보낼 수 없습니다." };
   channel.members = channel.members.filter((id) => id !== userId);
+  channel.managers = (channel.managers || []).filter((id) => id !== userId);
   persistChannels();
   return { channel };
 }
@@ -484,6 +519,8 @@ function channelSummary(channel) {
     id: channel.id,
     name: channel.name,
     ownerId: channel.ownerId,
+    managerIds: (channel.managers || []).slice(),
+    icon: channel.icon || "",
     inviteCode: channel.inviteCode,
     memberIds: channel.members.slice(),
     rooms: channel.rooms.map((r) => ({ id: r.id, name: r.name, type: r.type })),
@@ -515,6 +552,9 @@ module.exports = {
   getChannel,
   getChannelByInvite,
   isChannelOwner,
+  isChannelCreator,
+  setManager,
+  setChannelIcon,
   isChannelMember,
   listChannelsForUser,
   joinChannelByCode,

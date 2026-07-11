@@ -280,15 +280,15 @@ h3 {
 .layout {
   flex: 1;
   display: grid;
-  grid-template-columns: 68px 240px minmax(0, 1fr) 210px;
-  gap: 12px;
+  grid-template-columns: 64px 232px minmax(0, 1fr) 208px;
+  gap: 8px;
   align-items: stretch;
   min-height: 0;
 }
 
 /* 멤버 리스트가 숨겨지면(채널 없음) 4번째 열을 접는다 */
 .layout:has(.member-list[hidden]) {
-  grid-template-columns: 68px 240px minmax(0, 1fr);
+  grid-template-columns: 64px 232px minmax(0, 1fr);
 }
 
 .side-panel {
@@ -1864,41 +1864,104 @@ audio,
   background: rgba(240, 178, 50, 0.16);
   color: var(--warning);
 }
-.member-kick {
+.member-actions {
+  display: flex;
   flex: none;
+  gap: 4px;
+}
+.member-action-btn {
   min-height: 26px;
   padding: 0 8px;
   font-size: 11px;
-  background: transparent;
+  background: var(--bg-elevated);
   color: var(--muted);
   opacity: 0;
 }
-.member-row:hover .member-kick {
+.member-row:hover .member-action-btn {
   opacity: 1;
 }
-.member-kick:hover {
+.member-action-btn:hover {
+  background: #45474e;
+  color: var(--heading);
+}
+.member-action-btn.kick:hover {
   background: var(--danger);
   color: #fff;
 }
 
 /* 채널 모달 · 방 추가 · 채널 관리 */
 .room-type-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  display: flex;
+  flex-direction: column;
   gap: 6px;
 }
 .room-type-option {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 10px;
+  gap: 8px;
+  padding: 10px 12px;
   border-radius: var(--radius-sm);
   background: var(--bg-input);
+  border: 1px solid transparent;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 14px;
+}
+.room-type-option:hover {
+  background: var(--bg-elevated);
 }
 .room-type-option:has(input:checked) {
-  outline: 2px solid var(--blurple);
+  border-color: var(--blurple);
+  background: rgba(88, 101, 242, 0.12);
+}
+.room-type-option input {
+  width: auto;
+  min-height: 0;
+  accent-color: var(--blurple);
+}
+
+/* 이미지 크롭 모달 */
+.crop-modal {
+  width: min(360px, 100%);
+}
+.crop-stage {
+  display: grid;
+  place-items: center;
+  padding: 8px 0;
+}
+#cropCanvas {
+  width: 256px;
+  height: 256px;
+  max-width: 100%;
+  border-radius: 50%;
+  background: var(--bg-input);
+  cursor: grab;
+  touch-action: none;
+}
+#cropCanvas:active {
+  cursor: grabbing;
+}
+
+/* 채널 아이콘 변경 */
+.channel-icon-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.channel-icon-preview {
+  width: 48px;
+  height: 48px;
+  flex: none;
+  border-radius: 16px;
+  background: var(--blurple) center/cover no-repeat;
+}
+.channel-icon-field {
+  flex: 1;
+}
+.channel-icon.has-icon {
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+  color: transparent;
 }
 .invite-box {
   display: flex;
