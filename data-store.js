@@ -8,13 +8,17 @@ const crypto = require("node:crypto");
 const DATA_DIR = path.join(__dirname, "server-data");
 const USERS_FILE = path.join(DATA_DIR, "users.json");
 const SESSIONS_FILE = path.join(DATA_DIR, "sessions.json");
+const CHANNELS_FILE = path.join(DATA_DIR, "channels.json");
 
 const CODE_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"; // base36
+const INVITE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 혼동 문자 제외
 const MAX_CONN_LOG = 40; // 유저별 접속 로그 보관 개수
 const AVATAR_MAX_LEN = 400000; // 프로필 이미지 data URL 최대 길이(약 300KB)
+const ROOM_TYPES = ["voice", "chat", "memo", "draw", "log"];
 
 let db = { users: [], codeCounter: 0 };
 let sessions = {}; // token -> { userId, createdAt }
+let channelsDb = { channels: [] };
 
 function init() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -23,6 +27,8 @@ function init() {
   if (!Number.isFinite(db.codeCounter)) db.codeCounter = 0;
   sessions = readJson(SESSIONS_FILE, {});
   if (!sessions || typeof sessions !== "object") sessions = {};
+  channelsDb = readJson(CHANNELS_FILE, { channels: [] });
+  if (!Array.isArray(channelsDb.channels)) channelsDb.channels = [];
 }
 
 function readJson(file, fallback) {
@@ -317,6 +323,174 @@ function sanitizeUserAdmin(user) {
   };
 }
 
+// ===== 채널 · 방 =====
+function persistChannels() {
+  writeJsonAtomic(CHANNELS_FILE, channelsDb);
+}
+
+function cleanChannelName(value) {
+  return String(value || "").trim().slice(0, 32) || "새 채널";
+}
+
+function cleanRoomTypeName(value, type) {
+  const fallback = { voice: "통화방", chat: "채팅방", memo: "메모장", draw: "그림판", log: "전역 로그" }[type] || "새 방";
+  return String(value || "").trim().slice(0, 32) || fallback;
+}
+
+function makeInviteCode() {
+  for (let guard = 0; guard < 10000; guard++) {
+    let code = "";
+    for (let i = 0; i < 6; i++) code += INVITE_ALPHABET[crypto.randomInt(INVITE_ALPHABET.length)];
+    if (!channelsDb.channels.some((c) => c.inviteCode === code)) return code;
+  }
+  return crypto.randomBytes(4).toString("hex").toUpperCase().slice(0, 6);
+}
+
+function newId() {
+  return crypto.randomBytes(8).toString("hex");
+}
+
+function createChannel(ownerId, name) {
+  if (!ownerId) return { error: "로그인이 필요합니다." };
+  const channel = {
+    id: newId(),
+    name: cleanChannelName(name),
+    ownerId,
+    inviteCode: makeInviteCode(),
+    members: [ownerId],
+    rooms: [
+      { id: newId(), name: "일반", type: "voice" },
+      { id: newId(), name: "공지", type: "chat" },
+    ],
+    createdAt: Date.now(),
+  };
+  channelsDb.channels.push(channel);
+  persistChannels();
+  return { channel };
+}
+
+function getChannel(channelId) {
+  return channelsDb.channels.find((c) => c.id === channelId) || null;
+}
+
+function getChannelByInvite(code) {
+  const c = String(code || "").trim().toUpperCase();
+  if (!c) return null;
+  return channelsDb.channels.find((x) => x.inviteCode === c) || null;
+}
+
+function isChannelOwner(channelId, userId, isAdmin = false) {
+  if (isAdmin) return true;
+  const channel = getChannel(channelId);
+  return Boolean(channel && channel.ownerId === userId);
+}
+
+function isChannelMember(channelId, userId, isAdmin = false) {
+  if (isAdmin) return true;
+  const channel = getChannel(channelId);
+  return Boolean(channel && channel.members.includes(userId));
+}
+
+function listChannelsForUser(userId, isAdmin = false) {
+  const list = isAdmin
+    ? channelsDb.channels
+    : channelsDb.channels.filter((c) => c.members.includes(userId));
+  return list.map(channelSummary);
+}
+
+function joinChannelByCode(userId, code) {
+  const channel = getChannelByInvite(code);
+  if (!channel) return { error: "코드에 해당하는 채널을 찾지 못했습니다." };
+  if (!channel.members.includes(userId)) {
+    channel.members.push(userId);
+    persistChannels();
+  }
+  return { channel };
+}
+
+function addMember(channelId, userId) {
+  const channel = getChannel(channelId);
+  if (!channel) return { error: "채널을 찾을 수 없습니다." };
+  if (!channel.members.includes(userId)) {
+    channel.members.push(userId);
+    persistChannels();
+  }
+  return { channel };
+}
+
+function removeMember(channelId, userId) {
+  const channel = getChannel(channelId);
+  if (!channel) return { error: "채널을 찾을 수 없습니다." };
+  if (channel.ownerId === userId) return { error: "대표자는 내보낼 수 없습니다." };
+  channel.members = channel.members.filter((id) => id !== userId);
+  persistChannels();
+  return { channel };
+}
+
+function addRoom(channelId, name, type) {
+  const channel = getChannel(channelId);
+  if (!channel) return { error: "채널을 찾을 수 없습니다." };
+  const roomType = ROOM_TYPES.includes(type) ? type : "voice";
+  const room = { id: newId(), name: cleanRoomTypeName(name, roomType), type: roomType };
+  channel.rooms.push(room);
+  persistChannels();
+  return { channel, room };
+}
+
+function removeRoom(channelId, roomId) {
+  const channel = getChannel(channelId);
+  if (!channel) return { error: "채널을 찾을 수 없습니다." };
+  channel.rooms = channel.rooms.filter((r) => r.id !== roomId);
+  persistChannels();
+  return { channel };
+}
+
+function renameRoom(channelId, roomId, name) {
+  const channel = getChannel(channelId);
+  if (!channel) return { error: "채널을 찾을 수 없습니다." };
+  const room = channel.rooms.find((r) => r.id === roomId);
+  if (!room) return { error: "방을 찾을 수 없습니다." };
+  room.name = cleanRoomTypeName(name, room.type);
+  persistChannels();
+  return { channel, room };
+}
+
+function renameChannel(channelId, name) {
+  const channel = getChannel(channelId);
+  if (!channel) return { error: "채널을 찾을 수 없습니다." };
+  channel.name = cleanChannelName(name);
+  persistChannels();
+  return { channel };
+}
+
+function deleteChannel(channelId) {
+  const before = channelsDb.channels.length;
+  channelsDb.channels = channelsDb.channels.filter((c) => c.id !== channelId);
+  if (channelsDb.channels.length !== before) persistChannels();
+  return { ok: true };
+}
+
+// roomId 로 소속 채널과 방을 찾는다(시그널링 권한 확인용).
+function findRoom(roomId) {
+  for (const channel of channelsDb.channels) {
+    const room = channel.rooms.find((r) => r.id === roomId);
+    if (room) return { channel, room };
+  }
+  return null;
+}
+
+function channelSummary(channel) {
+  return {
+    id: channel.id,
+    name: channel.name,
+    ownerId: channel.ownerId,
+    inviteCode: channel.inviteCode,
+    memberIds: channel.members.slice(),
+    rooms: channel.rooms.map((r) => ({ id: r.id, name: r.name, type: r.type })),
+    createdAt: channel.createdAt,
+  };
+}
+
 module.exports = {
   init,
   createUser,
@@ -336,4 +510,21 @@ module.exports = {
   setUserCode,
   sanitizeUser,
   sanitizeUserAdmin,
+  // 채널 · 방
+  createChannel,
+  getChannel,
+  getChannelByInvite,
+  isChannelOwner,
+  isChannelMember,
+  listChannelsForUser,
+  joinChannelByCode,
+  addMember,
+  removeMember,
+  addRoom,
+  removeRoom,
+  renameRoom,
+  renameChannel,
+  deleteChannel,
+  findRoom,
+  channelSummary,
 };

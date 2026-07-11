@@ -160,7 +160,7 @@ function handleUpgrade(req, socket) {
   socket.on("data", (chunk) => readFrames(client, chunk));
   socket.on("close", () => removeClient(client));
   socket.on("error", () => removeClient(client));
-  send(client, { type: "hello", id: client.id, rooms: listRooms(), version: VERSION });
+  send(client, { type: "hello", id: client.id, version: VERSION });
 }
 
 function handleClientError(error, socket) {
@@ -222,49 +222,21 @@ function readFrames(client, chunk) {
 function handleMessage(client, message) {
   if (handleAuthMessage(client, message)) return;
   if (handleAdminMessage(client, message)) return;
+  if (handleChannelMessage(client, message)) return;
 
   if (message.type === "set-name") {
     client.name = cleanName(message.name);
-    broadcastRooms();
-    return;
-  }
-
-  if (message.type === "list-rooms") {
-    send(client, { type: "rooms", rooms: listRooms() });
-    return;
-  }
-
-  if (message.type === "create-room") {
-    leaveRoom(client, false);
-    const room = {
-      id: makeRoomId(message.name),
-      name: cleanRoomName(message.name),
-      limit: clamp(Number(message.limit || 2), 2, MAX_ROOM_LIMIT),
-      clients: new Set(),
-    };
-    rooms.set(room.id, room);
-    joinRoom(client, room.id);
+    broadcastPresence();
     return;
   }
 
   if (message.type === "join-room") {
-    leaveRoom(client, false);
-    joinRoom(client, String(message.roomId || ""));
+    joinVoiceRoom(client, String(message.roomId || ""));
     return;
   }
 
   if (message.type === "leave-room") {
     leaveRoom(client, true);
-    return;
-  }
-
-  if (message.type === "set-room-limit") {
-    const room = rooms.get(client.roomId);
-    if (!room) return;
-    // 현재 인원보다 작게는 줄일 수 없다.
-    room.limit = clamp(Number(message.limit || room.limit), Math.max(2, room.clients.size), MAX_ROOM_LIMIT);
-    logServer(`room limit=${room.limit} room=${room.name}`, client);
-    broadcastRooms();
     return;
   }
 
@@ -330,7 +302,7 @@ function handleAuthMessage(client, message) {
       client.userId = "";
       client.isAdmin = false;
       client.name = "Guest";
-      broadcastRooms();
+      broadcastPresence();
       return true;
     }
     case "change-password": {
@@ -362,7 +334,9 @@ function handleAuthMessage(client, message) {
       }
       client.name = result.user.displayName;
       send(client, { type: "auth-ok", action: "update-profile", user: store.sanitizeUser(result.user) });
-      broadcastRooms();
+      // 닉네임/프로필 변경은 여러 채널의 멤버 표시에 영향 → 접속자 전원 채널 목록 갱신.
+      refreshChannelsForAll();
+      broadcastPresence();
       return true;
     }
     default:
@@ -378,7 +352,8 @@ function finishAuth(client, user, action, existingToken) {
   store.recordConnection(user.id, client.ip, action === "resume" ? "connect" : action);
   logServer(`auth ${action} user=${user.username} code=#${user.code} ip=${client.ip}`, client);
   send(client, { type: "auth-ok", action, token, user: store.sanitizeUser(user) });
-  broadcastRooms();
+  sendChannels(client);
+  broadcastPresence();
 }
 
 function handleAdminMessage(client, message) {
@@ -436,8 +411,10 @@ function notifyUserUpdate(userId) {
     c.name = user.displayName;
     c.isAdmin = Boolean(user.isAdmin);
     send(c, payload);
+    // 관리자 승격/해제 시 볼 수 있는 채널이 달라지므로 목록도 갱신한다.
+    sendChannels(c);
   }
-  broadcastRooms();
+  broadcastPresence();
 }
 
 function seedAdminAccount() {
@@ -465,19 +442,31 @@ function getSignalKind(data) {
   return "unknown";
 }
 
-function joinRoom(client, roomId) {
-  const room = rooms.get(roomId);
-  if (!room) {
-    send(client, { type: "error", message: "방을 찾지 못했습니다." });
+// 채널 안의 통화방(voice)에 입장. 방 메타데이터는 채널에 영속되고, 여기서는 실시간 접속(presence)만 관리한다.
+function joinVoiceRoom(client, roomId) {
+  if (!client.userId) {
+    send(client, { type: "error", message: "로그인이 필요합니다." });
     return;
   }
-  if (room.clients.size >= room.limit) {
-    send(client, { type: "error", message: "방 인원이 가득 찼습니다." });
+  const found = store.findRoom(roomId);
+  if (!found || found.room.type !== "voice") {
+    send(client, { type: "error", message: "통화방을 찾지 못했습니다." });
+    return;
+  }
+  if (!store.isChannelMember(found.channel.id, client.userId, client.isAdmin)) {
+    send(client, { type: "error", message: "채널 멤버만 입장할 수 있습니다." });
     return;
   }
 
+  leaveRoom(client, false);
+
+  let room = rooms.get(roomId);
+  if (!room) {
+    room = { id: roomId, name: found.room.name, channelId: found.channel.id, clients: new Set() };
+    rooms.set(roomId, room);
+  }
   room.clients.add(client.id);
-  client.roomId = room.id;
+  client.roomId = roomId;
   logServer(`joined room=${room.name} peers=${room.clients.size - 1}`, client);
 
   const peers = [...room.clients]
@@ -487,18 +476,18 @@ function joinRoom(client, roomId) {
       return { id, name: peer?.name || "Guest" };
     });
 
-  send(client, { type: "joined", id: client.id, room: roomInfo(room), peers });
+  send(client, { type: "joined", id: client.id, room: liveRoomInfo(room), peers });
 
   for (const peerId of room.clients) {
     if (peerId === client.id) continue;
     send(clients.get(peerId), {
       type: "peer-joined",
       peer: { id: client.id, name: client.name },
-      room: roomInfo(room),
+      room: liveRoomInfo(room),
     });
   }
 
-  broadcastRooms();
+  broadcastPresence();
 }
 
 function leaveRoom(client, notify) {
@@ -510,19 +499,19 @@ function leaveRoom(client, notify) {
   room.clients.delete(client.id);
   logServer(`left room=${room.name} remaining=${room.clients.size}`, client);
   if (room.clients.size === 0) {
-    rooms.delete(room.id);
+    rooms.delete(room.id); // 실시간 접속 항목만 정리(방 메타데이터는 채널에 영속).
   } else {
     for (const peerId of room.clients) {
       send(clients.get(peerId), {
         type: "peer-left",
         peerId: client.id,
-        room: roomInfo(room),
+        room: liveRoomInfo(room),
       });
     }
   }
 
-  if (notify) send(client, { type: "left", rooms: listRooms() });
-  broadcastRooms();
+  if (notify) send(client, { type: "left" });
+  broadcastPresence();
 }
 
 function removeClient(client) {
@@ -582,49 +571,193 @@ function makeFrameHeader(length) {
   return header;
 }
 
-function broadcastRooms() {
-  const roomsPayload = { type: "rooms", rooms: listRooms() };
-  for (const client of clients.values()) send(client, roomsPayload);
+// 실시간 통화방 접속 현황 + 온라인 유저를 모든 로그인 클라이언트에 알린다.
+function broadcastPresence() {
+  const presence = {};
+  for (const room of rooms.values()) {
+    presence[room.id] = [...room.clients].map((id) => {
+      const c = clients.get(id);
+      return { clientId: id, userId: c?.userId || "", name: c?.name || "Guest" };
+    });
+  }
+  const online = onlineUserIds();
+  const payload = { type: "presence", rooms: presence, online };
+  for (const client of clients.values()) if (client.userId) send(client, payload);
 }
 
-function listRooms() {
-  return [...rooms.values()].map(roomInfo);
-}
-
-function roomInfo(room) {
+function liveRoomInfo(room) {
   return {
     id: room.id,
     name: room.name,
-    limit: room.limit,
+    channelId: room.channelId || "",
+    limit: MAX_ROOM_LIMIT,
     count: room.clients.size,
     participants: [...room.clients].map((id) => clients.get(id)?.name || "Guest"),
   };
 }
 
+// ===== 채널 메시지 =====
+function handleChannelMessage(client, message) {
+  if (typeof message.type !== "string" || !message.type.startsWith("channel:")) return false;
+  if (!client.userId) {
+    send(client, { type: "channel-error", message: "로그인이 필요합니다." });
+    return true;
+  }
+  switch (message.type) {
+    case "channel:list":
+      sendChannels(client);
+      return true;
+    case "channel:create": {
+      const result = store.createChannel(client.userId, message.name);
+      if (result.error) return channelError(client, result.error);
+      logServer(`channel create name=${result.channel.name} invite=${result.channel.inviteCode}`, client);
+      sendChannels(client);
+      send(client, { type: "channel-selected", channelId: result.channel.id });
+      return true;
+    }
+    case "channel:join": {
+      const result = store.joinChannelByCode(client.userId, message.code);
+      if (result.error) return channelError(client, result.error);
+      logServer(`channel join name=${result.channel.name}`, client);
+      notifyChannelMembers(result.channel.id);
+      send(client, { type: "channel-selected", channelId: result.channel.id });
+      return true;
+    }
+    case "channel:leave": {
+      const result = store.removeMember(message.channelId, client.userId);
+      if (result.error) return channelError(client, result.error);
+      forceLeaveChannelRooms(client, message.channelId);
+      sendChannels(client);
+      notifyChannelMembers(message.channelId);
+      return true;
+    }
+    case "channel:rename":
+      return ownerAction(client, message.channelId, () => {
+        const r = store.renameChannel(message.channelId, message.name);
+        if (r.error) return channelError(client, r.error);
+        notifyChannelMembers(message.channelId);
+        return true;
+      });
+    case "channel:delete":
+      return ownerAction(client, message.channelId, () => {
+        const channel = store.getChannel(message.channelId);
+        const memberIds = channel ? channel.members.slice() : [];
+        // 채널 방들의 실시간 접속 종료
+        if (channel) for (const room of channel.rooms) evictRoom(room.id);
+        store.deleteChannel(message.channelId);
+        for (const c of clients.values()) {
+          if (c.userId && memberIds.includes(c.userId)) sendChannels(c);
+        }
+        return true;
+      });
+    case "channel:add-room":
+      return ownerAction(client, message.channelId, () => {
+        const r = store.addRoom(message.channelId, message.name, message.roomType);
+        if (r.error) return channelError(client, r.error);
+        notifyChannelMembers(message.channelId);
+        return true;
+      });
+    case "channel:remove-room":
+      return ownerAction(client, message.channelId, () => {
+        evictRoom(message.roomId);
+        const r = store.removeRoom(message.channelId, message.roomId);
+        if (r.error) return channelError(client, r.error);
+        notifyChannelMembers(message.channelId);
+        return true;
+      });
+    case "channel:rename-room":
+      return ownerAction(client, message.channelId, () => {
+        const r = store.renameRoom(message.channelId, message.roomId, message.name);
+        if (r.error) return channelError(client, r.error);
+        notifyChannelMembers(message.channelId);
+        return true;
+      });
+    case "channel:kick":
+      return ownerAction(client, message.channelId, () => {
+        const r = store.removeMember(message.channelId, message.userId);
+        if (r.error) return channelError(client, r.error);
+        // 쫓겨난 유저를 채널 방에서 강제로 내보내고, 그의 목록을 갱신한다.
+        for (const c of clients.values()) {
+          if (c.userId === message.userId) {
+            forceLeaveChannelRooms(c, message.channelId);
+            sendChannels(c);
+          }
+        }
+        notifyChannelMembers(message.channelId);
+        return true;
+      });
+    default:
+      return false;
+  }
+}
+
+function channelError(client, messageText) {
+  send(client, { type: "channel-error", message: messageText });
+  return true;
+}
+
+function ownerAction(client, channelId, fn) {
+  if (!store.isChannelOwner(channelId, client.userId, client.isAdmin)) {
+    return channelError(client, "대표자(또는 관리자)만 할 수 있습니다.");
+  }
+  return fn();
+}
+
+function sendChannels(client) {
+  const channels = store.listChannelsForUser(client.userId, client.isAdmin).map(expandChannel);
+  send(client, { type: "channels", channels, me: client.userId, isAdmin: Boolean(client.isAdmin) });
+}
+
+function expandChannel(summary) {
+  return {
+    ...summary,
+    members: summary.memberIds.map((id) => {
+      const u = store.findById(id);
+      return u
+        ? { id: u.id, displayName: u.displayName, code: u.code, avatar: u.avatar, isAdmin: Boolean(u.isAdmin) }
+        : { id, displayName: "(삭제된 계정)", code: "----", avatar: "", isAdmin: false };
+    }),
+  };
+}
+
+function refreshChannelsForAll() {
+  for (const c of clients.values()) if (c.userId) sendChannels(c);
+}
+
+// 채널 멤버(및 관리자) 중 접속자에게 채널 목록을 다시 보낸다.
+function notifyChannelMembers(channelId) {
+  const channel = store.getChannel(channelId);
+  if (!channel) return;
+  for (const c of clients.values()) {
+    if (!c.userId) continue;
+    if (c.isAdmin || channel.members.includes(c.userId)) sendChannels(c);
+  }
+}
+
+// 특정 통화방의 모든 접속자를 강제로 내보낸다(방 삭제/채널 삭제 시).
+function evictRoom(roomId) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+  for (const clientId of [...room.clients]) {
+    const c = clients.get(clientId);
+    if (c) {
+      leaveRoom(c, true);
+    }
+  }
+  rooms.delete(roomId);
+}
+
+// 특정 클라이언트가 해당 채널의 통화방에 있으면 내보낸다.
+function forceLeaveChannelRooms(client, channelId) {
+  if (!client.roomId) return;
+  const room = rooms.get(client.roomId);
+  if (room && room.channelId === channelId) {
+    leaveRoom(client, true);
+  }
+}
+
 function cleanName(value) {
   return String(value || "Guest").trim().slice(0, 24) || "Guest";
-}
-
-function cleanRoomName(value) {
-  return String(value || "통화방").trim().slice(0, 32) || "통화방";
-}
-
-function makeRoomId(name) {
-  const ascii = String(name || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 28);
-  const base = ascii || "room";
-  let id = base;
-  while (rooms.has(id)) {
-    id = `${base}-${crypto.randomBytes(2).toString("hex")}`;
-  }
-  return id;
-}
-
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, Number.isFinite(value) ? value : min));
 }
 
 function sendJson(res, status, payload) {

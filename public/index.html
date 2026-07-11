@@ -35,31 +35,17 @@
       </header>
 
       <div class="layout">
-        <aside class="side-panel">
-          <label class="field">
-            <span>이름</span>
-            <input id="nameInput" autocomplete="off" maxlength="24" />
-          </label>
+        <nav class="channel-rail" id="channelRail" aria-label="채널 목록"></nav>
 
-          <form class="create-room" id="createRoomForm">
-            <label class="field">
-              <span>방 이름</span>
-              <input id="roomNameInput" autocomplete="off" maxlength="32" />
-            </label>
-            <label class="field">
-              <span>인원</span>
-              <input id="roomLimitInput" type="number" min="2" max="8" value="2" />
-            </label>
-            <button class="primary" id="createRoomButton" type="submit">방 만들기</button>
-          </form>
-
-          <section class="room-section">
-            <div class="section-head">
-              <h2>방 목록</h2>
-              <button class="ghost small" id="refreshRoomsButton" type="button">새로고침</button>
-            </div>
-            <div class="room-list" id="roomList"></div>
-          </section>
+        <aside class="channel-panel">
+          <header class="channel-panel-head">
+            <h2 id="channelName">채널 없음</h2>
+            <button class="ghost small channel-menu-button" id="channelMenuButton" type="button" hidden>⋯</button>
+          </header>
+          <div class="room-list" id="roomList"></div>
+          <div class="channel-empty" id="channelEmpty">
+            <p>왼쪽 <b>+</b> 로 채널을 만들거나<br />코드로 채널에 참가하세요.</p>
+          </div>
         </aside>
 
         <!-- 통화 전에는 오른쪽을 비워 둔다 -->
@@ -75,7 +61,7 @@
               <p id="currentRoomMeta">방에 들어가면 마이크가 켜집니다.</p>
             </div>
             <div class="call-head-actions">
-              <label class="inline-field">
+              <label class="inline-field" hidden>
                 <span>인원</span>
                 <select id="roomLimitLiveSelect">
                   <option value="2">2명</option>
@@ -185,6 +171,8 @@
 
           <p class="message" id="message" aria-live="polite"></p>
         </section>
+
+        <aside class="member-list" id="memberList" hidden></aside>
       </div>
 
       <section class="dev-strip">
@@ -440,6 +428,91 @@
       </div>
     </div>
 
+    <div class="modal-backdrop" id="channelModal" hidden>
+      <div class="modal channel-modal" role="dialog" aria-modal="true" aria-labelledby="channelModalTitle">
+        <header class="modal-head">
+          <h2 id="channelModalTitle">채널</h2>
+          <button class="ghost small" id="channelModalClose" type="button">닫기</button>
+        </header>
+        <div class="modal-body">
+          <div class="auth-tabs">
+            <button class="auth-tab active" id="channelTabCreate" type="button">채널 만들기</button>
+            <button class="auth-tab" id="channelTabJoin" type="button">코드로 참가</button>
+          </div>
+          <form class="auth-form" id="channelCreateForm">
+            <label class="field">
+              <span>채널 이름</span>
+              <input id="channelCreateName" autocomplete="off" maxlength="32" placeholder="예: 우리팀" />
+            </label>
+            <button class="primary" type="submit">만들기</button>
+          </form>
+          <form class="auth-form" id="channelJoinForm" hidden>
+            <label class="field">
+              <span>초대 코드</span>
+              <input id="channelJoinCode" autocomplete="off" maxlength="6" placeholder="예: K3A6RY" spellcheck="false" />
+            </label>
+            <button class="primary" type="submit">참가</button>
+          </form>
+          <p class="account-message" id="channelModalMessage" aria-live="polite"></p>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-backdrop" id="roomModal" hidden>
+      <div class="modal room-modal" role="dialog" aria-modal="true" aria-labelledby="roomModalTitle">
+        <header class="modal-head">
+          <h2 id="roomModalTitle">방 추가</h2>
+          <button class="ghost small" id="roomModalClose" type="button">닫기</button>
+        </header>
+        <div class="modal-body">
+          <label class="field">
+            <span>방 이름</span>
+            <input id="roomModalName" autocomplete="off" maxlength="32" placeholder="예: 잡담" />
+          </label>
+          <div class="field">
+            <span>종류</span>
+            <div class="room-type-grid" id="roomTypeGrid">
+              <label class="room-type-option"><input type="radio" name="roomType" value="voice" checked /><span>🔊 통화방</span></label>
+              <label class="room-type-option"><input type="radio" name="roomType" value="chat" /><span># 채팅방</span></label>
+              <label class="room-type-option"><input type="radio" name="roomType" value="memo" /><span>📝 메모장</span></label>
+              <label class="room-type-option"><input type="radio" name="roomType" value="draw" /><span>🎨 그림판</span></label>
+              <label class="room-type-option"><input type="radio" name="roomType" value="log" /><span>📜 전역 로그</span></label>
+            </div>
+          </div>
+          <p class="account-message" id="roomModalMessage" aria-live="polite"></p>
+          <div class="modal-actions">
+            <button class="primary" id="roomModalConfirm" type="button">추가</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-backdrop" id="channelMenuModal" hidden>
+      <div class="modal channel-menu-modal" role="dialog" aria-modal="true" aria-labelledby="channelMenuTitle">
+        <header class="modal-head">
+          <h2 id="channelMenuTitle">채널 관리</h2>
+          <button class="ghost small" id="channelMenuClose" type="button">닫기</button>
+        </header>
+        <div class="modal-body">
+          <div class="invite-box">
+            <span class="invite-label">초대 코드</span>
+            <strong class="invite-code" id="channelInviteCode">------</strong>
+            <button class="secondary" id="copyInviteButton" type="button">복사</button>
+          </div>
+          <label class="field" id="channelRenameField">
+            <span>채널 이름 변경</span>
+            <input id="channelRenameInput" autocomplete="off" maxlength="32" />
+          </label>
+          <div class="modal-actions channel-menu-actions">
+            <button class="secondary" id="channelRenameButton" type="button">이름 저장</button>
+            <button class="secondary" id="channelLeaveButton" type="button">채널 나가기</button>
+            <button class="danger" id="channelDeleteButton" type="button">채널 삭제</button>
+          </div>
+          <p class="account-message" id="channelMenuMessage" aria-live="polite"></p>
+        </div>
+      </div>
+    </div>
+
     <div class="auth-overlay" id="authOverlay">
       <div class="auth-card">
         <div class="auth-brand">
@@ -504,6 +577,8 @@
     <div class="toast-stack" id="toastStack" aria-live="polite"></div>
 
     <div hidden>
+      <!-- 닉네임은 계정 프로필에서 관리하지만, 내부적으로 표시 이름을 읽는 곳이 있어 숨겨서 유지한다. -->
+      <input id="nameInput" maxlength="24" />
       <b id="remoteMicVolumeValue">100%</b>
       <input id="remoteMicVolumeInput" type="range" min="0" max="200" step="5" value="100" />
       <b id="remoteSystemVolumeValue">100%</b>

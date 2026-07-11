@@ -1,6 +1,14 @@
 const desktop = window.voiceDesktop || { isDesktop: false, platform: "" };
 const serverUrl = location.origin;
 
+const ROOM_TYPE_META = {
+  voice: { icon: "🔊", label: "통화방" },
+  chat: { icon: "#", label: "채팅방" },
+  memo: { icon: "📝", label: "메모장" },
+  draw: { icon: "🎨", label: "그림판" },
+  log: { icon: "📜", label: "전역 로그" },
+};
+
 const state = {
   config: { iceServers: [], maxRoomLimit: 8, version: "0.2.42", secure: false, protocol: "https" },
   socket: null,
@@ -99,6 +107,10 @@ const state = {
   adminOnline: [],
   adminCodeTarget: "",
   codeChangePending: false,
+  channels: [],
+  currentChannelId: "",
+  presence: {},
+  online: [],
 };
 
 const dom = {
@@ -111,12 +123,35 @@ const dom = {
   statusBadge: document.querySelector("#statusBadge"),
   statusText: document.querySelector("#statusText"),
   nameInput: document.querySelector("#nameInput"),
-  refreshRoomsButton: document.querySelector("#refreshRoomsButton"),
-  createRoomForm: document.querySelector("#createRoomForm"),
-  roomNameInput: document.querySelector("#roomNameInput"),
-  roomLimitInput: document.querySelector("#roomLimitInput"),
-  createRoomButton: document.querySelector("#createRoomButton"),
+  channelRail: document.querySelector("#channelRail"),
+  channelName: document.querySelector("#channelName"),
+  channelMenuButton: document.querySelector("#channelMenuButton"),
+  channelEmpty: document.querySelector("#channelEmpty"),
+  memberList: document.querySelector("#memberList"),
   roomList: document.querySelector("#roomList"),
+  channelModal: document.querySelector("#channelModal"),
+  channelModalClose: document.querySelector("#channelModalClose"),
+  channelTabCreate: document.querySelector("#channelTabCreate"),
+  channelTabJoin: document.querySelector("#channelTabJoin"),
+  channelCreateForm: document.querySelector("#channelCreateForm"),
+  channelCreateName: document.querySelector("#channelCreateName"),
+  channelJoinForm: document.querySelector("#channelJoinForm"),
+  channelJoinCode: document.querySelector("#channelJoinCode"),
+  channelModalMessage: document.querySelector("#channelModalMessage"),
+  roomModal: document.querySelector("#roomModal"),
+  roomModalClose: document.querySelector("#roomModalClose"),
+  roomModalName: document.querySelector("#roomModalName"),
+  roomModalConfirm: document.querySelector("#roomModalConfirm"),
+  roomModalMessage: document.querySelector("#roomModalMessage"),
+  channelMenuModal: document.querySelector("#channelMenuModal"),
+  channelMenuClose: document.querySelector("#channelMenuClose"),
+  channelInviteCode: document.querySelector("#channelInviteCode"),
+  copyInviteButton: document.querySelector("#copyInviteButton"),
+  channelRenameInput: document.querySelector("#channelRenameInput"),
+  channelRenameButton: document.querySelector("#channelRenameButton"),
+  channelLeaveButton: document.querySelector("#channelLeaveButton"),
+  channelDeleteButton: document.querySelector("#channelDeleteButton"),
+  channelMenuMessage: document.querySelector("#channelMenuMessage"),
   currentRoomName: document.querySelector("#currentRoomName"),
   currentRoomMeta: document.querySelector("#currentRoomMeta"),
   leaveButton: document.querySelector("#leaveButton"),
@@ -260,7 +295,6 @@ init().catch((error) => {
 
 async function init() {
   dom.nameInput.value = localStorage.getItem("voiceChatName") || makeDefaultName();
-  dom.roomNameInput.value = "통화방";
   dom.launcherButton.hidden = !desktop.isDesktop;
   restoreLoopbackEchoReductionSetting();
   restoreSystemCaptureModeSetting();
@@ -275,7 +309,7 @@ async function init() {
   updateSystemAudioAvailability();
   updateControls();
   renderProgramAudioSources();
-  renderRooms();
+  renderChannels();
   renderParticipants();
   await refreshDevices();
   refreshProgramAudioSources({ silent: true });
@@ -290,14 +324,6 @@ function bindEvents() {
     if (event.target === dom.settingsModal) toggleSettingsModal(false);
   });
   document.addEventListener("keydown", handleGlobalHotkeys);
-  dom.roomLimitLiveSelect?.addEventListener("change", () => {
-    if (!state.currentRoom) return;
-    sendSocket({
-      type: "set-room-limit",
-      limit: Number(dom.roomLimitLiveSelect.value || state.currentRoom.limit),
-    });
-  });
-  dom.refreshRoomsButton.addEventListener("click", () => sendSocket({ type: "list-rooms" }));
   dom.refreshDevicesButton.addEventListener("click", () => refreshDevices());
   dom.leaveButton.addEventListener("click", () => leaveRoom("방에서 나갔습니다."));
   dom.muteButton.addEventListener("click", toggleMute);
@@ -319,23 +345,8 @@ function bindEvents() {
     revealScreenControls();
   });
 
-  dom.nameInput.addEventListener("change", () => {
-    localStorage.setItem("voiceChatName", getUserName());
-    if (state.auth.authed) {
-      // 로그인 상태에서는 닉네임이 계정 프로필에 저장된다.
-      sendSocket({ type: "update-profile", displayName: getUserName() });
-    } else {
-      sendSocket({ type: "set-name", name: getUserName() });
-    }
-    renderParticipants();
-  });
-
   bindAuthEvents();
-
-  dom.createRoomForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    await createRoom();
-  });
+  bindChannelEvents();
 
   dom.inputDeviceSelect.addEventListener("change", () => {
     resetEchoProbe();
@@ -510,7 +521,6 @@ async function connect() {
   setMessage("");
   state.config = await fetchJson(`${serverUrl}/config`);
   dom.versionLabel.textContent = `Accord ${state.config.version || ""}`.trim();
-  dom.roomLimitInput.max = String(state.config.maxRoomLimit || 8);
   updateSecurityStatus();
   await openSocket();
   attemptAuthResume();
@@ -701,8 +711,8 @@ function onAuthOk(message) {
   hideAuthOverlay();
   setStatus("서버 연결", "good");
   updateControls();
-  // 로그인 시점 방 목록 갱신
-  sendSocket({ type: "list-rooms" });
+  // 로그인 시점 채널 목록 요청(서버가 auth-ok 직후 자동으로도 보내지만 안전하게 한 번 더).
+  sendSocket({ type: "channel:list" });
 }
 
 function onAuthError(message) {
@@ -818,6 +828,12 @@ function logout() {
   toggleSettingsModal(false);
   toggleAdminModal(false);
   if (state.currentRoom) leaveRoom("로그아웃했습니다.");
+  // 채널/멤버 화면을 비워 다음 로그인 전까지 이전 계정 정보가 남지 않게 한다.
+  state.channels = [];
+  state.currentChannelId = "";
+  state.presence = {};
+  state.online = [];
+  renderChannels();
   showAuthOverlay();
   setAuthMessage("로그아웃되었습니다.", true);
 }
@@ -1094,15 +1110,36 @@ async function handleSocketMessage(message) {
 
   if (message.type === "hello") {
     state.clientId = message.id;
-    state.rooms = message.rooms || [];
-    renderRooms();
     return;
   }
 
-  if (message.type === "rooms") {
-    state.rooms = message.rooms || [];
+  if (message.type === "channels") {
+    state.channels = message.channels || [];
+    reconcileCurrentChannel(message.selectId);
+    renderChannels();
+    return;
+  }
+
+  if (message.type === "channel-selected") {
+    state.currentChannelId = message.channelId || state.currentChannelId;
+    renderChannels();
+    closeChannelModal();
+    return;
+  }
+
+  if (message.type === "channel-error") {
+    setChannelModalMessage(message.message || "채널 작업에 실패했습니다.");
+    setChannelMenuMessage(message.message || "채널 작업에 실패했습니다.");
+    setRoomModalMessage(message.message || "방 작업에 실패했습니다.");
+    return;
+  }
+
+  if (message.type === "presence") {
+    state.presence = message.rooms || {};
+    state.online = message.online || [];
     renderRooms();
-    updateCurrentRoomFromList();
+    renderMemberList();
+    renderParticipants();
     return;
   }
 
@@ -1145,7 +1182,6 @@ async function handleSocketMessage(message) {
   }
 
   if (message.type === "left") {
-    state.rooms = message.rooms || state.rooms;
     resetRoomState();
     renderRooms();
     return;
@@ -1162,15 +1198,6 @@ async function handleSocketMessage(message) {
     setMessage(message.message || "서버 오류가 발생했습니다.");
     if (!state.currentRoom) stopLocalMedia();
   }
-}
-
-async function createRoom() {
-  if (!await prepareForRoom()) return;
-  sendSocket({
-    type: "create-room",
-    name: dom.roomNameInput.value.trim() || "통화방",
-    limit: Number(dom.roomLimitInput.value || 2),
-  });
 }
 
 async function joinRoom(roomId) {
@@ -5595,46 +5622,381 @@ function shouldMutePlaybackForEchoGuard() {
   return false;
 }
 
-function renderRooms() {
-  dom.roomList.innerHTML = "";
-  if (!state.rooms.length) {
-    const empty = document.createElement("div");
-    empty.className = "empty-state";
-    empty.textContent = "열린 방이 없습니다.";
-    dom.roomList.append(empty);
+// ===== 채널 · 방 · 멤버 렌더링 =====
+function currentChannel() {
+  return state.channels.find((c) => c.id === state.currentChannelId) || null;
+}
+
+function isChannelOwner(channel) {
+  if (!channel) return false;
+  return channel.ownerId === state.auth.user?.id || Boolean(state.auth.user?.isAdmin);
+}
+
+function reconcileCurrentChannel(preferId) {
+  if (preferId && state.channels.some((c) => c.id === preferId)) {
+    state.currentChannelId = preferId;
     return;
   }
+  if (!state.channels.length) {
+    state.currentChannelId = "";
+    return;
+  }
+  if (!state.channels.some((c) => c.id === state.currentChannelId)) {
+    state.currentChannelId = state.channels[0].id;
+  }
+}
 
-  for (const room of state.rooms) {
-    const isCurrent = state.currentRoom?.id === room.id;
-    const full = room.count >= room.limit;
-    const card = document.createElement("article");
-    card.className = "room-card";
-    if (isCurrent) card.classList.add("room-card-current");
-    const main = document.createElement("div");
-    main.className = "room-main";
-    const text = document.createElement("div");
-    const name = document.createElement("p");
+function channelInitials(name) {
+  const trimmed = String(name || "채").trim();
+  return trimmed.slice(0, 2) || "채";
+}
+
+function renderChannels() {
+  renderChannelRail();
+  renderChannelHeader();
+  renderRooms();
+  renderMemberList();
+}
+
+function renderChannelRail() {
+  if (!dom.channelRail) return;
+  dom.channelRail.innerHTML = "";
+  for (const channel of state.channels) {
+    const btn = document.createElement("button");
+    btn.className = "channel-icon" + (channel.id === state.currentChannelId ? " active" : "");
+    btn.dataset.channelId = channel.id;
+    btn.title = channel.name;
+    btn.textContent = channelInitials(channel.name);
+    dom.channelRail.append(btn);
+  }
+  const add = document.createElement("button");
+  add.className = "channel-icon channel-add";
+  add.dataset.channelAdd = "1";
+  add.title = "채널 만들기 / 코드로 참가";
+  add.textContent = "+";
+  dom.channelRail.append(add);
+}
+
+function renderChannelHeader() {
+  const channel = currentChannel();
+  if (dom.channelName) dom.channelName.textContent = channel ? channel.name : "채널 없음";
+  if (dom.channelMenuButton) dom.channelMenuButton.hidden = !channel;
+  if (dom.channelEmpty) dom.channelEmpty.hidden = Boolean(channel);
+}
+
+function renderRooms() {
+  if (!dom.roomList) return;
+  dom.roomList.innerHTML = "";
+  const channel = currentChannel();
+  if (!channel) return;
+  const owner = isChannelOwner(channel);
+
+  for (const room of channel.rooms) {
+    const meta = ROOM_TYPE_META[room.type] || ROOM_TYPE_META.voice;
+    const item = document.createElement("div");
+    item.className = "room-item";
+    if (state.currentRoom?.id === room.id) item.classList.add("active");
+
+    const head = document.createElement("button");
+    head.className = "room-item-head";
+    head.dataset.roomId = room.id;
+    head.dataset.roomType = room.type;
+    const icon = document.createElement("span");
+    icon.className = "room-icon";
+    icon.textContent = meta.icon;
+    const name = document.createElement("span");
     name.className = "room-name";
     name.textContent = room.name;
-    const meta = document.createElement("p");
-    meta.className = "room-meta";
-    meta.textContent = `${room.count}/${room.limit}명`;
-    const people = document.createElement("p");
-    people.className = "room-people";
-    people.textContent = room.participants?.length ? room.participants.join(", ") : "대기 중";
-    const button = document.createElement("button");
-    button.className = "secondary";
-    button.type = "button";
-    // 통화 중에도 다른 방으로 바로 이동할 수 있다.
-    button.textContent = isCurrent ? "참여 중" : full ? "가득 참" : state.currentRoom ? "이동" : "입장";
-    button.disabled = isCurrent || full;
-    button.addEventListener("click", () => joinRoom(room.id));
-    text.append(name, meta, people);
-    main.append(text, button);
-    card.append(main);
-    dom.roomList.append(card);
+    head.append(icon, name);
+
+    const occupants = room.type === "voice" ? (state.presence[room.id] || []) : [];
+    if (occupants.length) {
+      const count = document.createElement("span");
+      count.className = "room-count";
+      count.textContent = String(occupants.length);
+      head.append(count);
+    }
+    if (owner) {
+      const del = document.createElement("button");
+      del.className = "room-del";
+      del.dataset.roomDelete = room.id;
+      del.dataset.channelId = channel.id;
+      del.title = "방 삭제";
+      del.textContent = "×";
+      head.append(del);
+    }
+    item.append(head);
+
+    if (occupants.length) {
+      const occList = document.createElement("div");
+      occList.className = "room-occupants";
+      for (const occ of occupants) {
+        const row = document.createElement("div");
+        row.className = "room-occupant";
+        const dot = document.createElement("span");
+        dot.className = "occupant-dot";
+        row.append(dot, document.createTextNode(occ.name));
+        occList.append(row);
+      }
+      item.append(occList);
+    }
+    dom.roomList.append(item);
   }
+
+  if (owner) {
+    const add = document.createElement("button");
+    add.className = "room-add-button";
+    add.dataset.roomAdd = "1";
+    add.textContent = "+ 방 추가";
+    dom.roomList.append(add);
+  }
+}
+
+function renderMemberList() {
+  if (!dom.memberList) return;
+  const channel = currentChannel();
+  if (!channel) {
+    dom.memberList.hidden = true;
+    dom.memberList.innerHTML = "";
+    return;
+  }
+  dom.memberList.hidden = false;
+  dom.memberList.innerHTML = "";
+  const online = new Set(state.online || []);
+  const members = (channel.members || []).slice().sort((a, b) => {
+    const ao = online.has(a.id) ? 0 : 1;
+    const bo = online.has(b.id) ? 0 : 1;
+    if (ao !== bo) return ao - bo;
+    return String(a.displayName || "").localeCompare(String(b.displayName || ""));
+  });
+  const onlineCount = members.filter((m) => online.has(m.id)).length;
+
+  const head = document.createElement("div");
+  head.className = "member-head";
+  head.textContent = `멤버 · ${onlineCount}/${members.length} 접속`;
+  dom.memberList.append(head);
+
+  const owner = isChannelOwner(channel);
+  for (const member of members) {
+    const isOnline = online.has(member.id);
+    const row = document.createElement("div");
+    row.className = "member-row" + (isOnline ? "" : " offline");
+
+    const avatar = document.createElement("span");
+    avatar.className = "account-avatar small";
+    setAvatar(avatar, member);
+    const dot = document.createElement("span");
+    dot.className = "member-dot" + (isOnline ? " online" : "");
+    avatar.append(dot);
+
+    const info = document.createElement("div");
+    info.className = "member-info";
+    const name = document.createElement("b");
+    name.textContent = member.displayName;
+    if (member.id === channel.ownerId) {
+      const badge = document.createElement("span");
+      badge.className = "owner-badge";
+      badge.textContent = "대표";
+      name.append(" ");
+      name.append(badge);
+    }
+    const code = document.createElement("em");
+    code.textContent = `#${member.code}`;
+    info.append(name, code);
+
+    row.append(avatar, info);
+
+    if (owner && member.id !== channel.ownerId && member.id !== state.auth.user?.id) {
+      const kick = document.createElement("button");
+      kick.className = "member-kick";
+      kick.dataset.kickUserId = member.id;
+      kick.title = "채널에서 내보내기";
+      kick.textContent = "내보내기";
+      row.append(kick);
+    }
+    dom.memberList.append(row);
+  }
+}
+
+// ===== 채널 이벤트 · 모달 =====
+function bindChannelEvents() {
+  dom.channelRail?.addEventListener("click", (event) => {
+    const add = event.target?.closest?.("[data-channel-add]");
+    if (add) { openChannelModal(); return; }
+    const icon = event.target?.closest?.("[data-channel-id]");
+    if (icon) selectChannel(icon.dataset.channelId);
+  });
+
+  dom.roomList?.addEventListener("click", (event) => {
+    const del = event.target?.closest?.("[data-room-delete]");
+    if (del) {
+      event.stopPropagation();
+      if (window.confirm("이 방을 삭제할까요? 저장된 내용도 사라집니다.")) {
+        sendSocket({ type: "channel:remove-room", channelId: del.dataset.channelId, roomId: del.dataset.roomDelete });
+      }
+      return;
+    }
+    const add = event.target?.closest?.("[data-room-add]");
+    if (add) { openRoomModal(); return; }
+    const head = event.target?.closest?.(".room-item-head");
+    if (head) openRoom(head.dataset.roomId, head.dataset.roomType);
+  });
+
+  dom.memberList?.addEventListener("click", (event) => {
+    const kick = event.target?.closest?.("[data-kick-user-id]");
+    if (!kick) return;
+    const channel = currentChannel();
+    if (!channel) return;
+    if (window.confirm("이 멤버를 채널에서 내보낼까요?")) {
+      sendSocket({ type: "channel:kick", channelId: channel.id, userId: kick.dataset.kickUserId });
+    }
+  });
+
+  dom.channelMenuButton?.addEventListener("click", openChannelMenu);
+
+  // 채널 만들기/참가 모달
+  dom.channelModalClose?.addEventListener("click", closeChannelModal);
+  dom.channelModal?.addEventListener("click", (e) => { if (e.target === dom.channelModal) closeChannelModal(); });
+  dom.channelTabCreate?.addEventListener("click", () => setChannelModalTab("create"));
+  dom.channelTabJoin?.addEventListener("click", () => setChannelModalTab("join"));
+  dom.channelCreateForm?.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const name = dom.channelCreateName.value.trim();
+    if (!name) { setChannelModalMessage("채널 이름을 입력해 주세요."); return; }
+    setChannelModalMessage("만드는 중...", true);
+    sendSocket({ type: "channel:create", name });
+  });
+  dom.channelJoinForm?.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const code = dom.channelJoinCode.value.trim().toUpperCase();
+    if (!code) { setChannelModalMessage("초대 코드를 입력해 주세요."); return; }
+    setChannelModalMessage("참가 중...", true);
+    sendSocket({ type: "channel:join", code });
+  });
+
+  // 방 추가 모달
+  dom.roomModalClose?.addEventListener("click", closeRoomModal);
+  dom.roomModal?.addEventListener("click", (e) => { if (e.target === dom.roomModal) closeRoomModal(); });
+  dom.roomModalConfirm?.addEventListener("click", () => {
+    const channel = currentChannel();
+    if (!channel) return;
+    const name = dom.roomModalName.value.trim();
+    const type = document.querySelector('input[name="roomType"]:checked')?.value || "voice";
+    if (!name) { setRoomModalMessage("방 이름을 입력해 주세요."); return; }
+    setRoomModalMessage("추가 중...", true);
+    sendSocket({ type: "channel:add-room", channelId: channel.id, name, roomType: type });
+    closeRoomModal();
+  });
+
+  // 채널 관리 모달
+  dom.channelMenuClose?.addEventListener("click", closeChannelMenu);
+  dom.channelMenuModal?.addEventListener("click", (e) => { if (e.target === dom.channelMenuModal) closeChannelMenu(); });
+  dom.copyInviteButton?.addEventListener("click", () => {
+    const code = dom.channelInviteCode.textContent || "";
+    navigator.clipboard?.writeText(code).then(
+      () => setChannelMenuMessage("초대 코드를 복사했습니다.", true),
+      () => setChannelMenuMessage("복사에 실패했습니다."),
+    );
+  });
+  dom.channelRenameButton?.addEventListener("click", () => {
+    const channel = currentChannel();
+    if (!channel) return;
+    const name = dom.channelRenameInput.value.trim();
+    if (!name) { setChannelMenuMessage("이름을 입력해 주세요."); return; }
+    sendSocket({ type: "channel:rename", channelId: channel.id, name });
+    setChannelMenuMessage("저장했습니다.", true);
+  });
+  dom.channelLeaveButton?.addEventListener("click", () => {
+    const channel = currentChannel();
+    if (!channel) return;
+    if (window.confirm(`'${channel.name}' 채널에서 나갈까요?`)) {
+      sendSocket({ type: "channel:leave", channelId: channel.id });
+      closeChannelMenu();
+    }
+  });
+  dom.channelDeleteButton?.addEventListener("click", () => {
+    const channel = currentChannel();
+    if (!channel) return;
+    if (window.confirm(`'${channel.name}' 채널을 삭제할까요? 되돌릴 수 없습니다.`)) {
+      sendSocket({ type: "channel:delete", channelId: channel.id });
+      closeChannelMenu();
+    }
+  });
+}
+
+function selectChannel(channelId) {
+  if (!channelId || channelId === state.currentChannelId) return;
+  state.currentChannelId = channelId;
+  renderChannels();
+}
+
+function openRoom(roomId, roomType) {
+  if (roomType === "voice") {
+    joinRoom(roomId);
+  } else {
+    const meta = ROOM_TYPE_META[roomType] || {};
+    setMessage(`${meta.label || "이 방"}은 다음 단계에서 열립니다. (준비 중)`);
+  }
+}
+
+function openChannelModal() {
+  if (!dom.channelModal) return;
+  setChannelModalTab("create");
+  setChannelModalMessage("");
+  dom.channelCreateName.value = "";
+  dom.channelJoinCode.value = "";
+  dom.channelModal.hidden = false;
+  dom.channelCreateName.focus();
+}
+function closeChannelModal() { if (dom.channelModal) dom.channelModal.hidden = true; }
+function setChannelModalTab(tab) {
+  const create = tab !== "join";
+  dom.channelTabCreate?.classList.toggle("active", create);
+  dom.channelTabJoin?.classList.toggle("active", !create);
+  if (dom.channelCreateForm) dom.channelCreateForm.hidden = !create;
+  if (dom.channelJoinForm) dom.channelJoinForm.hidden = create;
+  setChannelModalMessage("");
+}
+function setChannelModalMessage(text, ok = false) {
+  if (!dom.channelModalMessage) return;
+  dom.channelModalMessage.textContent = text || "";
+  dom.channelModalMessage.classList.toggle("ok", Boolean(ok));
+}
+
+function openRoomModal() {
+  if (!dom.roomModal) return;
+  dom.roomModalName.value = "";
+  setRoomModalMessage("");
+  const voice = document.querySelector('input[name="roomType"][value="voice"]');
+  if (voice) voice.checked = true;
+  dom.roomModal.hidden = false;
+  dom.roomModalName.focus();
+}
+function closeRoomModal() { if (dom.roomModal) dom.roomModal.hidden = true; }
+function setRoomModalMessage(text, ok = false) {
+  if (!dom.roomModalMessage) return;
+  dom.roomModalMessage.textContent = text || "";
+  dom.roomModalMessage.classList.toggle("ok", Boolean(ok));
+}
+
+function openChannelMenu() {
+  const channel = currentChannel();
+  if (!channel || !dom.channelMenuModal) return;
+  const owner = isChannelOwner(channel);
+  dom.channelInviteCode.textContent = channel.inviteCode || "------";
+  dom.channelRenameInput.value = channel.name || "";
+  // 대표자/관리자만 이름변경·삭제 가능
+  if (dom.channelRenameInput) dom.channelRenameInput.disabled = !owner;
+  if (dom.channelRenameButton) dom.channelRenameButton.hidden = !owner;
+  if (dom.channelDeleteButton) dom.channelDeleteButton.hidden = !owner;
+  setChannelMenuMessage("");
+  dom.channelMenuModal.hidden = false;
+}
+function closeChannelMenu() { if (dom.channelMenuModal) dom.channelMenuModal.hidden = true; }
+function setChannelMenuMessage(text, ok = false) {
+  if (!dom.channelMenuMessage) return;
+  dom.channelMenuMessage.textContent = text || "";
+  dom.channelMenuMessage.classList.toggle("ok", Boolean(ok));
 }
 
 function renderCurrentRoom() {
@@ -5894,23 +6256,11 @@ function cssEscape(value) {
   return String(value).replace(/["\\]/g, "\\$&");
 }
 
-function updateCurrentRoomFromList() {
-  if (!state.currentRoom) return;
-  const latest = state.rooms.find((room) => room.id === state.currentRoom.id);
-  if (latest) {
-    state.currentRoom = latest;
-    renderCurrentRoom();
-  }
-}
-
 function updateControls() {
-  const connected = state.socket?.readyState === WebSocket.OPEN;
   const inRoom = Boolean(state.currentRoom);
   document.body.classList.toggle("in-call", inRoom);
   const canShareSystem = isDirectSystemAudioSupported() || isVirtualSystemAudioSupported();
   const canSendScreen = isScreenShareSendSupported();
-  // 통화 중에도 새 방을 만들어 바로 이동할 수 있다(서버가 기존 방을 먼저 나가게 처리).
-  dom.createRoomButton.disabled = !connected;
   dom.leaveButton.disabled = !inRoom;
   dom.muteButton.disabled = !inRoom || !state.rawMicTrack;
   dom.repairAudioButton.disabled = !inRoom || !state.rawMicTrack || state.applyingSettings;

@@ -280,10 +280,15 @@ h3 {
 .layout {
   flex: 1;
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr);
+  grid-template-columns: 68px 240px minmax(0, 1fr) 210px;
   gap: 12px;
   align-items: stretch;
   min-height: 0;
+}
+
+/* 멤버 리스트가 숨겨지면(채널 없음) 4번째 열을 접는다 */
+.layout:has(.member-list[hidden]) {
+  grid-template-columns: 68px 240px minmax(0, 1fr);
 }
 
 .side-panel {
@@ -1587,4 +1592,333 @@ audio,
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+/* ===== 채널 레일 · 채널 패널 · 멤버 리스트 (2단계) ===== */
+.channel-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0;
+  border-radius: var(--radius-lg);
+  background: var(--bg-deepest);
+  overflow-y: auto;
+}
+
+.channel-icon {
+  width: 46px;
+  height: 46px;
+  min-height: 46px;
+  padding: 0;
+  border-radius: 16px;
+  background: var(--bg-surface);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+  transition: border-radius 0.15s, background 0.15s;
+}
+.channel-icon:hover:not(:disabled) {
+  border-radius: 12px;
+  background: var(--blurple);
+  color: #fff;
+}
+.channel-icon.active {
+  border-radius: 12px;
+  background: var(--blurple);
+  color: #fff;
+}
+.channel-icon.channel-add {
+  background: var(--bg-surface);
+  color: var(--green);
+  font-size: 22px;
+}
+.channel-icon.channel-add:hover {
+  background: var(--green);
+  color: #fff;
+}
+
+.channel-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  padding: 12px 10px;
+  min-height: 0;
+}
+.channel-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 4px 8px;
+  border-bottom: 1px solid var(--line);
+}
+.channel-panel-head h2 {
+  font-size: 15px;
+  color: var(--heading);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.channel-menu-button {
+  font-size: 18px;
+  line-height: 1;
+}
+.channel-empty {
+  margin-top: 12px;
+  padding: 12px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+  line-height: 1.6;
+}
+
+.room-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  min-height: 0;
+}
+.room-item {
+  border-radius: var(--radius-sm);
+}
+.room-item.active {
+  background: rgba(88, 101, 242, 0.14);
+}
+.room-item-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 8px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 500;
+  justify-content: flex-start;
+}
+.room-item-head:hover:not(:disabled) {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+.room-item.active .room-item-head {
+  color: var(--heading);
+}
+.room-icon {
+  width: 18px;
+  text-align: center;
+  flex: none;
+  font-size: 13px;
+}
+.room-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+.room-count {
+  flex: none;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--bg-elevated);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  display: inline-grid;
+  place-items: center;
+}
+.room-del {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  min-height: 20px;
+  padding: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  opacity: 0;
+}
+.room-item-head:hover .room-del {
+  opacity: 1;
+}
+.room-del:hover {
+  background: var(--danger);
+  color: #fff;
+}
+.room-occupants {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 1px 8px 4px 30px;
+}
+.room-occupant {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--text);
+}
+.occupant-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--green);
+  flex: none;
+}
+.room-add-button {
+  margin-top: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 500;
+  justify-content: flex-start;
+  min-height: 32px;
+}
+.room-add-button:hover:not(:disabled) {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+
+.member-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  padding: 12px 8px;
+  overflow-y: auto;
+  min-height: 0;
+}
+.member-head {
+  padding: 4px 8px 8px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.member-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+}
+.member-row:hover {
+  background: var(--bg-elevated);
+}
+.member-row.offline {
+  opacity: 0.45;
+}
+.member-row .account-avatar.small {
+  position: relative;
+  width: 30px;
+  height: 30px;
+}
+.member-dot {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--bg-surface);
+  background: var(--muted);
+}
+.member-dot.online {
+  background: var(--green);
+}
+.member-info {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+  min-width: 0;
+  flex: 1;
+}
+.member-info b {
+  font-size: 13px;
+  color: var(--heading);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.member-info em {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--muted);
+}
+.owner-badge {
+  display: inline-block;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  background: rgba(240, 178, 50, 0.16);
+  color: var(--warning);
+}
+.member-kick {
+  flex: none;
+  min-height: 26px;
+  padding: 0 8px;
+  font-size: 11px;
+  background: transparent;
+  color: var(--muted);
+  opacity: 0;
+}
+.member-row:hover .member-kick {
+  opacity: 1;
+}
+.member-kick:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
+/* 채널 모달 · 방 추가 · 채널 관리 */
+.room-type-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.room-type-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  cursor: pointer;
+  font-size: 13px;
+}
+.room-type-option:has(input:checked) {
+  outline: 2px solid var(--blurple);
+}
+.invite-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+}
+.invite-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+.invite-code {
+  flex: 1;
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  color: var(--heading);
+}
+.channel-menu-actions {
+  flex-wrap: wrap;
 }
