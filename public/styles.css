@@ -1287,3 +1287,304 @@ audio,
     grid-column: auto;
   }
 }
+
+/* ===== 계정 · 인증 · 관리자 UI ===== */
+
+/* 로그인/회원가입 오버레이 */
+.auth-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: radial-gradient(circle at 30% 20%, #2b2d55, var(--bg-deepest) 70%);
+  overflow: auto;
+}
+
+.auth-overlay[hidden] {
+  display: none;
+}
+
+.auth-card {
+  width: min(420px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 28px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-base);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
+}
+
+.auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.auth-brand h1 {
+  font-size: 20px;
+  color: var(--heading);
+}
+
+.auth-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+}
+
+.auth-tab {
+  flex: 1;
+  background: transparent;
+  color: var(--muted);
+}
+
+.auth-tab.active {
+  background: var(--bg-elevated);
+  color: var(--heading);
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.auth-submit {
+  margin-top: 4px;
+}
+
+.auth-avatar-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.auth-avatar-field {
+  flex: 1;
+}
+
+.auth-message,
+.account-message,
+.admin-message {
+  min-height: 18px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--warning);
+}
+
+.auth-message.ok,
+.account-message.ok,
+.admin-message.ok {
+  color: var(--green);
+}
+
+/* 상단 프로필 칩 */
+.profile-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px 0 4px;
+  background: var(--bg-surface);
+  color: var(--text);
+}
+
+.profile-chip:hover:not(:disabled) {
+  background: var(--bg-elevated);
+}
+
+.profile-chip-avatar,
+.account-avatar {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--blurple) center/cover no-repeat;
+  display: inline-block;
+}
+
+.account-avatar {
+  width: 44px;
+  height: 44px;
+}
+
+.account-avatar.large {
+  width: 64px;
+  height: 64px;
+}
+
+.profile-chip-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.1;
+}
+
+.profile-chip-text b {
+  font-size: 13px;
+  color: var(--heading);
+}
+
+.profile-chip-text em {
+  font-size: 11px;
+  font-style: normal;
+  color: var(--muted);
+}
+
+.admin-toggle {
+  color: var(--warning);
+}
+
+/* 설정 모달 내 계정 섹션 */
+.account-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.account-summary-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  line-height: 1.2;
+}
+
+.account-summary-text b {
+  color: var(--heading);
+}
+
+.account-summary-text em {
+  font-style: normal;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.account-password {
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.account-password summary {
+  cursor: pointer;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+/* 관리자 패널 */
+.admin-modal {
+  width: min(760px, 100%);
+}
+
+.admin-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.admin-toolbar {
+  display: flex;
+  gap: 8px;
+}
+
+.admin-toolbar input {
+  flex: 1;
+}
+
+.admin-user-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 52vh;
+  overflow: auto;
+}
+
+.admin-user-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+}
+
+.admin-user-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.admin-user-main b {
+  color: var(--heading);
+}
+
+.admin-user-main .admin-user-code {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.admin-user-meta {
+  font-size: 11px;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.admin-user-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.admin-user-actions button {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.admin-badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  background: rgba(240, 178, 50, 0.16);
+  color: var(--warning);
+}
+
+.admin-online-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  margin-right: 6px;
+}
+
+.admin-online-dot.online {
+  background: var(--green);
+}
+
+.admin-conn-log {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.admin-conn-log summary {
+  cursor: pointer;
+}
+
+.admin-conn-log pre {
+  margin: 6px 0 0;
+  max-height: 140px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}

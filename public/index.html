@@ -17,6 +17,14 @@
           </div>
         </div>
         <div class="top-actions">
+          <button class="ghost admin-toggle" id="adminPanelButton" type="button" hidden>관리자</button>
+          <button class="profile-chip" id="profileChipButton" type="button" hidden>
+            <span class="profile-chip-avatar" id="profileChipAvatar" aria-hidden="true"></span>
+            <span class="profile-chip-text">
+              <b id="profileChipName">-</b>
+              <em id="profileChipCode">#----</em>
+            </span>
+          </button>
           <button class="ghost" id="settingsButton" type="button">설정</button>
           <button class="ghost" id="launcherButton" type="button" hidden>서버 변경</button>
           <div class="status" id="statusBadge">
@@ -340,7 +348,136 @@
             </div>
             <p class="modal-hint">마이크 음소거 단축키: Ctrl+Shift+M</p>
           </section>
+          <section class="modal-section" id="accountSection">
+            <h3>계정</h3>
+            <div class="account-summary">
+              <span class="account-avatar" id="accountAvatar" aria-hidden="true"></span>
+              <div class="account-summary-text">
+                <b id="accountName">-</b>
+                <em id="accountCode">#----</em>
+              </div>
+              <button class="secondary" id="logoutButton" type="button">로그아웃</button>
+            </div>
+            <div class="settings-grid">
+              <label class="field">
+                <span>닉네임</span>
+                <input id="accountDisplayNameInput" autocomplete="off" maxlength="24" />
+              </label>
+              <label class="field">
+                <span>이메일 (선택)</span>
+                <input id="accountEmailInput" type="email" autocomplete="off" maxlength="120" />
+              </label>
+              <label class="field">
+                <span>프로필 이미지</span>
+                <input id="accountAvatarInput" type="file" accept="image/*" />
+              </label>
+            </div>
+            <div class="modal-actions">
+              <button class="primary" id="saveProfileButton" type="button">프로필 저장</button>
+            </div>
+            <details class="account-password">
+              <summary>비밀번호 변경</summary>
+              <div class="settings-grid">
+                <label class="field">
+                  <span>현재 비밀번호</span>
+                  <input id="currentPasswordInput" type="password" autocomplete="current-password" />
+                </label>
+                <label class="field">
+                  <span>새 비밀번호</span>
+                  <input id="newPasswordInput" type="password" autocomplete="new-password" />
+                </label>
+              </div>
+              <div class="modal-actions">
+                <button class="secondary" id="changePasswordButton" type="button">변경</button>
+              </div>
+            </details>
+            <p class="account-message" id="accountMessage" aria-live="polite"></p>
+          </section>
         </div>
+      </div>
+    </div>
+
+    <div class="modal-backdrop" id="adminModal" hidden>
+      <div class="modal admin-modal" role="dialog" aria-modal="true" aria-labelledby="adminTitle">
+        <header class="modal-head">
+          <h2 id="adminTitle">관리자 · 유저 관리</h2>
+          <div class="admin-head-actions">
+            <label class="switch">
+              <input id="adminUiToggle" type="checkbox" checked />
+              <span>관리자 UI 표시</span>
+            </label>
+            <button class="ghost small" id="adminCloseButton" type="button">닫기</button>
+          </div>
+        </header>
+        <div class="modal-body">
+          <div class="admin-toolbar">
+            <input id="adminSearchInput" type="search" placeholder="아이디 · 닉네임 · 코드 검색" autocomplete="off" />
+            <button class="secondary" id="adminRefreshButton" type="button">새로고침</button>
+          </div>
+          <p class="admin-message" id="adminMessage" aria-live="polite"></p>
+          <div class="admin-user-list" id="adminUserList"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="auth-overlay" id="authOverlay">
+      <div class="auth-card">
+        <div class="auth-brand">
+          <div class="brand-mark" aria-hidden="true">A</div>
+          <div>
+            <p class="eyebrow">Accord</p>
+            <h1 id="authHeading">로그인</h1>
+          </div>
+        </div>
+        <div class="auth-tabs">
+          <button class="auth-tab active" id="authTabLogin" type="button">로그인</button>
+          <button class="auth-tab" id="authTabRegister" type="button">회원가입</button>
+        </div>
+
+        <form class="auth-form" id="loginForm">
+          <label class="field">
+            <span>아이디</span>
+            <input id="loginUsername" autocomplete="username" maxlength="20" />
+          </label>
+          <label class="field">
+            <span>비밀번호</span>
+            <input id="loginPassword" type="password" autocomplete="current-password" />
+          </label>
+          <button class="primary auth-submit" type="submit">로그인</button>
+        </form>
+
+        <form class="auth-form" id="registerForm" hidden>
+          <div class="auth-avatar-row">
+            <span class="account-avatar large" id="registerAvatarPreview" aria-hidden="true"></span>
+            <label class="field auth-avatar-field">
+              <span>프로필 이미지 (선택)</span>
+              <input id="registerAvatar" type="file" accept="image/*" />
+            </label>
+          </div>
+          <label class="field">
+            <span>아이디 (영문/숫자 3~20자)</span>
+            <input id="registerUsername" autocomplete="username" maxlength="20" />
+          </label>
+          <label class="field">
+            <span>닉네임</span>
+            <input id="registerDisplayName" autocomplete="nickname" maxlength="24" />
+          </label>
+          <label class="field">
+            <span>비밀번호 (6자 이상)</span>
+            <input id="registerPassword" type="password" autocomplete="new-password" />
+          </label>
+          <label class="field">
+            <span>비밀번호 확인</span>
+            <input id="registerPassword2" type="password" autocomplete="new-password" />
+          </label>
+          <label class="field">
+            <span>이메일 (선택)</span>
+            <input id="registerEmail" type="email" autocomplete="email" maxlength="120" />
+          </label>
+          <button class="primary auth-submit" type="submit">회원가입</button>
+        </form>
+
+        <p class="auth-message" id="authMessage" aria-live="polite"></p>
       </div>
     </div>
 

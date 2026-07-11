@@ -88,6 +88,15 @@ const state = {
   micRestartTimer: 0,
   healthChecking: false,
   repairingAudio: false,
+  auth: {
+    token: localStorage.getItem("accordAuthToken") || "",
+    user: null,
+    authed: false,
+    adminUiEnabled: localStorage.getItem("accordAdminUiEnabled") !== "off",
+    pendingRegisterAvatar: "",
+  },
+  adminUsers: [],
+  adminOnline: [],
 };
 
 const dom = {
@@ -190,6 +199,48 @@ const dom = {
   message: document.querySelector("#message"),
   localMonitor: document.querySelector("#localMonitor"),
   remoteAudios: document.querySelector("#remoteAudios"),
+  // 인증 · 프로필 · 관리자
+  authOverlay: document.querySelector("#authOverlay"),
+  authHeading: document.querySelector("#authHeading"),
+  authTabLogin: document.querySelector("#authTabLogin"),
+  authTabRegister: document.querySelector("#authTabRegister"),
+  loginForm: document.querySelector("#loginForm"),
+  loginUsername: document.querySelector("#loginUsername"),
+  loginPassword: document.querySelector("#loginPassword"),
+  registerForm: document.querySelector("#registerForm"),
+  registerUsername: document.querySelector("#registerUsername"),
+  registerDisplayName: document.querySelector("#registerDisplayName"),
+  registerPassword: document.querySelector("#registerPassword"),
+  registerPassword2: document.querySelector("#registerPassword2"),
+  registerEmail: document.querySelector("#registerEmail"),
+  registerAvatar: document.querySelector("#registerAvatar"),
+  registerAvatarPreview: document.querySelector("#registerAvatarPreview"),
+  authMessage: document.querySelector("#authMessage"),
+  profileChipButton: document.querySelector("#profileChipButton"),
+  profileChipAvatar: document.querySelector("#profileChipAvatar"),
+  profileChipName: document.querySelector("#profileChipName"),
+  profileChipCode: document.querySelector("#profileChipCode"),
+  accountSection: document.querySelector("#accountSection"),
+  accountAvatar: document.querySelector("#accountAvatar"),
+  accountName: document.querySelector("#accountName"),
+  accountCode: document.querySelector("#accountCode"),
+  accountDisplayNameInput: document.querySelector("#accountDisplayNameInput"),
+  accountEmailInput: document.querySelector("#accountEmailInput"),
+  accountAvatarInput: document.querySelector("#accountAvatarInput"),
+  saveProfileButton: document.querySelector("#saveProfileButton"),
+  currentPasswordInput: document.querySelector("#currentPasswordInput"),
+  newPasswordInput: document.querySelector("#newPasswordInput"),
+  changePasswordButton: document.querySelector("#changePasswordButton"),
+  logoutButton: document.querySelector("#logoutButton"),
+  accountMessage: document.querySelector("#accountMessage"),
+  adminPanelButton: document.querySelector("#adminPanelButton"),
+  adminModal: document.querySelector("#adminModal"),
+  adminCloseButton: document.querySelector("#adminCloseButton"),
+  adminUiToggle: document.querySelector("#adminUiToggle"),
+  adminSearchInput: document.querySelector("#adminSearchInput"),
+  adminRefreshButton: document.querySelector("#adminRefreshButton"),
+  adminUserList: document.querySelector("#adminUserList"),
+  adminMessage: document.querySelector("#adminMessage"),
 };
 
 init().catch((error) => {
@@ -261,9 +312,16 @@ function bindEvents() {
 
   dom.nameInput.addEventListener("change", () => {
     localStorage.setItem("voiceChatName", getUserName());
-    sendSocket({ type: "set-name", name: getUserName() });
+    if (state.auth.authed) {
+      // 로그인 상태에서는 닉네임이 계정 프로필에 저장된다.
+      sendSocket({ type: "update-profile", displayName: getUserName() });
+    } else {
+      sendSocket({ type: "set-name", name: getUserName() });
+    }
     renderParticipants();
   });
+
+  bindAuthEvents();
 
   dom.createRoomForm.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -309,12 +367,14 @@ function bindEvents() {
     if (!button) return;
     state.selectedScreenPeerId = button.dataset.screenPeerId || "";
     renderScreenStage();
+    renderParticipants();
   });
   dom.screenShareList.addEventListener("click", (event) => {
     const button = event.target?.closest?.("[data-screen-peer-id]");
     if (!button) return;
     state.selectedScreenPeerId = button.dataset.screenPeerId || "";
     renderScreenStage();
+    renderParticipants();
   });
   dom.systemAudioToggle.addEventListener("change", () => {
     resetEchoProbe();
@@ -444,7 +504,7 @@ async function connect() {
   dom.roomLimitInput.max = String(state.config.maxRoomLimit || 8);
   updateSecurityStatus();
   await openSocket();
-  sendSocket({ type: "set-name", name: getUserName() });
+  attemptAuthResume();
   logClientEvent("client-env", getClientEnvironmentSummary());
   logClientEvent("ice-server-config", getIceServerSummary());
   if (!hasTurnServer()) logClientEvent("turn-missing", "No TURN server configured; symmetric NAT or VM networks may fail.");
@@ -494,6 +554,428 @@ function openSocket() {
   });
 }
 
+// ===== 계정 · 인증 · 관리자 =====
+
+function bindAuthEvents() {
+  dom.authTabLogin?.addEventListener("click", () => setAuthTab("login"));
+  dom.authTabRegister?.addEventListener("click", () => setAuthTab("register"));
+  dom.loginForm?.addEventListener("submit", submitLogin);
+  dom.registerForm?.addEventListener("submit", submitRegister);
+  dom.registerAvatar?.addEventListener("change", async () => {
+    const file = dom.registerAvatar.files?.[0];
+    if (!file) return;
+    try {
+      const dataUrl = await fileToDataUrl(file, 300000);
+      state.auth.pendingRegisterAvatar = dataUrl;
+      setAvatar(dom.registerAvatarPreview, { avatar: dataUrl, displayName: dom.registerDisplayName.value });
+    } catch (error) {
+      setAuthMessage(error.message || "이미지를 불러오지 못했습니다.");
+    }
+  });
+
+  dom.profileChipButton?.addEventListener("click", () => toggleSettingsModal(true));
+  dom.saveProfileButton?.addEventListener("click", saveProfile);
+  dom.changePasswordButton?.addEventListener("click", changePassword);
+  dom.logoutButton?.addEventListener("click", logout);
+  dom.accountAvatarInput?.addEventListener("change", async () => {
+    const file = dom.accountAvatarInput.files?.[0];
+    if (!file) return;
+    try {
+      const dataUrl = await fileToDataUrl(file, 300000);
+      state.auth.pendingProfileAvatar = dataUrl;
+      setAvatar(dom.accountAvatar, { avatar: dataUrl, displayName: dom.accountDisplayNameInput.value });
+      setAccountMessage("저장을 누르면 프로필 이미지가 적용됩니다.", true);
+    } catch (error) {
+      setAccountMessage(error.message || "이미지를 불러오지 못했습니다.");
+    }
+  });
+
+  dom.adminPanelButton?.addEventListener("click", () => toggleAdminModal(true));
+  dom.adminCloseButton?.addEventListener("click", () => toggleAdminModal(false));
+  dom.adminModal?.addEventListener("click", (event) => {
+    if (event.target === dom.adminModal) toggleAdminModal(false);
+  });
+  dom.adminRefreshButton?.addEventListener("click", () => sendSocket({ type: "admin:list-users" }));
+  dom.adminSearchInput?.addEventListener("input", renderAdminUsers);
+  dom.adminUiToggle?.addEventListener("change", () => {
+    state.auth.adminUiEnabled = Boolean(dom.adminUiToggle.checked);
+    localStorage.setItem("accordAdminUiEnabled", state.auth.adminUiEnabled ? "on" : "off");
+    applyAdminVisibility();
+  });
+  dom.adminUserList?.addEventListener("click", handleAdminListClick);
+}
+
+function attemptAuthResume() {
+  if (state.auth.token) {
+    sendSocket({ type: "auth-token", token: state.auth.token });
+  } else {
+    showAuthOverlay();
+  }
+}
+
+function handleAuthSocketMessage(message) {
+  switch (message.type) {
+    case "auth-ok":
+      onAuthOk(message);
+      return true;
+    case "auth-error":
+      onAuthError(message);
+      return true;
+    case "auth-expired":
+      state.auth.token = "";
+      localStorage.removeItem("accordAuthToken");
+      setAuthMessage("세션이 만료되었습니다. 다시 로그인해 주세요.");
+      showAuthOverlay();
+      return true;
+    case "admin-users":
+      state.adminUsers = message.users || [];
+      state.adminOnline = message.online || [];
+      renderAdminUsers();
+      return true;
+    case "admin-error":
+      setAdminMessage(message.message || "관리자 작업에 실패했습니다.");
+      return true;
+    default:
+      return false;
+  }
+}
+
+function onAuthOk(message) {
+  if (message.action === "change-password") {
+    setAccountMessage("비밀번호가 변경되었습니다.", true);
+    if (dom.currentPasswordInput) dom.currentPasswordInput.value = "";
+    if (dom.newPasswordInput) dom.newPasswordInput.value = "";
+    return;
+  }
+  if (message.action === "update-profile") {
+    state.auth.user = message.user;
+    state.auth.pendingProfileAvatar = undefined;
+    applyAuthedUser(message.user);
+    setAccountMessage("프로필이 저장되었습니다.", true);
+    return;
+  }
+  // login / register / resume
+  if (message.token) {
+    state.auth.token = message.token;
+    localStorage.setItem("accordAuthToken", message.token);
+  }
+  state.auth.user = message.user;
+  state.auth.authed = true;
+  applyAuthedUser(message.user);
+  hideAuthOverlay();
+  setStatus("서버 연결", "good");
+  updateControls();
+  // 로그인 시점 방 목록 갱신
+  sendSocket({ type: "list-rooms" });
+}
+
+function onAuthError(message) {
+  const text = message.message || "요청을 처리하지 못했습니다.";
+  if (message.action === "change-password" || message.action === "update-profile") {
+    setAccountMessage(text);
+  } else {
+    setAuthMessage(text);
+  }
+}
+
+function applyAuthedUser(user) {
+  if (!user) return;
+  dom.nameInput.value = user.displayName || "";
+  localStorage.setItem("voiceChatName", user.displayName || "");
+  // 프로필 칩
+  if (dom.profileChipButton) dom.profileChipButton.hidden = false;
+  if (dom.profileChipName) dom.profileChipName.textContent = user.displayName || "-";
+  if (dom.profileChipCode) dom.profileChipCode.textContent = `#${user.code || "----"}`;
+  setAvatar(dom.profileChipAvatar, user);
+  // 계정 설정 섹션
+  if (dom.accountName) dom.accountName.textContent = user.displayName || "-";
+  if (dom.accountCode) dom.accountCode.textContent = `#${user.code || "----"}`;
+  if (dom.accountDisplayNameInput) dom.accountDisplayNameInput.value = user.displayName || "";
+  if (dom.accountEmailInput) dom.accountEmailInput.value = user.email || "";
+  setAvatar(dom.accountAvatar, user);
+  // 관리자 UI
+  applyAdminVisibility();
+  renderParticipants();
+}
+
+function applyAdminVisibility() {
+  const isAdmin = Boolean(state.auth.user?.isAdmin);
+  const show = isAdmin && state.auth.adminUiEnabled;
+  if (dom.adminPanelButton) dom.adminPanelButton.hidden = !show;
+  if (dom.adminUiToggle) dom.adminUiToggle.checked = state.auth.adminUiEnabled;
+  if (!show && dom.adminModal && !dom.adminModal.hidden && !isAdmin) toggleAdminModal(false);
+}
+
+function submitLogin(event) {
+  event.preventDefault();
+  const username = dom.loginUsername.value.trim();
+  const password = dom.loginPassword.value;
+  if (!username || !password) {
+    setAuthMessage("아이디와 비밀번호를 입력해 주세요.");
+    return;
+  }
+  setAuthMessage("로그인 중...", true);
+  sendSocket({ type: "login", username, password });
+}
+
+function submitRegister(event) {
+  event.preventDefault();
+  const username = dom.registerUsername.value.trim();
+  const displayName = dom.registerDisplayName.value.trim() || username;
+  const password = dom.registerPassword.value;
+  const password2 = dom.registerPassword2.value;
+  const email = dom.registerEmail.value.trim();
+  if (!username || !password) {
+    setAuthMessage("아이디와 비밀번호를 입력해 주세요.");
+    return;
+  }
+  if (password !== password2) {
+    setAuthMessage("비밀번호가 일치하지 않습니다.");
+    return;
+  }
+  setAuthMessage("가입 중...", true);
+  sendSocket({
+    type: "register",
+    username,
+    displayName,
+    password,
+    email,
+    avatar: state.auth.pendingRegisterAvatar || "",
+  });
+}
+
+function saveProfile() {
+  if (!state.auth.authed) return;
+  const payload = {
+    type: "update-profile",
+    displayName: dom.accountDisplayNameInput.value.trim(),
+    email: dom.accountEmailInput.value.trim(),
+  };
+  if (state.auth.pendingProfileAvatar !== undefined) payload.avatar = state.auth.pendingProfileAvatar;
+  setAccountMessage("저장 중...", true);
+  sendSocket(payload);
+}
+
+function changePassword() {
+  if (!state.auth.authed) return;
+  const oldPassword = dom.currentPasswordInput.value;
+  const newPassword = dom.newPasswordInput.value;
+  if (!oldPassword || !newPassword) {
+    setAccountMessage("현재/새 비밀번호를 입력해 주세요.");
+    return;
+  }
+  setAccountMessage("변경 중...", true);
+  sendSocket({ type: "change-password", oldPassword, newPassword });
+}
+
+function logout() {
+  sendSocket({ type: "logout", token: state.auth.token });
+  state.auth.token = "";
+  state.auth.user = null;
+  state.auth.authed = false;
+  localStorage.removeItem("accordAuthToken");
+  if (dom.profileChipButton) dom.profileChipButton.hidden = true;
+  if (dom.adminPanelButton) dom.adminPanelButton.hidden = true;
+  toggleSettingsModal(false);
+  toggleAdminModal(false);
+  if (state.currentRoom) leaveRoom("로그아웃했습니다.");
+  showAuthOverlay();
+  setAuthMessage("로그아웃되었습니다.", true);
+}
+
+function setAuthTab(tab) {
+  const login = tab !== "register";
+  dom.authTabLogin?.classList.toggle("active", login);
+  dom.authTabRegister?.classList.toggle("active", !login);
+  if (dom.loginForm) dom.loginForm.hidden = !login;
+  if (dom.registerForm) dom.registerForm.hidden = login;
+  if (dom.authHeading) dom.authHeading.textContent = login ? "로그인" : "회원가입";
+  setAuthMessage("");
+}
+
+function showAuthOverlay() {
+  if (dom.authOverlay) dom.authOverlay.hidden = false;
+}
+
+function hideAuthOverlay() {
+  if (dom.authOverlay) dom.authOverlay.hidden = true;
+  setAuthMessage("");
+}
+
+function setAuthMessage(text, ok = false) {
+  if (!dom.authMessage) return;
+  dom.authMessage.textContent = text || "";
+  dom.authMessage.classList.toggle("ok", Boolean(ok));
+}
+
+function setAccountMessage(text, ok = false) {
+  if (!dom.accountMessage) return;
+  dom.accountMessage.textContent = text || "";
+  dom.accountMessage.classList.toggle("ok", Boolean(ok));
+}
+
+function setAdminMessage(text, ok = false) {
+  if (!dom.adminMessage) return;
+  dom.adminMessage.textContent = text || "";
+  dom.adminMessage.classList.toggle("ok", Boolean(ok));
+}
+
+function toggleAdminModal(show) {
+  if (!dom.adminModal) return;
+  const isAdmin = Boolean(state.auth.user?.isAdmin);
+  if (show && !isAdmin) return;
+  dom.adminModal.hidden = !show;
+  if (show) {
+    setAdminMessage("");
+    sendSocket({ type: "admin:list-users" });
+  }
+}
+
+function handleAdminListClick(event) {
+  const button = event.target?.closest?.("button[data-admin-action]");
+  if (!button) return;
+  const userId = button.dataset.userId || "";
+  const action = button.dataset.adminAction;
+  if (action === "toggle-admin") {
+    sendSocket({ type: "admin:set-admin", userId, value: button.dataset.value === "1" });
+  } else if (action === "set-code") {
+    const current = button.dataset.code || "";
+    const next = window.prompt("새 고유 코드 (영문/숫자 4자)", current);
+    if (next == null) return;
+    sendSocket({ type: "admin:set-code", userId, code: next.trim() });
+  }
+}
+
+function renderAdminUsers() {
+  if (!dom.adminUserList) return;
+  const query = (dom.adminSearchInput?.value || "").trim().toLowerCase();
+  const online = new Set(state.adminOnline || []);
+  const users = (state.adminUsers || []).filter((u) => {
+    if (!query) return true;
+    return (
+      u.username.toLowerCase().includes(query) ||
+      (u.displayName || "").toLowerCase().includes(query) ||
+      (u.code || "").toLowerCase().includes(query)
+    );
+  });
+  dom.adminUserList.innerHTML = "";
+  if (!users.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "유저가 없습니다.";
+    dom.adminUserList.append(empty);
+    return;
+  }
+  const selfId = state.auth.user?.id;
+  for (const user of users) {
+    dom.adminUserList.append(buildAdminUserRow(user, online.has(user.id), user.id === selfId));
+  }
+}
+
+function buildAdminUserRow(user, isOnline, isSelf) {
+  const row = document.createElement("div");
+  row.className = "admin-user-row";
+
+  const avatar = document.createElement("span");
+  avatar.className = "account-avatar";
+  setAvatar(avatar, user);
+
+  const main = document.createElement("div");
+  main.className = "admin-user-main";
+  const nameLine = document.createElement("b");
+  const dot = document.createElement("span");
+  dot.className = `admin-online-dot${isOnline ? " online" : ""}`;
+  nameLine.append(dot, document.createTextNode(user.displayName || user.username));
+  if (user.isAdmin) {
+    const badge = document.createElement("span");
+    badge.className = "admin-badge";
+    badge.textContent = "관리자";
+    badge.style.marginLeft = "6px";
+    nameLine.append(badge);
+  }
+  const codeLine = document.createElement("span");
+  codeLine.className = "admin-user-code";
+  codeLine.textContent = `@${user.username} · #${user.code}`;
+  const metaLine = document.createElement("span");
+  metaLine.className = "admin-user-meta";
+  metaLine.textContent = `IP ${user.lastIp || "-"} · 최근접속 ${formatTimestamp(user.lastLoginAt)}`;
+  main.append(nameLine, codeLine, metaLine);
+
+  if (Array.isArray(user.connLog) && user.connLog.length) {
+    const log = document.createElement("details");
+    log.className = "admin-conn-log";
+    const summary = document.createElement("summary");
+    summary.textContent = `접속 로그 (${user.connLog.length})`;
+    const pre = document.createElement("pre");
+    pre.textContent = user.connLog
+      .slice()
+      .reverse()
+      .map((e) => `${formatTimestamp(e.at)}  ${e.event}  ${e.ip || "-"}`)
+      .join("\n");
+    log.append(summary, pre);
+    main.append(log);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "admin-user-actions";
+  const adminBtn = document.createElement("button");
+  adminBtn.className = "secondary";
+  adminBtn.dataset.adminAction = "toggle-admin";
+  adminBtn.dataset.userId = user.id;
+  adminBtn.dataset.value = user.isAdmin ? "0" : "1";
+  adminBtn.textContent = user.isAdmin ? "관리자 해제" : "관리자 지정";
+  if (isSelf) adminBtn.disabled = true;
+  const codeBtn = document.createElement("button");
+  codeBtn.className = "secondary";
+  codeBtn.dataset.adminAction = "set-code";
+  codeBtn.dataset.userId = user.id;
+  codeBtn.dataset.code = user.code;
+  codeBtn.textContent = "코드 변경";
+  actions.append(adminBtn, codeBtn);
+
+  row.append(avatar, main, actions);
+  return row;
+}
+
+function setAvatar(el, user) {
+  if (!el) return;
+  const avatar = user?.avatar || "";
+  if (avatar) {
+    el.style.backgroundImage = `url("${avatar}")`;
+    el.textContent = "";
+  } else {
+    el.style.backgroundImage = "";
+    el.style.display = "inline-flex";
+    el.style.alignItems = "center";
+    el.style.justifyContent = "center";
+    el.style.fontWeight = "700";
+    el.style.color = "#fff";
+    el.textContent = (user?.displayName || user?.username || "?").trim().charAt(0).toUpperCase();
+  }
+}
+
+function formatTimestamp(ms) {
+  if (!ms) return "-";
+  try {
+    return new Date(ms).toLocaleString("ko-KR", { hour12: false });
+  } catch {
+    return "-";
+  }
+}
+
+function fileToDataUrl(file, maxBytes) {
+  return new Promise((resolve, reject) => {
+    if (maxBytes && file.size > maxBytes) {
+      reject(new Error(`이미지가 너무 큽니다. ${Math.round(maxBytes / 1000)}KB 이하로 올려주세요.`));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("이미지를 읽지 못했습니다."));
+    reader.readAsDataURL(file);
+  });
+}
+
 function bindClientDiagnostics() {
   window.addEventListener("error", (event) => {
     recordClientError("window-error", event.message || "unknown error");
@@ -532,6 +1014,8 @@ async function openMinimalScreenTest() {
 }
 
 async function handleSocketMessage(message) {
+  if (handleAuthSocketMessage(message)) return;
+
   if (message.type === "hello") {
     state.clientId = message.id;
     state.rooms = message.rooms || [];
@@ -5235,6 +5719,8 @@ async function closeScreenViewer() {
   }
   state.selectedScreenPeerId = "";
   renderScreenStage();
+  // 참가자 카드의 "보고 있음" 라벨이 남지 않도록 함께 갱신한다.
+  renderParticipants();
 }
 
 function toggleScreenFitMode() {

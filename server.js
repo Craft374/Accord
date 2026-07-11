@@ -5,8 +5,11 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
 const os = require("node:os");
+const store = require("./data-store");
 
 loadServerEnvFiles();
+store.init();
+seedAdminAccount();
 
 const VERSION = "0.2.43";
 const PORT = Number(process.env.PORT || 25565);
@@ -147,6 +150,9 @@ function handleUpgrade(req, socket) {
     socket,
     buffer: Buffer.alloc(0),
     closed: false,
+    ip: cleanIp(req.socket.remoteAddress),
+    userId: "",
+    isAdmin: false,
   };
 
   clients.set(client.id, client);
@@ -214,6 +220,9 @@ function readFrames(client, chunk) {
 }
 
 function handleMessage(client, message) {
+  if (handleAuthMessage(client, message)) return;
+  if (handleAdminMessage(client, message)) return;
+
   if (message.type === "set-name") {
     client.name = cleanName(message.name);
     broadcastRooms();
@@ -279,6 +288,161 @@ function handleMessage(client, message) {
       data: message.data,
     });
   }
+}
+
+function handleAuthMessage(client, message) {
+  switch (message.type) {
+    case "register": {
+      const result = store.createUser({
+        username: message.username,
+        password: message.password,
+        displayName: message.displayName,
+        email: message.email,
+      });
+      if (result.error) {
+        send(client, { type: "auth-error", action: "register", message: result.error });
+        return true;
+      }
+      finishAuth(client, result.user, "register");
+      return true;
+    }
+    case "login": {
+      const result = store.authenticate(message.username, message.password);
+      if (result.error) {
+        send(client, { type: "auth-error", action: "login", message: result.error });
+        return true;
+      }
+      finishAuth(client, result.user, "login");
+      return true;
+    }
+    case "auth-token": {
+      const user = store.getUserByToken(message.token);
+      if (!user) {
+        send(client, { type: "auth-expired" });
+        return true;
+      }
+      finishAuth(client, user, "resume", message.token);
+      return true;
+    }
+    case "logout": {
+      if (message.token) store.destroySession(message.token);
+      leaveRoom(client, false);
+      client.userId = "";
+      client.isAdmin = false;
+      client.name = "Guest";
+      broadcastRooms();
+      return true;
+    }
+    case "change-password": {
+      if (!client.userId) {
+        send(client, { type: "auth-error", action: "change-password", message: "로그인이 필요합니다." });
+        return true;
+      }
+      const result = store.changePassword(client.userId, message.oldPassword, message.newPassword);
+      if (result.error) {
+        send(client, { type: "auth-error", action: "change-password", message: result.error });
+        return true;
+      }
+      send(client, { type: "auth-ok", action: "change-password", user: store.sanitizeUser(result.user) });
+      return true;
+    }
+    case "update-profile": {
+      if (!client.userId) {
+        send(client, { type: "auth-error", action: "update-profile", message: "로그인이 필요합니다." });
+        return true;
+      }
+      const result = store.updateProfile(client.userId, {
+        displayName: message.displayName,
+        avatar: message.avatar,
+        email: message.email,
+      });
+      if (result.error) {
+        send(client, { type: "auth-error", action: "update-profile", message: result.error });
+        return true;
+      }
+      client.name = result.user.displayName;
+      send(client, { type: "auth-ok", action: "update-profile", user: store.sanitizeUser(result.user) });
+      broadcastRooms();
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
+function finishAuth(client, user, action, existingToken) {
+  const token = existingToken || store.createSession(user.id);
+  client.userId = user.id;
+  client.isAdmin = Boolean(user.isAdmin);
+  client.name = user.displayName;
+  store.recordConnection(user.id, client.ip, action === "resume" ? "connect" : action);
+  logServer(`auth ${action} user=${user.username} code=#${user.code} ip=${client.ip}`, client);
+  send(client, { type: "auth-ok", action, token, user: store.sanitizeUser(user) });
+  broadcastRooms();
+}
+
+function handleAdminMessage(client, message) {
+  if (typeof message.type !== "string" || !message.type.startsWith("admin:")) return false;
+  if (!client.isAdmin) {
+    send(client, { type: "admin-error", message: "관리자 권한이 없습니다." });
+    return true;
+  }
+  switch (message.type) {
+    case "admin:list-users":
+      sendAdminUsers(client);
+      return true;
+    case "admin:set-admin": {
+      const result = store.setAdmin(message.userId, message.value);
+      if (result.error) {
+        send(client, { type: "admin-error", message: result.error });
+        return true;
+      }
+      applyAdminFlagToOnline(message.userId, Boolean(message.value));
+      sendAdminUsers(client);
+      return true;
+    }
+    case "admin:set-code": {
+      const result = store.setUserCode(message.userId, message.code);
+      if (result.error) {
+        send(client, { type: "admin-error", message: result.error });
+        return true;
+      }
+      sendAdminUsers(client);
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
+function sendAdminUsers(client) {
+  send(client, { type: "admin-users", users: store.listUsers(), online: onlineUserIds() });
+}
+
+function onlineUserIds() {
+  const ids = new Set();
+  for (const c of clients.values()) if (c.userId) ids.add(c.userId);
+  return [...ids];
+}
+
+function applyAdminFlagToOnline(userId, value) {
+  for (const c of clients.values()) if (c.userId === userId) c.isAdmin = value;
+}
+
+function seedAdminAccount() {
+  const username = process.env.ADMIN_SEED_USERNAME || "craft374";
+  const password = process.env.ADMIN_SEED_PASSWORD || "";
+  const displayName = process.env.ADMIN_SEED_DISPLAYNAME || username;
+  const result = store.seedAdmin({ username, password, displayName });
+  if (result.created) console.log(`관리자 계정 생성됨: ${username} (#0000)`);
+  else if (result.promoted) console.log(`기존 계정을 관리자(#0000)로 승격: ${username}`);
+  else if (result.skipped === "no-password") {
+    console.log("관리자 시드 건너뜀: ADMIN_SEED_PASSWORD 미설정. server.env에 추가하면 첫 실행 시 생성됩니다.");
+  }
+}
+
+function cleanIp(value) {
+  return String(value || "").replace(/^::ffff:/, "");
 }
 
 function getSignalKind(data) {
@@ -354,6 +518,7 @@ function removeClient(client) {
   if (client.closed) return;
   client.closed = true;
   logServer("client disconnected", client);
+  if (client.userId) store.recordConnection(client.userId, client.ip, "disconnect");
   leaveRoom(client, false);
   clients.delete(client.id);
   client.socket.destroy();

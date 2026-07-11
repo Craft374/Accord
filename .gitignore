@@ -25,6 +25,9 @@ server.env.backup.*
 *.mobileprovision
 .cert/
 
+# Server persistent data (user accounts, hashes, sessions — never commit)
+server-data/
+
 # Logs / temp / debug dumps
 *.log
 *.tmp
