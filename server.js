@@ -574,6 +574,15 @@ function joinVoiceRoom(client, roomId) {
     return;
   }
 
+  const limit = roomLimitOf(found.room);
+  // 정원 초과 검사(이미 이 방에 있던 경우는 제외).
+  const existing = rooms.get(roomId);
+  const alreadyIn = existing && existing.clients.has(client.id);
+  if (existing && !alreadyIn && existing.clients.size >= limit) {
+    send(client, { type: "error", message: `통화방이 가득 찼습니다 (최대 ${limit}명).` });
+    return;
+  }
+
   leaveRoom(client, false);
 
   let room = rooms.get(roomId);
@@ -581,6 +590,7 @@ function joinVoiceRoom(client, roomId) {
     room = { id: roomId, name: found.room.name, channelId: found.channel.id, clients: new Set() };
     rooms.set(roomId, room);
   }
+  room.limit = limit;
   room.clients.add(client.id);
   client.roomId = roomId;
   logServer(`joined room=${room.name} peers=${room.clients.size - 1}`, client);
@@ -706,10 +716,17 @@ function liveRoomInfo(room) {
     id: room.id,
     name: room.name,
     channelId: room.channelId || "",
-    limit: MAX_ROOM_LIMIT,
+    limit: room.limit || MAX_ROOM_LIMIT,
     count: room.clients.size,
     participants: [...room.clients].map((id) => clients.get(id)?.name || "Guest"),
   };
+}
+
+// 방 메타의 정원(없으면 기본값). 1~99로 제한.
+function roomLimitOf(room) {
+  const n = Number(room && room.limit);
+  if (!Number.isFinite(n) || n < 1) return MAX_ROOM_LIMIT;
+  return Math.min(99, Math.floor(n));
 }
 
 // ===== 채널 메시지 =====
@@ -795,6 +812,16 @@ function handleChannelMessage(client, message) {
       return ownerAction(client, message.channelId, () => {
         const r = store.renameRoom(message.channelId, message.roomId, message.name);
         if (r.error) return channelError(client, r.error);
+        notifyChannelMembers(message.channelId);
+        return true;
+      });
+    case "channel:set-room-limit":
+      return ownerAction(client, message.channelId, () => {
+        const r = store.setRoomLimit(message.channelId, message.roomId, message.limit);
+        if (r.error) return channelError(client, r.error);
+        // 이미 열려 있는 실시간 방에도 새 정원을 반영한다.
+        const live = rooms.get(message.roomId);
+        if (live) live.limit = roomLimitOf(r.room);
         notifyChannelMembers(message.channelId);
         return true;
       });

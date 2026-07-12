@@ -21,6 +21,8 @@ const INVITE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 혼동 문자 제
 const MAX_CONN_LOG = 40; // 유저별 접속 로그 보관 개수
 const AVATAR_MAX_LEN = 400000; // 프로필 이미지 data URL 최대 길이(약 300KB)
 const ROOM_TYPES = ["voice", "chat", "memo", "draw", "log"];
+const DEFAULT_ROOM_LIMIT = 8; // 통화방 기본 정원
+const ROOM_LIMIT_MAX = 99;
 
 let db = { users: [], codeCounter: 0 };
 let sessions = {}; // token -> { userId, createdAt }
@@ -367,7 +369,7 @@ function createChannel(ownerId, name) {
     inviteCode: makeInviteCode(),
     members: [ownerId],
     rooms: [
-      { id: newId(), name: "일반", type: "voice" },
+      { id: newId(), name: "일반", type: "voice", limit: DEFAULT_ROOM_LIMIT },
       { id: newId(), name: "공지", type: "chat" },
     ],
     createdAt: Date.now(),
@@ -473,6 +475,7 @@ function addRoom(channelId, name, type) {
   if (!channel) return { error: "채널을 찾을 수 없습니다." };
   const roomType = ROOM_TYPES.includes(type) ? type : "voice";
   const room = { id: newId(), name: cleanRoomTypeName(name, roomType), type: roomType };
+  if (roomType === "voice") room.limit = DEFAULT_ROOM_LIMIT;
   channel.rooms.push(room);
   persistChannels();
   return { channel, room };
@@ -494,6 +497,21 @@ function renameRoom(channelId, roomId, name) {
   const room = channel.rooms.find((r) => r.id === roomId);
   if (!room) return { error: "방을 찾을 수 없습니다." };
   room.name = cleanRoomTypeName(name, room.type);
+  persistChannels();
+  return { channel, room };
+}
+
+function setRoomLimit(channelId, roomId, limit) {
+  const channel = getChannel(channelId);
+  if (!channel) return { error: "채널을 찾을 수 없습니다." };
+  const room = channel.rooms.find((r) => r.id === roomId);
+  if (!room) return { error: "방을 찾을 수 없습니다." };
+  if (room.type !== "voice") return { error: "통화방만 인원을 설정할 수 있습니다." };
+  const n = Math.floor(Number(limit));
+  if (!Number.isFinite(n) || n < 1 || n > ROOM_LIMIT_MAX) {
+    return { error: `인원은 1~${ROOM_LIMIT_MAX}명이어야 합니다.` };
+  }
+  room.limit = n;
   persistChannels();
   return { channel, room };
 }
@@ -533,7 +551,7 @@ function channelSummary(channel) {
     icon: channel.icon || "",
     inviteCode: channel.inviteCode,
     memberIds: channel.members.slice(),
-    rooms: channel.rooms.map((r) => ({ id: r.id, name: r.name, type: r.type })),
+    rooms: channel.rooms.map((r) => ({ id: r.id, name: r.name, type: r.type, ...(r.type === "voice" ? { limit: r.limit || DEFAULT_ROOM_LIMIT } : {}) })),
     createdAt: channel.createdAt,
   };
 }
@@ -690,6 +708,7 @@ module.exports = {
   addRoom,
   removeRoom,
   renameRoom,
+  setRoomLimit,
   renameChannel,
   deleteChannel,
   findRoom,

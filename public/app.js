@@ -157,6 +157,8 @@ const dom = {
   roomRenameInput: document.querySelector("#roomRenameInput"),
   roomRenameConfirm: document.querySelector("#roomRenameConfirm"),
   roomRenameMessage: document.querySelector("#roomRenameMessage"),
+  roomLimitField: document.querySelector("#roomLimitField"),
+  roomLimitInput: document.querySelector("#roomLimitInput"),
   chatPanel: document.querySelector("#chatPanel"),
   chatRoomName: document.querySelector("#chatRoomName"),
   chatSubtitle: document.querySelector("#chatSubtitle"),
@@ -6988,6 +6990,10 @@ function openRoomRenameModal(roomId) {
   roomRenameTargetId = roomId;
   dom.roomRenameInput.value = found.room.name || "";
   if (dom.roomRenameMessage) dom.roomRenameMessage.textContent = "";
+  // 통화방이면 최대 인원 필드를 보여준다.
+  const isVoice = found.room.type === "voice";
+  if (dom.roomLimitField) dom.roomLimitField.hidden = !isVoice;
+  if (dom.roomLimitInput) dom.roomLimitInput.value = String(found.room.limit || 8);
   dom.roomRenameModal.hidden = false;
   dom.roomRenameInput.focus();
   dom.roomRenameInput.select();
@@ -7001,7 +7007,15 @@ function confirmRoomRename() {
   if (!found) { closeRoomRenameModal(); return; }
   const name = (dom.roomRenameInput.value || "").trim();
   if (!name) { if (dom.roomRenameMessage) dom.roomRenameMessage.textContent = "이름을 입력해 주세요."; return; }
-  sendSocket({ type: "channel:rename-room", channelId: found.channel.id, roomId: roomRenameTargetId, name });
+  if (name !== found.room.name) {
+    sendSocket({ type: "channel:rename-room", channelId: found.channel.id, roomId: roomRenameTargetId, name });
+  }
+  if (found.room.type === "voice") {
+    const limit = Math.max(1, Math.min(99, Math.floor(Number(dom.roomLimitInput.value) || 8)));
+    if (limit !== (found.room.limit || 8)) {
+      sendSocket({ type: "channel:set-room-limit", channelId: found.channel.id, roomId: roomRenameTargetId, limit });
+    }
+  }
   closeRoomRenameModal();
 }
 
