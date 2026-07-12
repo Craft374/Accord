@@ -6,6 +6,7 @@ const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
 const os = require("node:os");
 const store = require("./data-store");
+const ot = require("./public/ot-text.js");
 
 loadServerEnvFiles();
 store.init();
@@ -645,6 +646,7 @@ function removeClient(client) {
   client.closed = true;
   logServer("client disconnected", client);
   if (client.userId) store.recordConnection(client.userId, client.ip, "disconnect");
+  leaveMemo(client);
   leaveRoom(client, false);
   clients.delete(client.id);
   client.socket.destroy();
@@ -1064,7 +1066,63 @@ function broadcastChat(channel, payload) {
   }
 }
 
-// ===== 공동 메모장 =====
+// ===== 공동 메모장 (OT 실시간 협업) =====
+// 방별 메모 문서를 메모리에 두고 OT로 동시편집을 병합한다. history는 서버 실행 중에만 유지되고
+// 텍스트는 디바운스로 파일에 저장된다(서버 재시작 시 파일에서 재적재, rev는 0부터).
+const memoDocs = new Map(); // roomId -> { text, history:[], cursors:Map(clientId->cursor), saveTimer }
+const MEMO_PERSIST_DEBOUNCE = 1500;
+
+function getMemoDoc(roomId) {
+  let d = memoDocs.get(roomId);
+  if (!d) {
+    const saved = store.getMemo(roomId);
+    d = { text: saved.text || "", history: [], cursors: new Map(), saveTimer: 0 };
+    memoDocs.set(roomId, d);
+  }
+  return d;
+}
+
+function scheduleMemoPersist(roomId, userId) {
+  const d = memoDocs.get(roomId);
+  if (!d) return;
+  if (d.saveTimer) clearTimeout(d.saveTimer);
+  d.saveTimer = setTimeout(() => {
+    d.saveTimer = 0;
+    store.saveMemo(roomId, d.text, userId);
+  }, MEMO_PERSIST_DEBOUNCE);
+}
+
+function flushMemoPersist(roomId, userId) {
+  const d = memoDocs.get(roomId);
+  if (!d) return;
+  if (d.saveTimer) { clearTimeout(d.saveTimer); d.saveTimer = 0; }
+  store.saveMemo(roomId, d.text, userId || "");
+}
+
+function memoViewerCount(roomId) {
+  let n = 0;
+  for (const c of clients.values()) if (c.memoRoomId === roomId) n++;
+  return n;
+}
+
+// 클라이언트가 메모방 보기를 그만둘 때(닫기/연결종료) 정리.
+function leaveMemo(client) {
+  const roomId = client.memoRoomId;
+  if (!roomId) return;
+  client.memoRoomId = "";
+  const d = memoDocs.get(roomId);
+  if (d) {
+    d.cursors.delete(client.id);
+    for (const c of clients.values()) {
+      if (c.memoRoomId === roomId) send(c, { type: "memo:cursor-leave", roomId, clientId: client.id });
+    }
+    if (memoViewerCount(roomId) === 0) {
+      flushMemoPersist(roomId, client.userId);
+      memoDocs.delete(roomId); // 아무도 안 보면 메모리에서 내림(다음 open 시 파일에서 재적재)
+    }
+  }
+}
+
 function handleMemoMessage(client, message) {
   if (typeof message.type !== "string" || !message.type.startsWith("memo:")) return false;
   if (!client.userId) {
@@ -1077,29 +1135,49 @@ function handleMemoMessage(client, message) {
       const ctx = resolveMemoRoom(client, message.roomId);
       if (!ctx) return true;
       client.memoRoomId = ctx.room.id;
-      const memo = store.getMemo(ctx.room.id);
-      send(client, { type: "memo:state", roomId: ctx.room.id, ...memoPayload(memo) });
+      const d = getMemoDoc(ctx.room.id);
+      const cursors = [...d.cursors.values()].filter((cur) => cur.clientId !== client.id);
+      send(client, { type: "memo:state", roomId: ctx.room.id, text: d.text, rev: d.history.length, cursors });
       return true;
     }
     case "memo:close": {
-      client.memoRoomId = "";
+      leaveMemo(client);
       return true;
     }
-    case "memo:update": {
+    case "memo:op": {
       const ctx = resolveMemoRoom(client, message.roomId);
       if (!ctx) return true;
-      const result = store.saveMemo(ctx.room.id, message.text, client.userId);
-      if (result.error) {
-        send(client, { type: "memo-error", message: result.error });
+      const d = getMemoDoc(ctx.room.id);
+      let o = message.ops;
+      if (!Array.isArray(o)) return true;
+      const baseRev = Math.max(0, Math.min(d.history.length, Number(message.rev) || 0));
+      try {
+        for (let i = baseRev; i < d.history.length; i++) o = ot.transform(o, d.history[i], "right");
+        d.text = ot.apply(d.text, o);
+      } catch (err) {
+        send(client, { type: "memo-error", message: "동기화 오류가 발생했습니다. 새로고침 해주세요." });
         return true;
       }
-      const memo = result.memo;
-      // 저장한 본인에게는 새 rev만 확인(ack), 같은 방을 보는 다른 사람에게는 내용을 반영.
-      send(client, { type: "memo:saved", roomId: ctx.room.id, rev: memo.rev });
-      const payload = { type: "memo:changed", roomId: ctx.room.id, ...memoPayload(memo) };
+      d.history.push(o);
+      const rev = d.history.length;
+      scheduleMemoPersist(ctx.room.id, client.userId);
+      const payload = { type: "memo:op", roomId: ctx.room.id, rev, ops: o, by: client.id };
+      for (const c of clients.values()) {
+        if (c.memoRoomId === ctx.room.id) send(c, payload); // 발신자 포함(ack 겸용)
+      }
+      return true;
+    }
+    case "memo:cursor": {
+      const ctx = resolveMemoRoom(client, message.roomId);
+      if (!ctx) return true;
+      const d = getMemoDoc(ctx.room.id);
+      const pos = Math.max(0, Number(message.pos) || 0);
+      const sel = Number.isFinite(Number(message.sel)) ? Math.max(0, Number(message.sel)) : pos;
+      const cur = { clientId: client.id, userId: client.userId, name: client.name, pos, sel };
+      d.cursors.set(client.id, cur);
       for (const c of clients.values()) {
         if (c.id === client.id || c.memoRoomId !== ctx.room.id) continue;
-        send(c, payload);
+        send(c, { type: "memo:cursor", roomId: ctx.room.id, ...cur });
       }
       return true;
     }
@@ -1119,17 +1197,6 @@ function resolveMemoRoom(client, roomId) {
     return null;
   }
   return found;
-}
-
-function memoPayload(memo) {
-  const user = memo.updatedBy ? store.findById(memo.updatedBy) : null;
-  return {
-    text: memo.text,
-    rev: memo.rev,
-    updatedBy: memo.updatedBy,
-    updatedByName: user ? user.displayName : "",
-    updatedAt: memo.updatedAt,
-  };
 }
 
 function cleanName(value) {

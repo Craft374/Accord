@@ -214,12 +214,11 @@
               </div>
             </div>
           </header>
-          <div class="memo-remote-notice" id="memoRemoteNotice" hidden>
-            <span id="memoRemoteText"></span>
-            <button class="secondary small" id="memoApplyRemote" type="button">불러오기</button>
-          </div>
           <div class="memo-body" id="memoBody">
-            <textarea id="memoEditor" class="memo-editor" spellcheck="false" placeholder="마크다운으로 메모를 작성하세요. 채널 멤버와 함께 편집됩니다."></textarea>
+            <div class="memo-editor-wrap">
+              <textarea id="memoEditor" class="memo-editor" spellcheck="false" placeholder="마크다운으로 메모를 작성하세요. 채널 멤버와 실시간으로 함께 편집됩니다."></textarea>
+              <div class="memo-cursors" id="memoCursors" aria-hidden="true"></div>
+            </div>
             <div class="memo-preview markdown-body" id="memoPreview"></div>
           </div>
         </section>
@@ -695,6 +694,7 @@
     </div>
     <audio id="localMonitor" autoplay muted playsinline></audio>
     <div id="remoteAudios"></div>
+    <script src="ot-text.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

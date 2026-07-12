@@ -178,9 +178,7 @@ const dom = {
   memoBody: document.querySelector("#memoBody"),
   memoEditor: document.querySelector("#memoEditor"),
   memoPreview: document.querySelector("#memoPreview"),
-  memoRemoteNotice: document.querySelector("#memoRemoteNotice"),
-  memoRemoteText: document.querySelector("#memoRemoteText"),
-  memoApplyRemote: document.querySelector("#memoApplyRemote"),
+  memoCursors: document.querySelector("#memoCursors"),
   memoViewSplit: document.querySelector("#memoViewSplit"),
   memoViewEdit: document.querySelector("#memoViewEdit"),
   memoViewPreview: document.querySelector("#memoViewPreview"),
@@ -1316,21 +1314,18 @@ async function handleSocketMessage(message) {
     return;
   }
 
-  if (message.type === "memo:saved") {
-    if (state.memo?.roomId === message.roomId && message.rev > state.memo.rev) {
-      state.memo.rev = message.rev;
-      // 내 저장이 더 최신이면, 쌓여 있던 원격 변경 알림은 낡은 것이므로 치운다.
-      if (state.memo.remotePending && state.memo.remotePending.rev <= message.rev) {
-        state.memo.remotePending = null;
-        hideMemoRemoteNotice();
-      }
-    }
-    setMemoStatus("저장됨", "ok");
+  if (message.type === "memo:op") {
+    handleMemoOp(message);
     return;
   }
 
-  if (message.type === "memo:changed") {
-    handleMemoChanged(message);
+  if (message.type === "memo:cursor") {
+    handleMemoCursor(message);
+    return;
+  }
+
+  if (message.type === "memo:cursor-leave") {
+    handleMemoCursorLeave(message);
     return;
   }
 
@@ -6741,8 +6736,9 @@ function bindChatDragDrop() {
   });
 }
 
-// ===== 공동 메모장 =====
-const MEMO_SAVE_DEBOUNCE = 700;
+// ===== 공동 메모장 (OT 실시간 협업 + 커서 공유) =====
+const MEMO_CURSOR_COLORS = ["#f0b232", "#23a559", "#eb459e", "#00a8fc", "#f23f43", "#e67e22", "#1abc9c", "#a855f7"];
+const MEMO_CURSOR_THROTTLE = 120;
 
 function openMemoRoom(roomId) {
   const found = findRoomInChannels(roomId);
@@ -6752,22 +6748,24 @@ function openMemoRoom(roomId) {
     dom.memoEditor?.focus();
     return;
   }
-  clearMemoSaveTimer();
   state.memo = {
     roomId,
     channelId: found.channel.id,
     name: found.room.name,
-    rev: 0,
-    remotePending: null,
-    saveTimer: 0,
     view: state.memo?.view || "split",
-    lastSentText: "",
+    doc: "",
+    serverRev: 0,
+    inflight: null, // 서버에 보내고 ack 대기 중인 op
+    buffer: [], // inflight 이후 로컬 편집 op들
+    cursors: new Map(), // clientId -> { userId, name, pos, sel, color }
+    cursorSentAt: 0,
+    lastCursor: "",
   };
   document.body.classList.add("memo-open");
   if (dom.memoRoomName) dom.memoRoomName.textContent = found.room.name;
   if (dom.memoEditor) { dom.memoEditor.value = ""; dom.memoEditor.disabled = true; }
   if (dom.memoPreview) dom.memoPreview.innerHTML = "";
-  hideMemoRemoteNotice();
+  clearMemoCursors();
   applyMemoView(state.memo.view);
   setMemoStatus("불러오는 중…", "muted");
   sendSocket({ type: "memo:open", roomId });
@@ -6776,10 +6774,9 @@ function openMemoRoom(roomId) {
 
 function closeMemoView() {
   if (!state.memo) return;
-  flushMemoSave(); // 닫기 전에 마지막 편집을 저장
   sendSocket({ type: "memo:close" });
-  clearMemoSaveTimer();
   state.memo = null;
+  clearMemoCursors();
   document.body.classList.remove("memo-open");
   renderRooms();
 }
@@ -6795,85 +6792,198 @@ function verifyActiveMemo() {
 }
 
 function handleMemoState(message) {
-  if (state.memo?.roomId !== message.roomId) return;
-  state.memo.rev = message.rev || 0;
-  state.memo.lastSentText = message.text || "";
-  if (dom.memoEditor) { dom.memoEditor.disabled = false; dom.memoEditor.value = message.text || ""; }
+  const m = state.memo;
+  if (!m || m.roomId !== message.roomId) return;
+  m.doc = message.text || "";
+  m.serverRev = message.rev || 0;
+  m.inflight = null;
+  m.buffer = [];
+  if (dom.memoEditor) { dom.memoEditor.disabled = false; dom.memoEditor.value = m.doc; }
   renderMemoPreview();
-  if (message.updatedAt) {
-    setMemoStatus(`마지막 편집 ${message.updatedByName || "?"} · ${formatChatTime(message.updatedAt)}`, "muted");
-  } else {
-    setMemoStatus("빈 메모 — 함께 편집됩니다", "muted");
-  }
+  m.cursors.clear();
+  for (const cur of message.cursors || []) setMemoCursor(cur);
+  renderMemoCursors();
+  setMemoStatus(m.doc ? "실시간 편집 중" : "빈 메모 — 함께 편집됩니다", "muted");
 }
 
-function handleMemoChanged(message) {
-  if (state.memo?.roomId !== message.roomId) return;
-  if (message.rev <= state.memo.rev) return; // 이미 반영된(또는 내 저장으로 앞선) 변경은 무시
-  const editing = document.activeElement === dom.memoEditor;
-  if (editing) {
-    // 편집 중이면 덮어쓰지 않고 알림만 — 사용자가 직접 불러오기
-    state.memo.remotePending = { text: message.text, rev: message.rev, name: message.updatedByName || "" };
-    showMemoRemoteNotice(message.updatedByName || "다른 사용자");
-  } else {
-    applyRemoteMemo(message.text, message.rev, message.updatedByName, message.updatedAt);
-  }
-}
-
-function applyRemoteMemo(text, rev, name, at) {
-  if (!state.memo) return;
-  state.memo.rev = rev;
-  state.memo.lastSentText = text;
-  state.memo.remotePending = null;
-  if (dom.memoEditor) dom.memoEditor.value = text;
-  renderMemoPreview();
-  hideMemoRemoteNotice();
-  setMemoStatus(`${name || "다른 사용자"}님이 편집함 · ${formatChatTime(at || Date.now())}`, "muted");
-}
-
-function applyMemoRemotePending() {
-  const pending = state.memo?.remotePending;
-  if (!pending) { hideMemoRemoteNotice(); return; }
-  applyRemoteMemo(pending.text, pending.rev, pending.name, Date.now());
-}
-
-function showMemoRemoteNotice(name) {
-  if (!dom.memoRemoteNotice) return;
-  if (dom.memoRemoteText) dom.memoRemoteText.textContent = `${name}님이 편집했습니다. 불러오면 현재 편집 내용이 대체됩니다.`;
-  dom.memoRemoteNotice.hidden = false;
-}
-function hideMemoRemoteNotice() {
-  if (dom.memoRemoteNotice) dom.memoRemoteNotice.hidden = true;
-}
-
+// 로컬 편집 → 변경분(op)을 만들어 서버로 보낸다.
 function onMemoInput() {
-  if (!state.memo) return;
-  renderMemoPreview();
-  setMemoStatus("편집 중…", "muted");
-  clearMemoSaveTimer();
-  state.memo.saveTimer = window.setTimeout(sendMemoUpdate, MEMO_SAVE_DEBOUNCE);
-}
-
-function sendMemoUpdate() {
-  if (!state.memo) return;
-  clearMemoSaveTimer();
-  const text = dom.memoEditor?.value ?? "";
-  if (text === state.memo.lastSentText) return;
-  state.memo.lastSentText = text;
-  sendSocket({ type: "memo:update", roomId: state.memo.roomId, text });
-  setMemoStatus("저장 중…", "muted");
-}
-
-function flushMemoSave() {
-  if (!state.memo || !dom.memoEditor) return;
-  if (dom.memoEditor.value !== state.memo.lastSentText) sendMemoUpdate();
-}
-
-function clearMemoSaveTimer() {
-  if (state.memo?.saveTimer) {
-    window.clearTimeout(state.memo.saveTimer);
-    state.memo.saveTimer = 0;
+  const m = state.memo;
+  if (!m || !dom.memoEditor) return;
+  const newDoc = dom.memoEditor.value;
+  const op = window.OTText.fromDiff(m.doc, newDoc);
+  if (op.length) {
+    m.doc = newDoc;
+    if (m.inflight === null) {
+      m.inflight = op;
+      sendSocket({ type: "memo:op", roomId: m.roomId, rev: m.serverRev, ops: op });
+    } else {
+      m.buffer.push(op);
+    }
   }
+  renderMemoPreview();
+  renderMemoCursors();
+  sendMemoCursor();
+}
+
+function handleMemoOp(message) {
+  const m = state.memo;
+  if (!m || m.roomId !== message.roomId) return;
+  const OT = window.OTText;
+  m.serverRev = message.rev;
+  if (message.by === state.clientId) {
+    // 내 op의 ack → 버퍼에 쌓인 다음 op를 보낸다.
+    if (m.buffer.length) {
+      m.inflight = m.buffer.shift();
+      sendSocket({ type: "memo:op", roomId: m.roomId, rev: m.serverRev, ops: m.inflight });
+    } else {
+      m.inflight = null;
+    }
+    return;
+  }
+  // 원격 op → 내 미확정 op들을 지나 문서에 적용.
+  let r = message.ops;
+  if (m.inflight) {
+    const ni = OT.transform(m.inflight, r, "right");
+    r = OT.transform(r, m.inflight, "left");
+    m.inflight = ni;
+  }
+  const nb = [];
+  for (const b of m.buffer) {
+    const b2 = OT.transform(b, r, "right");
+    r = OT.transform(r, b, "left");
+    nb.push(b2);
+  }
+  m.buffer = nb;
+
+  const el = dom.memoEditor;
+  const hadFocus = document.activeElement === el;
+  const selStart = el ? el.selectionStart : 0;
+  const selEnd = el ? el.selectionEnd : 0;
+  const scrollTop = el ? el.scrollTop : 0;
+  m.doc = OT.apply(m.doc, r);
+  if (el) {
+    el.value = m.doc;
+    if (hadFocus) el.setSelectionRange(OT.transformCursor(selStart, r, "right"), OT.transformCursor(selEnd, r, "right"));
+    el.scrollTop = scrollTop;
+  }
+  // 원격 커서들도 이번 op만큼 이동
+  for (const cur of m.cursors.values()) {
+    cur.pos = OT.transformCursor(cur.pos, r, "left");
+    cur.sel = OT.transformCursor(cur.sel, r, "left");
+  }
+  renderMemoPreview();
+  renderMemoCursors();
+}
+
+function handleMemoCursor(message) {
+  const m = state.memo;
+  if (!m || m.roomId !== message.roomId) return;
+  setMemoCursor(message);
+  renderMemoCursors();
+}
+
+function handleMemoCursorLeave(message) {
+  const m = state.memo;
+  if (!m || m.roomId !== message.roomId) return;
+  m.cursors.delete(message.clientId);
+  renderMemoCursors();
+}
+
+function setMemoCursor(cur) {
+  const m = state.memo;
+  if (!m || !cur.clientId) return;
+  const existing = m.cursors.get(cur.clientId);
+  const color = existing?.color || MEMO_CURSOR_COLORS[m.cursors.size % MEMO_CURSOR_COLORS.length];
+  m.cursors.set(cur.clientId, {
+    clientId: cur.clientId,
+    userId: cur.userId,
+    name: cur.name || "익명",
+    pos: cur.pos | 0,
+    sel: (cur.sel ?? cur.pos) | 0,
+    color,
+  });
+}
+
+function clearMemoCursors() {
+  if (state.memo) state.memo.cursors.clear();
+  if (dom.memoCursors) dom.memoCursors.innerHTML = "";
+}
+
+function sendMemoCursor() {
+  const m = state.memo;
+  const el = dom.memoEditor;
+  if (!m || !el) return;
+  const now = Date.now();
+  const key = `${el.selectionStart}:${el.selectionEnd}`;
+  if (key === m.lastCursor) return;
+  if (now - m.cursorSentAt < MEMO_CURSOR_THROTTLE) return;
+  m.cursorSentAt = now;
+  m.lastCursor = key;
+  sendSocket({ type: "memo:cursor", roomId: m.roomId, pos: el.selectionStart, sel: el.selectionEnd });
+}
+
+function renderMemoCursors() {
+  const m = state.memo;
+  const layer = dom.memoCursors;
+  const el = dom.memoEditor;
+  if (!m || !layer || !el) return;
+  layer.innerHTML = "";
+  if (m.view === "preview") return; // 편집기가 숨겨져 있으면 커서 표시 안함
+  for (const cur of m.cursors.values()) {
+    const pos = Math.max(0, Math.min(cur.pos, m.doc.length));
+    const coords = getCaretCoordinates(el, pos);
+    const bar = document.createElement("div");
+    bar.className = "memo-remote-cursor";
+    bar.style.left = `${coords.left - el.scrollLeft}px`;
+    bar.style.top = `${coords.top - el.scrollTop}px`;
+    bar.style.height = `${coords.height}px`;
+    bar.style.background = cur.color;
+    const label = document.createElement("span");
+    label.className = "memo-cursor-label";
+    label.textContent = cur.name;
+    label.style.background = cur.color;
+    bar.append(label);
+    layer.append(bar);
+  }
+}
+
+// textarea 내 특정 위치의 캐럿 픽셀 좌표 계산(미러 div 기법).
+const MIRROR_PROPS = [
+  "boxSizing", "width", "borderTopWidth", "borderRightWidth", "borderBottomWidth", "borderLeftWidth",
+  "paddingTop", "paddingRight", "paddingBottom", "paddingLeft", "fontStyle", "fontVariant", "fontWeight",
+  "fontStretch", "fontSize", "lineHeight", "fontFamily", "textAlign", "textTransform", "textIndent",
+  "letterSpacing", "wordSpacing", "tabSize", "whiteSpace", "wordWrap",
+];
+let memoMirror = null;
+function getCaretCoordinates(el, position) {
+  if (!memoMirror) {
+    memoMirror = document.createElement("div");
+    memoMirror.setAttribute("aria-hidden", "true");
+    document.body.appendChild(memoMirror);
+  }
+  const div = memoMirror;
+  const computed = getComputedStyle(el);
+  const s = div.style;
+  s.position = "absolute";
+  s.visibility = "hidden";
+  s.top = "0";
+  s.left = "-9999px";
+  s.overflow = "hidden";
+  s.whiteSpace = "pre-wrap";
+  s.wordWrap = "break-word";
+  for (const prop of MIRROR_PROPS) s[prop] = computed[prop];
+  div.textContent = el.value.substring(0, position);
+  const span = document.createElement("span");
+  span.textContent = el.value.substring(position) || ".";
+  div.appendChild(span);
+  const coords = {
+    top: span.offsetTop + parseInt(computed.borderTopWidth || "0", 10),
+    left: span.offsetLeft + parseInt(computed.borderLeftWidth || "0", 10),
+    height: parseInt(computed.lineHeight || "18", 10) || 18,
+  };
+  div.textContent = "";
+  return coords;
 }
 
 function renderMemoPreview() {
@@ -6894,15 +7004,18 @@ function applyMemoView(view) {
   dom.memoViewEdit?.classList.toggle("active", v === "edit");
   dom.memoViewPreview?.classList.toggle("active", v === "preview");
   if (v !== "edit") renderMemoPreview();
+  renderMemoCursors();
 }
 
 function bindMemoEvents() {
   dom.memoEditor?.addEventListener("input", onMemoInput);
-  dom.memoEditor?.addEventListener("blur", flushMemoSave);
-  dom.memoApplyRemote?.addEventListener("click", applyMemoRemotePending);
   dom.memoViewSplit?.addEventListener("click", () => applyMemoView("split"));
   dom.memoViewEdit?.addEventListener("click", () => applyMemoView("edit"));
   dom.memoViewPreview?.addEventListener("click", () => applyMemoView("preview"));
+  // 커서 이동/선택 변경을 다른 사람에게 알린다.
+  const cursorEvents = ["keyup", "mouseup", "click", "select", "focus"];
+  for (const ev of cursorEvents) dom.memoEditor?.addEventListener(ev, sendMemoCursor);
+  dom.memoEditor?.addEventListener("scroll", renderMemoCursors);
   dom.memoEditor?.addEventListener("keydown", (event) => {
     if (event.key !== "Tab") return;
     event.preventDefault();
