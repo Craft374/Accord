@@ -1298,6 +1298,14 @@ async function handleSocketMessage(message) {
     return;
   }
 
+  if (message.type === "chat:deleted") {
+    if (state.activeChat?.roomId === message.roomId) {
+      state.chatMessages = state.chatMessages.filter((m) => m.id !== message.msgId);
+      renderChatMessages();
+    }
+    return;
+  }
+
   if (message.type === "chat-error") {
     if (state.activeChat) setChatHint(message.message || "채팅 오류가 발생했습니다.");
     return;
@@ -6367,7 +6375,62 @@ function renderChatMessageBody(msg) {
     for (const file of msg.files) files.append(renderChatFile(file));
     wrap.append(files);
   }
+  // 삭제 권한이 있으면 hover 액션(⋯ 메뉴 / Shift 시 즉시삭제 🗑)을 붙인다.
+  if (canDeleteChatMessage(msg)) {
+    const actions = document.createElement("div");
+    actions.className = "chat-msg-actions";
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "chat-act more";
+    more.textContent = "⋯";
+    more.title = "더보기";
+    more.addEventListener("click", (e) => { e.stopPropagation(); openChatMsgMenu(msg.id, more); });
+    const trash = document.createElement("button");
+    trash.type = "button";
+    trash.className = "chat-act trash";
+    trash.textContent = "🗑";
+    trash.title = "바로 삭제 (Shift)";
+    trash.addEventListener("click", (e) => { e.stopPropagation(); deleteChatMessage(msg.id, true); });
+    actions.append(more, trash);
+    wrap.append(actions);
+  }
   return wrap;
+}
+
+function canDeleteChatMessage(msg) {
+  const myId = state.auth.user?.id;
+  if (msg.userId === myId) return true; // 본인 메시지
+  const channel = state.channels.find((c) => c.id === state.activeChat?.channelId);
+  return isChannelOwner(channel); // 대표자(또는 관리자)는 전체 삭제
+}
+
+function deleteChatMessage(msgId, immediate) {
+  if (!state.activeChat) return;
+  if (!immediate && !window.confirm("이 메시지를 삭제할까요?")) return;
+  sendSocket({ type: "chat:delete", roomId: state.activeChat.roomId, msgId });
+}
+
+function openChatMsgMenu(msgId, anchor) {
+  closeChatMsgMenu();
+  const menu = document.createElement("div");
+  menu.className = "chat-msg-menu";
+  menu.id = "chatMsgMenu";
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "chat-msg-menu-item danger";
+  del.textContent = "삭제";
+  del.addEventListener("click", () => { closeChatMsgMenu(); deleteChatMessage(msgId, false); });
+  menu.append(del);
+  document.body.append(menu);
+  const r = anchor.getBoundingClientRect();
+  menu.style.top = `${r.bottom + 4}px`;
+  menu.style.left = `${Math.min(r.left, window.innerWidth - 150)}px`;
+  // 다음 클릭에 닫기
+  setTimeout(() => document.addEventListener("click", closeChatMsgMenu, { once: true }), 0);
+}
+
+function closeChatMsgMenu() {
+  document.getElementById("chatMsgMenu")?.remove();
 }
 
 function renderChatFile(file) {
@@ -6642,6 +6705,10 @@ function bindChatEvents() {
     if (dom.chatFileInput.files?.length) handleChatFiles(dom.chatFileInput.files);
     dom.chatFileInput.value = "";
   });
+  // Shift를 누르면 메시지 hover 시 즉시삭제(🗑) 아이콘이 뜨도록 body 클래스 토글(디스코드식)
+  document.addEventListener("keydown", (e) => { if (e.key === "Shift") document.body.classList.add("chat-shift"); });
+  document.addEventListener("keyup", (e) => { if (e.key === "Shift") document.body.classList.remove("chat-shift"); });
+  window.addEventListener("blur", () => document.body.classList.remove("chat-shift"));
   bindChatDragDrop();
 }
 

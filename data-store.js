@@ -595,6 +595,18 @@ function deleteRoomMessages(roomId) {
   }
 }
 
+// 메시지 하나를 삭제한다. 삭제된 메시지를 돌려주고, 없으면 null.
+function deleteMessage(roomId, msgId) {
+  if (!isSafeRoomId(roomId)) return null;
+  const list = readJson(messagesFile(roomId), []);
+  if (!Array.isArray(list)) return null;
+  const idx = list.findIndex((m) => m.id === msgId);
+  if (idx === -1) return null;
+  const [removed] = list.splice(idx, 1);
+  writeJsonAtomic(messagesFile(roomId), list);
+  return removed;
+}
+
 // ===== 파일 업로드 =====
 function sanitizeUploadName(name) {
   let base = String(name || "file").split(/[/\\]/).pop() || "file";
@@ -716,6 +728,7 @@ module.exports = {
   // 채팅 · 업로드
   getMessages,
   addMessage,
+  deleteMessage,
   deleteRoomMessages,
   saveUpload,
   getUploadPath,

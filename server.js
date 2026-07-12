@@ -1003,6 +1003,22 @@ function handleChatMessage(client, message) {
       }
       return true;
     }
+    case "chat:delete": {
+      const ctx = resolveChatRoom(client, message.roomId);
+      if (!ctx) return true;
+      const list = store.getMessages(ctx.room.id);
+      const target = list.find((m) => m.id === message.msgId);
+      if (!target) return true; // 이미 삭제됨
+      // 대표자(또는 관리자)는 모든 메시지, 일반 유저는 본인 메시지만 삭제 가능.
+      const isOwner = store.isChannelOwner(ctx.channel.id, client.userId, client.isAdmin);
+      if (target.userId !== client.userId && !isOwner) {
+        send(client, { type: "chat-error", message: "본인 메시지만 삭제할 수 있습니다." });
+        return true;
+      }
+      store.deleteMessage(ctx.room.id, message.msgId);
+      broadcastChat(ctx.channel, { type: "chat:deleted", roomId: ctx.room.id, msgId: message.msgId });
+      return true;
+    }
     default:
       return false;
   }
