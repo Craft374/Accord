@@ -152,6 +152,11 @@ const dom = {
   roomModalName: document.querySelector("#roomModalName"),
   roomModalConfirm: document.querySelector("#roomModalConfirm"),
   roomModalMessage: document.querySelector("#roomModalMessage"),
+  roomRenameModal: document.querySelector("#roomRenameModal"),
+  roomRenameClose: document.querySelector("#roomRenameClose"),
+  roomRenameInput: document.querySelector("#roomRenameInput"),
+  roomRenameConfirm: document.querySelector("#roomRenameConfirm"),
+  roomRenameMessage: document.querySelector("#roomRenameMessage"),
   chatPanel: document.querySelector("#chatPanel"),
   chatRoomName: document.querySelector("#chatRoomName"),
   chatSubtitle: document.querySelector("#chatSubtitle"),
@@ -6091,6 +6096,22 @@ function bindChannelEvents() {
     if (head) openRoom(head.dataset.roomId, head.dataset.roomType);
   });
 
+  // 방 우클릭 → 이름 변경(대표자만)
+  dom.roomList?.addEventListener("contextmenu", (event) => {
+    const head = event.target?.closest?.(".room-item-head");
+    if (!head) return;
+    const channel = currentChannel();
+    if (!channel || !isChannelOwner(channel)) return;
+    event.preventDefault();
+    openRoomRenameModal(head.dataset.roomId);
+  });
+
+  // 방 이름 변경 모달
+  dom.roomRenameClose?.addEventListener("click", closeRoomRenameModal);
+  dom.roomRenameModal?.addEventListener("click", (e) => { if (e.target === dom.roomRenameModal) closeRoomRenameModal(); });
+  dom.roomRenameConfirm?.addEventListener("click", confirmRoomRename);
+  dom.roomRenameInput?.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); confirmRoomRename(); } });
+
   dom.memberList?.addEventListener("click", (event) => {
     const channel = currentChannel();
     if (!channel) return;
@@ -6957,6 +6978,31 @@ function setRoomModalMessage(text, ok = false) {
   if (!dom.roomModalMessage) return;
   dom.roomModalMessage.textContent = text || "";
   dom.roomModalMessage.classList.toggle("ok", Boolean(ok));
+}
+
+// 방 이름 변경 모달(우클릭에서 호출)
+let roomRenameTargetId = "";
+function openRoomRenameModal(roomId) {
+  const found = findRoomInChannels(roomId);
+  if (!found || !dom.roomRenameModal) return;
+  roomRenameTargetId = roomId;
+  dom.roomRenameInput.value = found.room.name || "";
+  if (dom.roomRenameMessage) dom.roomRenameMessage.textContent = "";
+  dom.roomRenameModal.hidden = false;
+  dom.roomRenameInput.focus();
+  dom.roomRenameInput.select();
+}
+function closeRoomRenameModal() {
+  if (dom.roomRenameModal) dom.roomRenameModal.hidden = true;
+  roomRenameTargetId = "";
+}
+function confirmRoomRename() {
+  const found = findRoomInChannels(roomRenameTargetId);
+  if (!found) { closeRoomRenameModal(); return; }
+  const name = (dom.roomRenameInput.value || "").trim();
+  if (!name) { if (dom.roomRenameMessage) dom.roomRenameMessage.textContent = "이름을 입력해 주세요."; return; }
+  sendSocket({ type: "channel:rename-room", channelId: found.channel.id, roomId: roomRenameTargetId, name });
+  closeRoomRenameModal();
 }
 
 function openChannelMenu() {

@@ -539,6 +539,25 @@
       </div>
     </div>
 
+    <div class="modal-backdrop" id="roomRenameModal" hidden>
+      <div class="modal room-modal" role="dialog" aria-modal="true" aria-labelledby="roomRenameTitle">
+        <header class="modal-head">
+          <h2 id="roomRenameTitle">방 이름 변경</h2>
+          <button class="ghost small" id="roomRenameClose" type="button">닫기</button>
+        </header>
+        <div class="modal-body">
+          <label class="field">
+            <span>방 이름</span>
+            <input id="roomRenameInput" autocomplete="off" maxlength="32" placeholder="새 이름" />
+          </label>
+          <p class="account-message" id="roomRenameMessage" aria-live="polite"></p>
+          <div class="modal-actions">
+            <button class="primary" id="roomRenameConfirm" type="button">변경</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="modal-backdrop" id="channelMenuModal" hidden>
       <div class="modal channel-menu-modal" role="dialog" aria-modal="true" aria-labelledby="channelMenuTitle">
         <header class="modal-head">
