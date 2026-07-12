@@ -223,6 +223,54 @@
           </div>
         </section>
 
+        <section class="draw-panel" id="drawPanel" aria-hidden="true">
+          <header class="draw-head">
+            <div class="draw-title">
+              <span class="draw-title-icon">🎨</span>
+              <h2 id="drawRoomName">그림판</h2>
+            </div>
+            <div class="draw-toolbar">
+              <div class="draw-tool-group">
+                <button class="draw-tool-btn active" id="drawToolPen" type="button" data-draw-tool="pen" title="펜">✏️</button>
+                <button class="draw-tool-btn" id="drawToolEraser" type="button" data-draw-tool="eraser" title="지우개">🧽</button>
+              </div>
+              <label class="draw-color-wrap" title="색상">
+                <input type="color" id="drawColor" value="#1a1a1a" />
+              </label>
+              <div class="draw-size-wrap" title="굵기">
+                <input type="range" id="drawSize" min="1" max="60" value="4" />
+                <span class="draw-size-val" id="drawSizeVal">4</span>
+              </div>
+              <div class="draw-tool-group">
+                <button class="draw-tool-btn" id="drawUndo" type="button" title="실행취소(내 마지막 획)">↶</button>
+                <button class="draw-tool-btn" id="drawClear" type="button" title="현재 레이어 지우기">🧹</button>
+                <button class="draw-tool-btn" id="drawResize" type="button" title="캔버스 크기">⤢</button>
+              </div>
+              <span class="draw-status" id="drawStatus"></span>
+            </div>
+            <div class="draw-resize-pop" id="drawResizePop" hidden>
+              <label>가로 <input type="number" id="drawResizeW" min="200" max="4000" step="10" /></label>
+              <label>세로 <input type="number" id="drawResizeH" min="200" max="4000" step="10" /></label>
+              <button class="draw-resize-apply" id="drawResizeApply" type="button">적용</button>
+            </div>
+          </header>
+          <div class="draw-body">
+            <div class="draw-canvas-scroll" id="drawCanvasScroll">
+              <div class="draw-canvas-stage" id="drawCanvasStage">
+                <canvas id="drawCanvas"></canvas>
+              </div>
+            </div>
+            <aside class="draw-layers">
+              <div class="draw-layers-head">
+                <span>레이어</span>
+                <button class="draw-layer-add" id="drawLayerAdd" type="button" title="레이어 추가">＋</button>
+              </div>
+              <ul class="draw-layer-list" id="drawLayerList"></ul>
+              <p class="draw-hint">활성 레이어에 그려집니다. 이미지는 붙여넣기(Ctrl+V)로 추가.</p>
+            </aside>
+          </div>
+        </section>
+
         <aside class="member-list" id="memberList" hidden></aside>
       </div>
 

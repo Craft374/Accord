@@ -182,6 +182,26 @@ const dom = {
   memoViewSplit: document.querySelector("#memoViewSplit"),
   memoViewEdit: document.querySelector("#memoViewEdit"),
   memoViewPreview: document.querySelector("#memoViewPreview"),
+  drawPanel: document.querySelector("#drawPanel"),
+  drawRoomName: document.querySelector("#drawRoomName"),
+  drawStatus: document.querySelector("#drawStatus"),
+  drawToolPen: document.querySelector("#drawToolPen"),
+  drawToolEraser: document.querySelector("#drawToolEraser"),
+  drawColor: document.querySelector("#drawColor"),
+  drawSize: document.querySelector("#drawSize"),
+  drawSizeVal: document.querySelector("#drawSizeVal"),
+  drawUndo: document.querySelector("#drawUndo"),
+  drawClear: document.querySelector("#drawClear"),
+  drawResize: document.querySelector("#drawResize"),
+  drawResizePop: document.querySelector("#drawResizePop"),
+  drawResizeW: document.querySelector("#drawResizeW"),
+  drawResizeH: document.querySelector("#drawResizeH"),
+  drawResizeApply: document.querySelector("#drawResizeApply"),
+  drawCanvasScroll: document.querySelector("#drawCanvasScroll"),
+  drawCanvasStage: document.querySelector("#drawCanvasStage"),
+  drawCanvas: document.querySelector("#drawCanvas"),
+  drawLayerAdd: document.querySelector("#drawLayerAdd"),
+  drawLayerList: document.querySelector("#drawLayerList"),
   channelMenuModal: document.querySelector("#channelMenuModal"),
   channelMenuClose: document.querySelector("#channelMenuClose"),
   channelInviteCode: document.querySelector("#channelInviteCode"),
@@ -397,6 +417,7 @@ function bindEvents() {
   bindChannelEvents();
   bindChatEvents();
   bindMemoEvents();
+  bindDrawEvents();
 
   dom.inputDeviceSelect.addEventListener("change", () => {
     resetEchoProbe();
@@ -1260,6 +1281,7 @@ async function handleSocketMessage(message) {
     renderChannels();
     verifyActiveChat();
     verifyActiveMemo();
+    verifyActiveDraw();
     return;
   }
 
@@ -1331,6 +1353,16 @@ async function handleSocketMessage(message) {
 
   if (message.type === "memo-error") {
     if (state.memo) setMemoStatus(message.message || "메모 오류", "bad");
+    return;
+  }
+
+  if (message.type && message.type.startsWith("draw:")) {
+    handleDrawSocketMessage(message);
+    return;
+  }
+
+  if (message.type === "draw-error") {
+    if (state.draw) setDrawStatus(message.message || "그림판 오류", "bad");
     return;
   }
 
@@ -6209,6 +6241,7 @@ function selectChannel(channelId) {
   // 다른 채널의 방을 보고 있었다면 닫는다(방 목록이 새 채널로 바뀌므로).
   if (state.activeChat && state.activeChat.channelId !== channelId) closeChatView();
   if (state.memo && state.memo.channelId !== channelId) closeMemoView();
+  if (state.draw && state.draw.channelId !== channelId) closeDrawView();
   state.currentChannelId = channelId;
   renderChannels();
 }
@@ -6217,16 +6250,24 @@ function openRoom(roomId, roomType) {
   if (roomType === "voice") {
     closeChatView();
     closeMemoView();
+    closeDrawView();
     joinRoom(roomId);
   } else if (roomType === "chat") {
     closeMemoView();
+    closeDrawView();
     openChatRoom(roomId);
   } else if (roomType === "memo") {
     closeChatView();
+    closeDrawView();
     openMemoRoom(roomId);
+  } else if (roomType === "draw") {
+    closeChatView();
+    closeMemoView();
+    openDrawRoom(roomId);
   } else {
     closeChatView();
     closeMemoView();
+    closeDrawView();
     const meta = ROOM_TYPE_META[roomType] || {};
     setMessage(`${meta.label || "이 방"}은 다음 단계에서 열립니다. (준비 중)`);
   }
@@ -7025,6 +7066,621 @@ function bindMemoEvents() {
     el.value = `${el.value.slice(0, start)}  ${el.value.slice(end)}`;
     el.selectionStart = el.selectionEnd = start + 2;
     onMemoInput();
+  });
+}
+
+// ===== 공동 그림판 (draw) =====
+// 방별 캔버스를 레이어 단위 offscreen 캔버스로 구성하고, 획(stroke)을 실시간 브로드캐스트한다.
+// 서버는 append-only(획 추가) 모델이라 늦게 들어와도 전체 문서를 받아 리플레이하면 동일 화면이 된다.
+const DRAW_MIN_POINT_DIST = 1.5; // 이 거리보다 덜 움직이면 점을 추가하지 않음(용량 절약)
+
+function openDrawRoom(roomId) {
+  const found = findRoomInChannels(roomId);
+  if (!found) return;
+  if (state.draw?.roomId === roomId) {
+    document.body.classList.add("draw-open");
+    return;
+  }
+  state.draw = {
+    roomId,
+    channelId: found.channel.id,
+    name: found.room.name,
+    width: 900,
+    height: 600,
+    layers: [], // { id, name, visible, strokes:[], canvas, ctx }
+    activeLayerId: "",
+    tool: dom.drawToolEraser?.classList.contains("active") ? "eraser" : "pen",
+    color: dom.drawColor?.value || "#1a1a1a",
+    size: Number(dom.drawSize?.value) || 4,
+    strokeCounter: 0,
+    drawing: null,
+    myStrokes: [], // 내가 그린 획 스택(실행취소용) { layerId, strokeId }
+    imageCache: new Map(),
+    loaded: false,
+  };
+  document.body.classList.add("draw-open");
+  if (dom.drawRoomName) dom.drawRoomName.textContent = found.room.name;
+  if (dom.drawResizePop) dom.drawResizePop.hidden = true;
+  setDrawStatus("불러오는 중…");
+  if (dom.drawLayerList) dom.drawLayerList.innerHTML = "";
+  sendSocket({ type: "draw:open", roomId });
+  renderRooms();
+}
+
+function closeDrawView() {
+  if (!state.draw) return;
+  sendSocket({ type: "draw:close" });
+  state.draw = null;
+  document.body.classList.remove("draw-open");
+  if (dom.drawResizePop) dom.drawResizePop.hidden = true;
+  renderRooms();
+}
+
+// 채널 목록 갱신 후, 보고 있던 그림판이 사라졌거나 이름이 바뀌었는지 확인.
+function verifyActiveDraw() {
+  if (!state.draw) return;
+  const found = findRoomInChannels(state.draw.roomId);
+  if (!found || found.room.type !== "draw") { closeDrawView(); return; }
+  state.draw.name = found.room.name;
+  state.draw.channelId = found.channel.id;
+  if (dom.drawRoomName) dom.drawRoomName.textContent = found.room.name;
+}
+
+function setDrawStatus(text, tone) {
+  if (!dom.drawStatus) return;
+  dom.drawStatus.textContent = text || "";
+  dom.drawStatus.className = "draw-status" + (tone ? ` ${tone}` : "");
+}
+
+function nextDrawStrokeId() {
+  const d = state.draw;
+  return `${state.clientId || "me"}-${++d.strokeCounter}-${Date.now().toString(36)}`;
+}
+
+// ── 문서/레이어 구성 ──
+function makeLayerCanvas(d) {
+  const c = document.createElement("canvas");
+  c.width = d.width;
+  c.height = d.height;
+  return c;
+}
+
+function buildDrawFromDoc(doc) {
+  const d = state.draw;
+  d.width = doc.width || 900;
+  d.height = doc.height || 600;
+  d.imageCache.clear();
+  d.layers = (doc.layers || []).map((raw) => {
+    const layer = {
+      id: raw.id,
+      name: raw.name || "레이어",
+      visible: raw.visible !== false,
+      strokes: Array.isArray(raw.strokes) ? raw.strokes.slice() : [],
+      canvas: null,
+      ctx: null,
+    };
+    layer.canvas = makeLayerCanvas(d);
+    layer.ctx = layer.canvas.getContext("2d");
+    return layer;
+  });
+  if (!d.layers.length) {
+    const layer = { id: "L1", name: "레이어 1", visible: true, strokes: [], canvas: makeLayerCanvas(d), ctx: null };
+    layer.ctx = layer.canvas.getContext("2d");
+    d.layers.push(layer);
+  }
+  d.activeLayerId = d.layers[d.layers.length - 1].id;
+  applyCanvasSize();
+  for (const layer of d.layers) renderLayer(layer);
+  compositeDraw();
+  renderDrawLayers();
+}
+
+function findDrawLayer(layerId) {
+  return state.draw?.layers.find((l) => l.id === layerId) || null;
+}
+
+function applyCanvasSize() {
+  const d = state.draw;
+  const canvas = dom.drawCanvas;
+  if (!canvas) return;
+  canvas.width = d.width;
+  canvas.height = d.height;
+  canvas.style.width = `${d.width}px`;
+  canvas.style.height = `${d.height}px`;
+  for (const layer of d.layers) {
+    layer.canvas.width = d.width;
+    layer.canvas.height = d.height;
+  }
+}
+
+// 한 획을 주어진 컨텍스트에 그린다(펜/지우개/이미지).
+function paintStroke(ctx, stroke) {
+  if (stroke.tool === "image") {
+    const img = getStrokeImage(stroke);
+    if (img && img.complete && img.naturalWidth) ctx.drawImage(img, stroke.x, stroke.y, stroke.w, stroke.h);
+    return;
+  }
+  const pts = stroke.points || [];
+  if (!pts.length) return;
+  ctx.save();
+  ctx.globalCompositeOperation = stroke.tool === "eraser" ? "destination-out" : "source-over";
+  ctx.strokeStyle = stroke.color;
+  ctx.fillStyle = stroke.color;
+  ctx.lineWidth = stroke.size;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  if (pts.length === 1) {
+    ctx.beginPath();
+    ctx.arc(pts[0][0], pts[0][1], Math.max(0.5, stroke.size / 2), 0, Math.PI * 2);
+    ctx.fill();
+  } else {
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function getStrokeImage(stroke) {
+  const d = state.draw;
+  let img = d.imageCache.get(stroke.id);
+  if (!img) {
+    img = new Image();
+    img.onload = () => {
+      // 이미지 로드가 끝나면 해당 획이 남아있을 때만 다시 그린다.
+      if (!state.draw) return;
+      const layer = state.draw.layers.find((l) => l.strokes.some((s) => s.id === stroke.id));
+      if (layer) { renderLayer(layer); compositeDraw(); }
+    };
+    img.src = stroke.src;
+    d.imageCache.set(stroke.id, img);
+  }
+  return img;
+}
+
+// 레이어 offscreen을 그 레이어의 모든 획으로 다시 그린다.
+function renderLayer(layer) {
+  const d = state.draw;
+  layer.ctx.clearRect(0, 0, d.width, d.height);
+  for (const stroke of layer.strokes) paintStroke(layer.ctx, stroke);
+  // 진행 중인 내 획이 이 레이어면 함께 표시(재렌더로 지워지지 않게).
+  if (d.drawing && d.drawing.layer === layer) paintStroke(layer.ctx, d.drawing.stroke);
+}
+
+// 표시 캔버스에 보이는 레이어들을 순서대로 합성한다.
+function compositeDraw() {
+  const d = state.draw;
+  const ctx = dom.drawCanvas?.getContext("2d");
+  if (!ctx) return;
+  ctx.clearRect(0, 0, d.width, d.height);
+  for (const layer of d.layers) {
+    if (layer.visible) ctx.drawImage(layer.canvas, 0, 0);
+  }
+}
+
+// ── 로컬 그리기 ──
+function drawPointFromEvent(event) {
+  const canvas = dom.drawCanvas;
+  const rect = canvas.getBoundingClientRect();
+  const sx = canvas.width / rect.width;
+  const sy = canvas.height / rect.height;
+  return [(event.clientX - rect.left) * sx, (event.clientY - rect.top) * sy];
+}
+
+function onDrawPointerDown(event) {
+  const d = state.draw;
+  if (!d || !d.loaded) return;
+  if (event.button !== undefined && event.button !== 0) return;
+  const layer = findDrawLayer(d.activeLayerId);
+  if (!layer) return;
+  if (!layer.visible) { setDrawStatus("숨긴 레이어에는 그릴 수 없어요", "bad"); return; }
+  event.preventDefault();
+  try { dom.drawCanvas.setPointerCapture?.(event.pointerId); } catch { /* 캡처 실패해도 그리기는 진행 */ }
+  const stroke = {
+    id: nextDrawStrokeId(),
+    tool: d.tool,
+    color: d.color,
+    size: d.size,
+    points: [drawPointFromEvent(event)],
+  };
+  d.drawing = { stroke, layer };
+  renderLayer(layer);
+  compositeDraw();
+}
+
+function onDrawPointerMove(event) {
+  const d = state.draw;
+  if (!d || !d.drawing) return;
+  const pt = drawPointFromEvent(event);
+  const pts = d.drawing.stroke.points;
+  const last = pts[pts.length - 1];
+  const dx = pt[0] - last[0];
+  const dy = pt[1] - last[1];
+  if (dx * dx + dy * dy < DRAW_MIN_POINT_DIST * DRAW_MIN_POINT_DIST) return;
+  pts.push(pt);
+  if (pts.length > 8000) pts.length = 8000;
+  // 마지막 구간만 증분 그리기(전체 재렌더 없이).
+  const ctx = d.drawing.layer.ctx;
+  ctx.save();
+  ctx.globalCompositeOperation = d.drawing.stroke.tool === "eraser" ? "destination-out" : "source-over";
+  ctx.strokeStyle = d.drawing.stroke.color;
+  ctx.lineWidth = d.drawing.stroke.size;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(last[0], last[1]);
+  ctx.lineTo(pt[0], pt[1]);
+  ctx.stroke();
+  ctx.restore();
+  compositeDraw();
+}
+
+function onDrawPointerUp(event) {
+  const d = state.draw;
+  if (!d || !d.drawing) return;
+  const { stroke, layer } = d.drawing;
+  d.drawing = null;
+  layer.strokes.push(stroke);
+  d.myStrokes.push({ layerId: layer.id, strokeId: stroke.id });
+  renderLayer(layer);
+  compositeDraw();
+  sendSocket({ type: "draw:stroke", roomId: d.roomId, layerId: layer.id, stroke });
+}
+
+function undoMyLastStroke() {
+  const d = state.draw;
+  if (!d || !d.myStrokes.length) return;
+  const entry = d.myStrokes.pop();
+  const layer = findDrawLayer(entry.layerId);
+  if (layer) {
+    layer.strokes = layer.strokes.filter((s) => s.id !== entry.strokeId);
+    renderLayer(layer);
+    compositeDraw();
+  }
+  sendSocket({ type: "draw:undo", roomId: d.roomId, strokeId: entry.strokeId });
+}
+
+function clearActiveLayer() {
+  const d = state.draw;
+  if (!d) return;
+  const layer = findDrawLayer(d.activeLayerId);
+  if (!layer) return;
+  if (!confirm(`'${layer.name}' 레이어를 지울까요?`)) return;
+  layer.strokes = [];
+  d.myStrokes = d.myStrokes.filter((e) => e.layerId !== layer.id);
+  renderLayer(layer);
+  compositeDraw();
+  sendSocket({ type: "draw:clear", roomId: d.roomId, layerId: layer.id });
+}
+
+// ── 이미지 붙여넣기 ──
+function handleDrawPaste(event) {
+  const d = state.draw;
+  if (!d || !d.loaded) return;
+  if (!document.body.classList.contains("draw-open")) return;
+  const items = event.clipboardData?.items || [];
+  for (const item of items) {
+    if (item.type && item.type.startsWith("image/")) {
+      const file = item.getAsFile();
+      if (file) { event.preventDefault(); insertDrawImageFile(file); return; }
+    }
+  }
+}
+
+function insertDrawImageFile(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    const img = new Image();
+    img.onload = () => {
+      const d = state.draw;
+      if (!d) return;
+      // 캔버스 대비 과도하게 크면 축소, 원본이 매우 크면 재인코딩으로 용량도 줄인다.
+      const maxDim = 1200;
+      let nw = img.naturalWidth;
+      let nh = img.naturalHeight;
+      const encScale = Math.min(1, maxDim / nw, maxDim / nh);
+      const encW = Math.max(1, Math.round(nw * encScale));
+      const encH = Math.max(1, Math.round(nh * encScale));
+      let src = String(reader.result);
+      if (encScale < 1) {
+        const tmp = document.createElement("canvas");
+        tmp.width = encW; tmp.height = encH;
+        tmp.getContext("2d").drawImage(img, 0, 0, encW, encH);
+        src = tmp.toDataURL("image/png");
+      }
+      const fitScale = Math.min(1, (d.width * 0.8) / encW, (d.height * 0.8) / encH);
+      const w = Math.max(1, Math.round(encW * fitScale));
+      const h = Math.max(1, Math.round(encH * fitScale));
+      const x = Math.round((d.width - w) / 2);
+      const y = Math.round((d.height - h) / 2);
+      const layer = findDrawLayer(d.activeLayerId) || d.layers[d.layers.length - 1];
+      const stroke = { id: nextDrawStrokeId(), tool: "image", src, x, y, w, h };
+      layer.strokes.push(stroke);
+      d.myStrokes.push({ layerId: layer.id, strokeId: stroke.id });
+      renderLayer(layer);
+      compositeDraw();
+      sendSocket({ type: "draw:stroke", roomId: d.roomId, layerId: layer.id, stroke });
+      setDrawStatus("이미지 추가됨", "");
+    };
+    img.src = String(reader.result);
+  };
+  reader.readAsDataURL(file);
+}
+
+// ── 레이어 UI ──
+function renderDrawLayers() {
+  const d = state.draw;
+  const list = dom.drawLayerList;
+  if (!d || !list) return;
+  list.innerHTML = "";
+  d.layers.forEach((layer, index) => {
+    const li = document.createElement("li");
+    li.className = "draw-layer-item" + (layer.id === d.activeLayerId ? " active" : "") + (layer.visible ? "" : " hidden-layer");
+    li.dataset.layerId = layer.id;
+
+    const vis = document.createElement("button");
+    vis.className = "draw-layer-vis";
+    vis.type = "button";
+    vis.textContent = layer.visible ? "👁" : "🚫";
+    vis.title = layer.visible ? "숨기기" : "보이기";
+    vis.addEventListener("click", (e) => { e.stopPropagation(); toggleLayerVisible(layer.id); });
+
+    const name = document.createElement("span");
+    name.className = "draw-layer-name";
+    name.textContent = layer.name;
+    name.title = "더블클릭하여 이름 변경";
+    name.addEventListener("dblclick", (e) => { e.stopPropagation(); startLayerRename(li, layer); });
+
+    const order = document.createElement("span");
+    order.className = "draw-layer-order";
+    const up = document.createElement("button");
+    up.type = "button"; up.textContent = "▲"; up.title = "위로";
+    up.disabled = index === d.layers.length - 1;
+    up.addEventListener("click", (e) => { e.stopPropagation(); moveLayer(layer.id, 1); });
+    const down = document.createElement("button");
+    down.type = "button"; down.textContent = "▼"; down.title = "아래로";
+    down.disabled = index === 0;
+    down.addEventListener("click", (e) => { e.stopPropagation(); moveLayer(layer.id, -1); });
+    order.append(up, down);
+
+    const del = document.createElement("button");
+    del.className = "draw-layer-del";
+    del.type = "button"; del.textContent = "🗑"; del.title = "레이어 삭제";
+    del.addEventListener("click", (e) => { e.stopPropagation(); removeLayer(layer.id); });
+
+    li.append(vis, name, order, del);
+    li.addEventListener("click", () => { d.activeLayerId = layer.id; renderDrawLayers(); });
+    list.appendChild(li);
+  });
+}
+
+function startLayerRename(li, layer) {
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = layer.name;
+  input.className = "draw-layer-name";
+  input.style.minWidth = "0";
+  const nameEl = li.querySelector(".draw-layer-name");
+  li.replaceChild(input, nameEl);
+  input.focus();
+  input.select();
+  const commit = () => {
+    const newName = input.value.trim().slice(0, 40) || layer.name;
+    layer.name = newName;
+    sendSocket({ type: "draw:layer-update", roomId: state.draw.roomId, layerId: layer.id, name: newName });
+    renderDrawLayers();
+  };
+  input.addEventListener("blur", commit);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); input.blur(); }
+    else if (e.key === "Escape") { e.preventDefault(); renderDrawLayers(); }
+  });
+}
+
+function addDrawLayer() {
+  const d = state.draw;
+  if (!d) return;
+  const id = `L${Date.now().toString(36)}`;
+  const layer = { id, name: `레이어 ${d.layers.length + 1}`, visible: true, strokes: [], canvas: makeLayerCanvas(d), ctx: null };
+  layer.ctx = layer.canvas.getContext("2d");
+  d.layers.push(layer);
+  d.activeLayerId = id;
+  renderDrawLayers();
+  compositeDraw();
+  sendSocket({ type: "draw:layer-add", roomId: d.roomId, layer: { id, name: layer.name } });
+}
+
+function removeLayer(layerId) {
+  const d = state.draw;
+  if (!d) return;
+  if (d.layers.length <= 1) { setDrawStatus("최소 한 개의 레이어가 필요합니다", "bad"); return; }
+  const layer = findDrawLayer(layerId);
+  if (!layer) return;
+  if (!confirm(`'${layer.name}' 레이어를 삭제할까요?`)) return;
+  applyLayerRemoval(layerId);
+  sendSocket({ type: "draw:layer-remove", roomId: d.roomId, layerId });
+}
+
+function applyLayerRemoval(layerId) {
+  const d = state.draw;
+  d.layers = d.layers.filter((l) => l.id !== layerId);
+  d.myStrokes = d.myStrokes.filter((e) => e.layerId !== layerId);
+  if (d.activeLayerId === layerId) d.activeLayerId = d.layers[d.layers.length - 1]?.id || "";
+  renderDrawLayers();
+  compositeDraw();
+}
+
+function toggleLayerVisible(layerId) {
+  const d = state.draw;
+  const layer = findDrawLayer(layerId);
+  if (!layer) return;
+  layer.visible = !layer.visible;
+  renderDrawLayers();
+  compositeDraw();
+  sendSocket({ type: "draw:layer-update", roomId: d.roomId, layerId, visible: layer.visible });
+}
+
+// dir=+1 위로(배열 뒤로, 위에 표시), -1 아래로.
+function moveLayer(layerId, dir) {
+  const d = state.draw;
+  const i = d.layers.findIndex((l) => l.id === layerId);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= d.layers.length) return;
+  const [layer] = d.layers.splice(i, 1);
+  d.layers.splice(j, 0, layer);
+  renderDrawLayers();
+  compositeDraw();
+  sendSocket({ type: "draw:layer-reorder", roomId: d.roomId, order: d.layers.map((l) => l.id) });
+}
+
+// ── 캔버스 크기 조절 ──
+function toggleResizePop() {
+  const d = state.draw;
+  const pop = dom.drawResizePop;
+  if (!d || !pop) return;
+  if (pop.hidden) {
+    if (dom.drawResizeW) dom.drawResizeW.value = d.width;
+    if (dom.drawResizeH) dom.drawResizeH.value = d.height;
+    pop.hidden = false;
+    dom.drawResizeW?.focus();
+  } else {
+    pop.hidden = true;
+  }
+}
+
+function applyResize() {
+  const d = state.draw;
+  if (!d) return;
+  const w = Math.max(200, Math.min(4000, Math.round(Number(dom.drawResizeW?.value) || d.width)));
+  const h = Math.max(200, Math.min(4000, Math.round(Number(dom.drawResizeH?.value) || d.height)));
+  d.width = w; d.height = h;
+  applyCanvasSize();
+  for (const layer of d.layers) renderLayer(layer);
+  compositeDraw();
+  if (dom.drawResizePop) dom.drawResizePop.hidden = true;
+  sendSocket({ type: "draw:resize", roomId: d.roomId, width: w, height: h });
+}
+
+// ── 서버 이벤트 처리 ──
+function handleDrawSocketMessage(message) {
+  const d = state.draw;
+  if (!d || message.roomId !== d.roomId) return;
+  switch (message.type) {
+    case "draw:state": {
+      buildDrawFromDoc(message.doc || {});
+      d.loaded = true;
+      setDrawStatus("", "");
+      break;
+    }
+    case "draw:stroke": {
+      const layer = findDrawLayer(message.layerId);
+      if (!layer) return;
+      layer.strokes.push(message.stroke);
+      paintStroke(layer.ctx, message.stroke);
+      compositeDraw();
+      break;
+    }
+    case "draw:remove": {
+      for (const layer of d.layers) {
+        const before = layer.strokes.length;
+        layer.strokes = layer.strokes.filter((s) => s.id !== message.strokeId);
+        if (layer.strokes.length !== before) { renderLayer(layer); compositeDraw(); break; }
+      }
+      d.myStrokes = d.myStrokes.filter((e) => e.strokeId !== message.strokeId);
+      break;
+    }
+    case "draw:clear": {
+      if (message.layerId === "*") {
+        for (const layer of d.layers) { layer.strokes = []; renderLayer(layer); }
+      } else {
+        const layer = findDrawLayer(message.layerId);
+        if (layer) { layer.strokes = []; renderLayer(layer); }
+      }
+      compositeDraw();
+      break;
+    }
+    case "draw:resize": {
+      d.width = message.width || d.width;
+      d.height = message.height || d.height;
+      applyCanvasSize();
+      for (const layer of d.layers) renderLayer(layer);
+      compositeDraw();
+      break;
+    }
+    case "draw:layer-add": {
+      if (findDrawLayer(message.layer.id)) return;
+      const raw = message.layer;
+      const layer = { id: raw.id, name: raw.name || "레이어", visible: true, strokes: [], canvas: makeLayerCanvas(d), ctx: null };
+      layer.ctx = layer.canvas.getContext("2d");
+      d.layers.push(layer);
+      renderDrawLayers();
+      compositeDraw();
+      break;
+    }
+    case "draw:layer-remove": {
+      applyLayerRemoval(message.layerId);
+      break;
+    }
+    case "draw:layer-update": {
+      const layer = findDrawLayer(message.layerId);
+      if (!layer) return;
+      if (typeof message.visible === "boolean") layer.visible = message.visible;
+      if (typeof message.name === "string") layer.name = message.name;
+      renderDrawLayers();
+      compositeDraw();
+      break;
+    }
+    case "draw:layer-reorder": {
+      const order = message.order || [];
+      const map = new Map(d.layers.map((l) => [l.id, l]));
+      const reordered = [];
+      for (const id of order) if (map.has(id)) { reordered.push(map.get(id)); map.delete(id); }
+      for (const l of map.values()) reordered.push(l);
+      if (reordered.length === d.layers.length) d.layers = reordered;
+      renderDrawLayers();
+      compositeDraw();
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+function setDrawTool(tool) {
+  const d = state.draw;
+  const t = tool === "eraser" ? "eraser" : "pen";
+  if (d) d.tool = t;
+  dom.drawToolPen?.classList.toggle("active", t === "pen");
+  dom.drawToolEraser?.classList.toggle("active", t === "eraser");
+}
+
+function bindDrawEvents() {
+  const canvas = dom.drawCanvas;
+  if (canvas) {
+    canvas.addEventListener("pointerdown", onDrawPointerDown);
+    canvas.addEventListener("pointermove", onDrawPointerMove);
+    canvas.addEventListener("pointerup", onDrawPointerUp);
+    canvas.addEventListener("pointercancel", onDrawPointerUp);
+    canvas.addEventListener("pointerleave", (e) => { if (state.draw?.drawing) onDrawPointerUp(e); });
+  }
+  dom.drawToolPen?.addEventListener("click", () => setDrawTool("pen"));
+  dom.drawToolEraser?.addEventListener("click", () => setDrawTool("eraser"));
+  dom.drawColor?.addEventListener("input", (e) => { if (state.draw) state.draw.color = e.target.value; });
+  dom.drawSize?.addEventListener("input", (e) => {
+    const v = Number(e.target.value) || 1;
+    if (state.draw) state.draw.size = v;
+    if (dom.drawSizeVal) dom.drawSizeVal.textContent = String(v);
+  });
+  dom.drawUndo?.addEventListener("click", undoMyLastStroke);
+  dom.drawClear?.addEventListener("click", clearActiveLayer);
+  dom.drawResize?.addEventListener("click", toggleResizePop);
+  dom.drawResizeApply?.addEventListener("click", applyResize);
+  dom.drawLayerAdd?.addEventListener("click", addDrawLayer);
+  document.addEventListener("paste", handleDrawPaste);
+  document.addEventListener("keydown", (e) => {
+    if (!state.draw || !document.body.classList.contains("draw-open")) return;
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); undoMyLastStroke(); }
   });
 }
 

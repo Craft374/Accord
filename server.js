@@ -248,6 +248,7 @@ function handleUpgrade(req, socket) {
     isAdmin: false,
     chatRoomId: "", // 현재 보고 있는 채팅방(입력중 표시 대상 판별용)
     memoRoomId: "", // 현재 보고 있는 메모장(실시간 동기화 대상 판별용)
+    drawRoomId: "", // 현재 보고 있는 그림판(실시간 동기화 대상 판별용)
   };
 
   clients.set(client.id, client);
@@ -340,6 +341,7 @@ function handleMessage(client, message) {
   if (handleChannelMessage(client, message)) return;
   if (handleChatMessage(client, message)) return;
   if (handleMemoMessage(client, message)) return;
+  if (handleDrawMessage(client, message)) return;
 
   if (message.type === "set-name") {
     client.name = cleanName(message.name);
@@ -647,6 +649,7 @@ function removeClient(client) {
   logServer("client disconnected", client);
   if (client.userId) store.recordConnection(client.userId, client.ip, "disconnect");
   leaveMemo(client);
+  leaveDraw(client);
   leaveRoom(client, false);
   clients.delete(client.id);
   client.socket.destroy();
@@ -1194,6 +1197,262 @@ function resolveMemoRoom(client, roomId) {
   }
   if (!store.isChannelMember(found.channel.id, client.userId, client.isAdmin)) {
     send(client, { type: "memo-error", message: "채널 멤버만 이용할 수 있습니다." });
+    return null;
+  }
+  return found;
+}
+
+// ===== 공동 그림판 =====
+// 방별 캔버스 문서를 메모리에 두고, stroke/레이어 변경을 그리는 사람 전원에게 브로드캐스트한다.
+// 텍스트 메모(OT)와 달리 그림은 append-only(획 추가) + 레이어 조작이라 last-write 병합이 필요 없다.
+// 늦게 들어온 사람은 draw:open 시 전체 문서를 받아 그대로 리플레이한다.
+const drawDocs = new Map(); // roomId -> { doc, saveTimer }
+const DRAW_PERSIST_DEBOUNCE = 2000;
+
+function getDrawDoc(roomId) {
+  let d = drawDocs.get(roomId);
+  if (!d) {
+    d = { doc: store.getDraw(roomId), saveTimer: 0 };
+    drawDocs.set(roomId, d);
+  }
+  return d;
+}
+
+function scheduleDrawPersist(roomId) {
+  const d = drawDocs.get(roomId);
+  if (!d) return;
+  if (d.saveTimer) clearTimeout(d.saveTimer);
+  d.saveTimer = setTimeout(() => {
+    d.saveTimer = 0;
+    store.saveDraw(roomId, d.doc);
+  }, DRAW_PERSIST_DEBOUNCE);
+}
+
+function flushDrawPersist(roomId) {
+  const d = drawDocs.get(roomId);
+  if (!d) return;
+  if (d.saveTimer) { clearTimeout(d.saveTimer); d.saveTimer = 0; }
+  store.saveDraw(roomId, d.doc);
+}
+
+function drawViewerCount(roomId) {
+  let n = 0;
+  for (const c of clients.values()) if (c.drawRoomId === roomId) n++;
+  return n;
+}
+
+// 그리는 사람 전원(옵션으로 발신자 제외)에게 전달.
+function broadcastDraw(roomId, payload, exceptId) {
+  for (const c of clients.values()) {
+    if (c.drawRoomId !== roomId) continue;
+    if (exceptId && c.id === exceptId) continue;
+    send(c, payload);
+  }
+}
+
+function leaveDraw(client) {
+  const roomId = client.drawRoomId;
+  if (!roomId) return;
+  client.drawRoomId = "";
+  if (drawViewerCount(roomId) === 0) {
+    flushDrawPersist(roomId);
+    drawDocs.delete(roomId); // 아무도 안 보면 메모리에서 내림(다음 open 시 파일에서 재적재)
+  }
+}
+
+function drawNum(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function drawClampNum(value, min, max, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
+}
+
+function cleanDrawColor(value) {
+  const s = String(value || "").slice(0, 32);
+  if (/^#[0-9a-fA-F]{3,8}$/.test(s) || /^rgba?\([\d.,\s]+\)$/.test(s)) return s;
+  return "#000000";
+}
+
+// 신뢰할 수 없는 stroke를 정규화. 실패하면 null.
+function sanitizeStroke(raw, authorId) {
+  if (!raw || typeof raw !== "object") return null;
+  const id = String(raw.id || "").slice(0, 64);
+  if (!id) return null;
+  if (raw.tool === "image") {
+    const src = String(raw.src || "");
+    if (!src.startsWith("data:image/") || src.length > 6000000) return null;
+    return {
+      id, tool: "image", by: authorId, src,
+      x: drawNum(raw.x, 0), y: drawNum(raw.y, 0),
+      w: Math.max(1, drawNum(raw.w, 100)), h: Math.max(1, drawNum(raw.h, 100)),
+    };
+  }
+  const tool = raw.tool === "eraser" ? "eraser" : "pen";
+  const src = Array.isArray(raw.points) ? raw.points.slice(0, 8000) : [];
+  const points = [];
+  for (const p of src) {
+    if (!Array.isArray(p)) continue;
+    points.push([drawNum(p[0], 0), drawNum(p[1], 0)]);
+  }
+  if (!points.length) return null;
+  return {
+    id, tool, by: authorId,
+    color: cleanDrawColor(raw.color),
+    size: drawClampNum(raw.size, 1, 300, 4),
+    points,
+  };
+}
+
+function findDrawLayer(doc, layerId) {
+  return doc.layers.find((l) => l.id === String(layerId || ""));
+}
+
+function handleDrawMessage(client, message) {
+  if (typeof message.type !== "string" || !message.type.startsWith("draw:")) return false;
+  if (!client.userId) {
+    send(client, { type: "draw-error", message: "로그인이 필요합니다." });
+    return true;
+  }
+
+  switch (message.type) {
+    case "draw:open": {
+      const ctx = resolveDrawRoom(client, message.roomId);
+      if (!ctx) return true;
+      client.drawRoomId = ctx.room.id;
+      const d = getDrawDoc(ctx.room.id);
+      send(client, { type: "draw:state", roomId: ctx.room.id, doc: d.doc });
+      return true;
+    }
+    case "draw:close": {
+      leaveDraw(client);
+      return true;
+    }
+    case "draw:stroke": {
+      const ctx = resolveDrawRoom(client, message.roomId);
+      if (!ctx) return true;
+      const d = getDrawDoc(ctx.room.id);
+      const layer = findDrawLayer(d.doc, message.layerId);
+      if (!layer) return true;
+      const stroke = sanitizeStroke(message.stroke, client.userId);
+      if (!stroke) return true;
+      layer.strokes.push(stroke);
+      scheduleDrawPersist(ctx.room.id);
+      broadcastDraw(ctx.room.id, { type: "draw:stroke", roomId: ctx.room.id, layerId: layer.id, stroke }, client.id);
+      return true;
+    }
+    case "draw:undo": {
+      const ctx = resolveDrawRoom(client, message.roomId);
+      if (!ctx) return true;
+      const d = getDrawDoc(ctx.room.id);
+      const strokeId = String(message.strokeId || "");
+      for (const layer of d.doc.layers) {
+        const idx = layer.strokes.findIndex((s) => s.id === strokeId && s.by === client.userId);
+        if (idx >= 0) {
+          layer.strokes.splice(idx, 1);
+          scheduleDrawPersist(ctx.room.id);
+          broadcastDraw(ctx.room.id, { type: "draw:remove", roomId: ctx.room.id, strokeId });
+          break;
+        }
+      }
+      return true;
+    }
+    case "draw:clear": {
+      const ctx = resolveDrawRoom(client, message.roomId);
+      if (!ctx) return true;
+      const d = getDrawDoc(ctx.room.id);
+      const layerId = String(message.layerId || "");
+      if (layerId === "*") {
+        for (const layer of d.doc.layers) layer.strokes = [];
+      } else {
+        const layer = findDrawLayer(d.doc, layerId);
+        if (!layer) return true;
+        layer.strokes = [];
+      }
+      scheduleDrawPersist(ctx.room.id);
+      broadcastDraw(ctx.room.id, { type: "draw:clear", roomId: ctx.room.id, layerId }, client.id);
+      return true;
+    }
+    case "draw:resize": {
+      const ctx = resolveDrawRoom(client, message.roomId);
+      if (!ctx) return true;
+      const d = getDrawDoc(ctx.room.id);
+      d.doc.width = drawClampNum(message.width, 200, 4000, d.doc.width);
+      d.doc.height = drawClampNum(message.height, 200, 4000, d.doc.height);
+      scheduleDrawPersist(ctx.room.id);
+      broadcastDraw(ctx.room.id, { type: "draw:resize", roomId: ctx.room.id, width: d.doc.width, height: d.doc.height }, client.id);
+      return true;
+    }
+    case "draw:layer-add": {
+      const ctx = resolveDrawRoom(client, message.roomId);
+      if (!ctx) return true;
+      const d = getDrawDoc(ctx.room.id);
+      if (d.doc.layers.length >= 20) { send(client, { type: "draw-error", message: "레이어는 최대 20개입니다." }); return true; }
+      const raw = message.layer || {};
+      const id = String(raw.id || "").slice(0, 32) || `L${Date.now().toString(36)}`;
+      if (findDrawLayer(d.doc, id)) return true;
+      const layer = { id, name: String(raw.name || `레이어 ${d.doc.layers.length + 1}`).slice(0, 40), visible: true, strokes: [] };
+      d.doc.layers.push(layer);
+      scheduleDrawPersist(ctx.room.id);
+      broadcastDraw(ctx.room.id, { type: "draw:layer-add", roomId: ctx.room.id, layer }, client.id);
+      return true;
+    }
+    case "draw:layer-remove": {
+      const ctx = resolveDrawRoom(client, message.roomId);
+      if (!ctx) return true;
+      const d = getDrawDoc(ctx.room.id);
+      if (d.doc.layers.length <= 1) { send(client, { type: "draw-error", message: "최소 한 개의 레이어가 필요합니다." }); return true; }
+      const layerId = String(message.layerId || "");
+      const before = d.doc.layers.length;
+      d.doc.layers = d.doc.layers.filter((l) => l.id !== layerId);
+      if (d.doc.layers.length === before) return true;
+      scheduleDrawPersist(ctx.room.id);
+      broadcastDraw(ctx.room.id, { type: "draw:layer-remove", roomId: ctx.room.id, layerId }, client.id);
+      return true;
+    }
+    case "draw:layer-update": {
+      const ctx = resolveDrawRoom(client, message.roomId);
+      if (!ctx) return true;
+      const d = getDrawDoc(ctx.room.id);
+      const layer = findDrawLayer(d.doc, message.layerId);
+      if (!layer) return true;
+      if (typeof message.visible === "boolean") layer.visible = message.visible;
+      if (typeof message.name === "string") layer.name = message.name.slice(0, 40) || layer.name;
+      scheduleDrawPersist(ctx.room.id);
+      broadcastDraw(ctx.room.id, { type: "draw:layer-update", roomId: ctx.room.id, layerId: layer.id, visible: layer.visible, name: layer.name }, client.id);
+      return true;
+    }
+    case "draw:layer-reorder": {
+      const ctx = resolveDrawRoom(client, message.roomId);
+      if (!ctx) return true;
+      const d = getDrawDoc(ctx.room.id);
+      const order = Array.isArray(message.order) ? message.order.map(String) : [];
+      const map = new Map(d.doc.layers.map((l) => [l.id, l]));
+      const reordered = [];
+      for (const id of order) if (map.has(id)) { reordered.push(map.get(id)); map.delete(id); }
+      for (const l of map.values()) reordered.push(l); // 누락된 레이어는 뒤에 유지
+      if (reordered.length !== d.doc.layers.length) return true;
+      d.doc.layers = reordered;
+      scheduleDrawPersist(ctx.room.id);
+      broadcastDraw(ctx.room.id, { type: "draw:layer-reorder", roomId: ctx.room.id, order: d.doc.layers.map((l) => l.id) }, client.id);
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
+function resolveDrawRoom(client, roomId) {
+  const found = store.findRoom(String(roomId || ""));
+  if (!found || found.room.type !== "draw") {
+    send(client, { type: "draw-error", message: "그림판을 찾지 못했습니다." });
+    return null;
+  }
+  if (!store.isChannelMember(found.channel.id, client.userId, client.isAdmin)) {
+    send(client, { type: "draw-error", message: "채널 멤버만 이용할 수 있습니다." });
     return null;
   }
   return found;

@@ -12,9 +12,13 @@ const CHANNELS_FILE = path.join(DATA_DIR, "channels.json");
 const MESSAGES_DIR = path.join(DATA_DIR, "messages");
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const MEMO_DIR = path.join(DATA_DIR, "memo");
+const DRAW_DIR = path.join(DATA_DIR, "draw");
 const MAX_MESSAGES_PER_ROOM = 1000; // 방별 보관 메시지 상한(초과 시 오래된 것부터 정리)
 const UPLOAD_MAX_BYTES = 50 * 1024 * 1024; // 파일 업로드 최대 50MB
 const MEMO_MAX_LEN = 200000; // 메모장 최대 길이(약 200KB)
+const DRAW_MAX_BYTES = 8 * 1024 * 1024; // 그림판 문서 최대 크기(약 8MB, 붙여넣은 이미지 포함)
+const DRAW_MIN_SIZE = 200;
+const DRAW_MAX_SIZE = 4000;
 
 const CODE_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"; // base36
 const INVITE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 혼동 문자 제외
@@ -488,6 +492,7 @@ function removeRoom(channelId, roomId) {
   persistChannels();
   deleteRoomMessages(roomId); // 방 삭제 시 저장된 채팅도 정리
   deleteRoomMemo(roomId);
+  deleteRoomDraw(roomId);
   return { channel };
 }
 
@@ -526,7 +531,7 @@ function renameChannel(channelId, name) {
 
 function deleteChannel(channelId) {
   const channel = getChannel(channelId);
-  if (channel) for (const room of channel.rooms) { deleteRoomMessages(room.id); deleteRoomMemo(room.id); }
+  if (channel) for (const room of channel.rooms) { deleteRoomMessages(room.id); deleteRoomMemo(room.id); deleteRoomDraw(room.id); }
   const before = channelsDb.channels.length;
   channelsDb.channels = channelsDb.channels.filter((c) => c.id !== channelId);
   if (channelsDb.channels.length !== before) persistChannels();
@@ -685,6 +690,74 @@ function deleteRoomMemo(roomId) {
   }
 }
 
+// ===== 공동 그림판 =====
+// 방 단위 공유 캔버스. server-data/draw/<roomId>.json 에 레이어별 stroke를 저장.
+function drawFile(roomId) {
+  return path.join(DRAW_DIR, `${roomId}.json`);
+}
+
+function clampSize(value, fallback) {
+  const n = Math.round(Number(value));
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(DRAW_MIN_SIZE, Math.min(DRAW_MAX_SIZE, n));
+}
+
+function defaultDrawDoc() {
+  return {
+    width: 900,
+    height: 600,
+    layers: [{ id: "L1", name: "레이어 1", visible: true, strokes: [] }],
+    seq: 1,
+  };
+}
+
+// 저장/로딩 시 문서 형태를 검증·정규화한다(레거시/손상 파일 방어).
+function normalizeDrawDoc(raw) {
+  if (!raw || typeof raw !== "object") return defaultDrawDoc();
+  const doc = defaultDrawDoc();
+  doc.width = clampSize(raw.width, 900);
+  doc.height = clampSize(raw.height, 600);
+  doc.seq = Number(raw.seq) || 1;
+  if (Array.isArray(raw.layers) && raw.layers.length) {
+    doc.layers = raw.layers.slice(0, 20).map((layer, i) => ({
+      id: String(layer && layer.id ? layer.id : `L${i + 1}`).slice(0, 32),
+      name: String(layer && layer.name ? layer.name : `레이어 ${i + 1}`).slice(0, 40),
+      visible: layer && layer.visible === false ? false : true,
+      strokes: Array.isArray(layer && layer.strokes) ? layer.strokes : [],
+    }));
+  }
+  return doc;
+}
+
+function getDraw(roomId) {
+  if (!isSafeRoomId(roomId)) return defaultDrawDoc();
+  const raw = readJson(drawFile(roomId), null);
+  if (!raw) return defaultDrawDoc();
+  return normalizeDrawDoc(raw);
+}
+
+// 반환: { ok } 또는 { error }. 용량 초과 시 저장하지 않는다(호출측이 롤백 판단).
+function saveDraw(roomId, doc) {
+  if (!isSafeRoomId(roomId)) return { error: "잘못된 방입니다." };
+  const normalized = normalizeDrawDoc(doc);
+  const serialized = JSON.stringify(normalized);
+  if (Buffer.byteLength(serialized, "utf8") > DRAW_MAX_BYTES) {
+    return { error: "그림 용량이 너무 큽니다." };
+  }
+  fs.mkdirSync(DRAW_DIR, { recursive: true });
+  writeJsonAtomic(drawFile(roomId), normalized);
+  return { ok: true };
+}
+
+function deleteRoomDraw(roomId) {
+  if (!isSafeRoomId(roomId)) return;
+  try {
+    fs.unlinkSync(drawFile(roomId));
+  } catch {
+    /* 파일 없으면 무시 */
+  }
+}
+
 module.exports = {
   init,
   createUser,
@@ -737,4 +810,9 @@ module.exports = {
   getMemo,
   saveMemo,
   deleteRoomMemo,
+  // 그림판
+  getDraw,
+  saveDraw,
+  deleteRoomDraw,
+  DRAW_MAX_BYTES,
 };
