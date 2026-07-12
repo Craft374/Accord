@@ -160,6 +160,15 @@ h3 {
   padding: 0 12px 12px;
 }
 
+/* 채팅/메모를 열면 페이지 전체가 늘어나지 않고 패널 안에서 스크롤되도록
+   앱 높이를 화면에 고정한다(통화 UI에는 영향 없음). */
+body.chat-open .app,
+body.memo-open .app {
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+}
+
 /* ─── 상단 바 ─────────────────────────────── */
 
 .topbar,
@@ -280,15 +289,15 @@ h3 {
 .layout {
   flex: 1;
   display: grid;
-  grid-template-columns: 64px 232px minmax(0, 1fr) 208px;
-  gap: 8px;
+  grid-template-columns: 56px 232px minmax(0, 1fr) 208px;
+  gap: 6px;
   align-items: stretch;
   min-height: 0;
 }
 
 /* 멤버 리스트가 숨겨지면(채널 없음) 4번째 열을 접는다 */
 .layout:has(.member-list[hidden]) {
-  grid-template-columns: 64px 232px minmax(0, 1fr);
+  grid-template-columns: 56px 232px minmax(0, 1fr);
 }
 
 .side-panel {
@@ -576,8 +585,10 @@ body.chat-open .memo-panel {
 .chat-attach-button {
   width: 32px;
   height: 32px;
-  min-height: 0;
-  flex-shrink: 0;
+  min-height: 32px;
+  flex: 0 0 32px;
+  align-self: center;
+  padding: 0;
   border: none;
   border-radius: 50%;
   background: var(--bg-surface);
@@ -585,6 +596,8 @@ body.chat-open .memo-panel {
   font-size: 20px;
   line-height: 1;
   cursor: pointer;
+  display: grid;
+  place-items: center;
 }
 .chat-attach-button:hover {
   color: var(--text);
@@ -2123,7 +2136,12 @@ audio,
 .channel-icon {
   width: 46px;
   height: 46px;
+  min-width: 46px;
+  max-width: 46px;
   min-height: 46px;
+  max-height: 46px;
+  flex: 0 0 46px; /* 맥 Electron에서 flex로 가로/세로 늘어나는 것 방지 */
+  aspect-ratio: 1 / 1;
   padding: 0;
   border-radius: 16px;
   background: var(--bg-surface);
@@ -2132,6 +2150,9 @@ audio,
   font-weight: 700;
   display: grid;
   place-items: center;
+  overflow: hidden;
+  background-size: cover;
+  background-position: center;
   transition: border-radius 0.15s, background 0.15s;
 }
 .channel-icon:hover:not(:disabled) {
