@@ -6005,7 +6005,7 @@ function renderMemberList() {
     const info = document.createElement("div");
     info.className = "member-info";
     const name = document.createElement("b");
-    name.textContent = member.displayName;
+    name.textContent = member.displayName || `유저#${member.code}`;
     if (member.isCreator) {
       name.append(" ", makeBadge("창설자"));
     } else if (member.isManager) {
@@ -6968,7 +6968,13 @@ function openChannelMenu() {
   dom.channelRenameInput.value = channel.name || "";
   if (dom.channelRenameInput) dom.channelRenameInput.disabled = !owner;
   if (dom.channelRenameButton) dom.channelRenameButton.hidden = !owner;
-  if (dom.channelDeleteButton) dom.channelDeleteButton.hidden = !creator; // 삭제는 창설자만
+  if (dom.channelDeleteButton) {
+    dom.channelDeleteButton.hidden = !creator; // 삭제는 창설자만
+    // 다른 멤버가 남아 있으면 삭제 불가(창설자 혼자일 때만)
+    const soloMember = (channel.members || []).length <= 1;
+    dom.channelDeleteButton.disabled = !soloMember;
+    dom.channelDeleteButton.title = soloMember ? "" : "다른 멤버가 있어 삭제할 수 없습니다. 먼저 모두 내보내세요.";
+  }
   // 채널 아이콘: 대표자만 변경 가능
   if (dom.channelIconRow) dom.channelIconRow.hidden = !owner;
   setAvatar(dom.channelIconPreview, { avatar: channel.icon, displayName: channel.name });

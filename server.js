@@ -729,6 +729,8 @@ function handleChannelMessage(client, message) {
       logServer(`channel create name=${result.channel.name} invite=${result.channel.inviteCode}`, client);
       sendChannels(client);
       send(client, { type: "channel-selected", channelId: result.channel.id });
+      // 관리자는 모든 채널을 보므로, 접속 중인 다른 관리자에게도 새 채널을 즉시 반영한다.
+      notifyAdmins(client.id);
       return true;
     }
     case "channel:join": {
@@ -757,13 +759,21 @@ function handleChannelMessage(client, message) {
     case "channel:delete":
       return ownerAction(client, message.channelId, () => {
         const channel = store.getChannel(message.channelId);
-        const memberIds = channel ? channel.members.slice() : [];
+        if (!channel) return channelError(client, "채널을 찾을 수 없습니다.");
+        // 다른 멤버가 남아 있으면 삭제 불가(창설자 혼자일 때만).
+        if (channel.members.length > 1) {
+          return channelError(client, "다른 멤버가 있는 채널은 삭제할 수 없습니다. 먼저 모두 내보내세요.");
+        }
+        const memberIds = channel.members.slice();
         // 채널 방들의 실시간 접속 종료
-        if (channel) for (const room of channel.rooms) evictRoom(room.id);
+        for (const room of channel.rooms) evictRoom(room.id);
         store.deleteChannel(message.channelId);
         for (const c of clients.values()) {
           if (c.userId && memberIds.includes(c.userId)) sendChannels(c);
         }
+        // 삭제한 본인(멤버가 아닌 관리자일 수 있음)과 다른 관리자 목록도 갱신
+        sendChannels(client);
+        notifyAdmins(client.id);
         return true;
       });
     case "channel:add-room":
@@ -852,7 +862,7 @@ function expandChannel(summary) {
     members: summary.memberIds.map((id) => {
       const u = store.findById(id);
       const base = u
-        ? { id: u.id, displayName: u.displayName, code: u.code, avatar: u.avatar, isAdmin: Boolean(u.isAdmin) }
+        ? { id: u.id, displayName: u.displayName || u.username || `유저#${u.code}`, code: u.code, avatar: u.avatar, isAdmin: Boolean(u.isAdmin) }
         : { id, displayName: "(삭제된 계정)", code: "----", avatar: "", isAdmin: false };
       base.isManager = managerSet.has(id);
       base.isCreator = id === summary.ownerId;
@@ -872,6 +882,14 @@ function notifyChannelMembers(channelId) {
   for (const c of clients.values()) {
     if (!c.userId) continue;
     if (c.isAdmin || channel.members.includes(c.userId)) sendChannels(c);
+  }
+}
+
+// 접속 중인 관리자 전원(선택적으로 한 명 제외)에게 채널 목록을 다시 보낸다.
+// 관리자는 모든 채널을 볼 수 있으므로, 채널 생성/삭제 시 목록을 즉시 맞춘다.
+function notifyAdmins(exceptClientId = "") {
+  for (const c of clients.values()) {
+    if (c.userId && c.isAdmin && c.id !== exceptClientId) sendChannels(c);
   }
 }
 
