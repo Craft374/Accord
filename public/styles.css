@@ -67,6 +67,8 @@ select {
 }
 
 button {
+  appearance: none;
+  -webkit-appearance: none; /* 맥 네이티브(Aqua) 버튼 렌더링 방지 → 아이콘 늘어남/중심 어긋남 해결 */
   min-height: 36px;
   border: 0;
   border-radius: var(--radius-sm);
@@ -2464,6 +2466,7 @@ audio,
   color: var(--muted);
 }
 .member-row {
+  position: relative; /* 관리 버튼을 오버레이로 띄우기 위한 기준 */
   display: flex;
   align-items: center;
   gap: 8px;
@@ -2522,21 +2525,32 @@ audio,
   background: rgba(240, 178, 50, 0.16);
   color: var(--warning);
 }
+/* 관리 버튼은 평소엔 숨기고 hover 시에만 우측에 오버레이한다.
+   (예전엔 opacity:0 이라 자리를 계속 차지 → 다른 멤버 닉네임이 2px로 잘려 안 보였음) */
 .member-actions {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
   display: flex;
-  flex: none;
   gap: 4px;
+  padding-left: 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+.member-row:hover .member-actions {
+  opacity: 1;
+  pointer-events: auto;
 }
 .member-action-btn {
   min-height: 26px;
   padding: 0 8px;
   font-size: 11px;
-  background: var(--bg-elevated);
+  background: var(--bg-surface);
   color: var(--muted);
-  opacity: 0;
-}
-.member-row:hover .member-action-btn {
-  opacity: 1;
 }
 .member-action-btn:hover {
   background: #45474e;
