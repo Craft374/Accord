@@ -1,4 +1,4 @@
-const { app, BrowserWindow, desktopCapturer, ipcMain, session, Menu, Tray, MessageChannelMain, powerSaveBlocker, screen: electronScreen, net } = require("electron");
+const { app, BrowserWindow, desktopCapturer, ipcMain, session, Menu, Tray, nativeImage, MessageChannelMain, powerSaveBlocker, screen: electronScreen, net } = require("electron");
 const { spawn, execFile } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -100,8 +100,7 @@ app.on("before-quit", () => {
 function createTray() {
   if (tray) return;
   try {
-    const icon = getWindowIcon();
-    tray = new Tray(icon || path.join(__dirname, "../assets/icon.png"));
+    tray = new Tray(getTrayIcon());
     tray.setToolTip("Accord");
     const menu = Menu.buildFromTemplate([
       { label: "Accord 열기", click: () => showMainWindow() },
@@ -159,6 +158,17 @@ function createWindow() {
 function getWindowIcon() {
   const iconPath = path.join(__dirname, "../assets/icon.png");
   return fs.existsSync(iconPath) ? iconPath : undefined;
+}
+
+// 트레이(메뉴바) 아이콘은 원본(1024px)을 그대로 넘기면 macOS에서 거대하게 늘어난다.
+// 메뉴바 높이에 맞춰 작게 리사이즈해서 다른 앱 아이콘과 크기를 맞춘다.
+function getTrayIcon() {
+  const iconPath = path.join(__dirname, "../assets/icon.png");
+  const image = nativeImage.createFromPath(iconPath);
+  if (image.isEmpty()) return iconPath;
+  // macOS 메뉴바는 16pt 기준. 다른 플랫폼도 동일 크기로 통일.
+  const size = process.platform === "darwin" ? 18 : 16;
+  return image.resize({ width: size, height: size, quality: "best" });
 }
 
 function startScreenSharePowerBlocker() {
