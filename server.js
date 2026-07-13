@@ -362,6 +362,11 @@ function handleMessage(client, message) {
     return;
   }
 
+  if (message.type === "room:force-mute" || message.type === "room:kick-user") {
+    handleRoomModeration(client, message);
+    return;
+  }
+
   if (message.type === "client-log") {
     logClientEvent(client, message);
     return;
@@ -593,7 +598,7 @@ function joinVoiceRoom(client, roomId) {
 
   let room = rooms.get(roomId);
   if (!room) {
-    room = { id: roomId, name: found.room.name, channelId: found.channel.id, clients: new Set() };
+    room = { id: roomId, name: found.room.name, channelId: found.channel.id, clients: new Set(), startedAt: Date.now() };
     rooms.set(roomId, room);
   }
   room.limit = limit;
@@ -605,7 +610,7 @@ function joinVoiceRoom(client, roomId) {
     .filter((id) => id !== client.id)
     .map((id) => {
       const peer = clients.get(id);
-      return { id, name: peer?.name || "Guest" };
+      return { id, name: peer?.name || "Guest", userId: peer?.userId || "" };
     });
 
   send(client, { type: "joined", id: client.id, room: liveRoomInfo(room), peers });
@@ -614,7 +619,7 @@ function joinVoiceRoom(client, roomId) {
     if (peerId === client.id) continue;
     send(clients.get(peerId), {
       type: "peer-joined",
-      peer: { id: client.id, name: client.name },
+      peer: { id: client.id, name: client.name, userId: client.userId },
       room: liveRoomInfo(room),
     });
   }
@@ -646,6 +651,38 @@ function leaveRoom(client, notify) {
 
   if (notify) send(client, { type: "left" });
   broadcastPresence();
+}
+
+// 통화방 대표자의 강제 음소거 / 내보내기. 대표자(창설자·공동대표·관리자)만 가능하고,
+// 다른 대표자는 대상이 될 수 없다. 결과는 전역 로그에도 기록된다.
+function handleRoomModeration(client, message) {
+  if (!client.userId) {
+    send(client, { type: "error", message: "로그인이 필요합니다." });
+    return;
+  }
+  const roomId = String(message.roomId || "");
+  const found = store.findRoom(roomId);
+  if (!found || found.room.type !== "voice") return;
+  if (!store.isChannelOwner(found.channel.id, client.userId, client.isAdmin)) {
+    send(client, { type: "error", message: "대표자만 사용할 수 있습니다." });
+    return;
+  }
+  const target = clients.get(String(message.targetId || ""));
+  if (!target || target.roomId !== roomId || target.id === client.id) return;
+  // 다른 대표자(창설자·공동대표)는 강제 대상에서 제외해 서로 못 건드리게 한다.
+  if (target.userId && store.isChannelOwner(found.channel.id, target.userId, target.isAdmin)) {
+    send(client, { type: "error", message: "다른 대표자에게는 사용할 수 없습니다." });
+    return;
+  }
+
+  if (message.type === "room:force-mute") {
+    send(target, { type: "force-muted", roomId, roomName: found.room.name, byName: client.name });
+    logChannelEvent(found.channel.id, target, "force-mute", { roomName: found.room.name, byName: client.name });
+  } else {
+    send(target, { type: "kicked-from-room", roomId, roomName: found.room.name, byName: client.name });
+    logChannelEvent(found.channel.id, target, "voice-kick", { roomName: found.room.name, byName: client.name });
+    leaveRoom(target, true); // 강제 퇴장(target 에겐 'left' 가 전달됨)
+  }
 }
 
 function removeClient(client) {
@@ -712,14 +749,16 @@ function makeFrameHeader(length) {
 // 실시간 통화방 접속 현황 + 온라인 유저를 모든 로그인 클라이언트에 알린다.
 function broadcastPresence() {
   const presence = {};
+  const roomsMeta = {};
   for (const room of rooms.values()) {
     presence[room.id] = [...room.clients].map((id) => {
       const c = clients.get(id);
       return { clientId: id, userId: c?.userId || "", name: c?.name || "Guest" };
     });
+    roomsMeta[room.id] = { startedAt: room.startedAt || 0 };
   }
   const online = onlineUserIds();
-  const payload = { type: "presence", rooms: presence, online };
+  const payload = { type: "presence", rooms: presence, roomsMeta, online };
   for (const client of clients.values()) if (client.userId) send(client, payload);
 }
 
@@ -730,6 +769,7 @@ function liveRoomInfo(room) {
     channelId: room.channelId || "",
     limit: room.limit || MAX_ROOM_LIMIT,
     count: room.clients.size,
+    startedAt: room.startedAt || 0,
     participants: [...room.clients].map((id) => clients.get(id)?.name || "Guest"),
   };
 }

@@ -110,6 +110,8 @@ const state = {
   channels: [],
   currentChannelId: "",
   presence: {},
+  roomsMeta: {}, // roomId -> { startedAt } (통화 시작 시각)
+  callRuntimeTimer: 0,
   online: [],
   // 채팅
   activeChat: null, // { roomId, channelId, name }
@@ -461,6 +463,11 @@ function bindEvents() {
     updatePeerVolumeFromInput(input);
   });
   dom.participantList.addEventListener("click", (event) => {
+    const mod = event.target?.closest?.("[data-mod-action]");
+    if (mod) {
+      handleCallModeration(mod.dataset.modAction, mod.dataset.modPeerId);
+      return;
+    }
     const button = event.target?.closest?.("[data-screen-peer-id]");
     if (!button) return;
     state.selectedScreenPeerId = button.dataset.screenPeerId || "";
@@ -1391,10 +1398,23 @@ async function handleSocketMessage(message) {
 
   if (message.type === "presence") {
     state.presence = message.rooms || {};
+    state.roomsMeta = message.roomsMeta || {};
     state.online = message.online || [];
     renderRooms();
     renderMemberList();
     renderParticipants();
+    return;
+  }
+
+  if (message.type === "force-muted") {
+    if (!state.muted) { toggleMute(); } // 내 마이크를 끈다(이미 꺼져 있으면 유지)
+    setMessage(`${message.byName || "대표자"}님이 회원님의 마이크를 껐습니다.`);
+    return;
+  }
+
+  if (message.type === "kicked-from-room") {
+    // 서버가 이어서 leave-room 처리('left')를 보내 방에서 빠진다. 여기선 안내만.
+    setMessage(`${message.byName || "대표자"}님이 ${message.roomName || "통화방"}에서 내보냈습니다.`);
     return;
   }
 
@@ -1417,7 +1437,7 @@ async function handleSocketMessage(message) {
 
   if (message.type === "peer-joined") {
     state.currentRoom = message.room || state.currentRoom;
-    const peer = ensurePeer(message.peer.id, message.peer.name);
+    const peer = ensurePeer(message.peer.id, message.peer.name, message.peer.userId);
     logClientEvent("peer-joined", makePeerDebugDetail(peer));
     renderCurrentRoom();
     renderParticipants();
@@ -2833,7 +2853,7 @@ function formatCompactJson(value, limit = 900) {
   }
 }
 
-function createPeer(peerId, peerName) {
+function createPeer(peerId, peerName, userId) {
   const polite = state.clientId > peerId;
   const pc = new RTCPeerConnection({
     iceServers: state.config.iceServers || [],
@@ -2845,6 +2865,7 @@ function createPeer(peerId, peerName) {
   const peer = {
     id: peerId,
     name: peerName || "Guest",
+    userId: userId || "",
     pc,
     polite,
     createdAt: Date.now(),
@@ -3059,17 +3080,18 @@ function cleanupRemoteRole(peer, role) {
   else cleanupPlayback(peer.remote[role]);
 }
 
-function ensurePeer(peerId, peerName) {
+function ensurePeer(peerId, peerName, userId) {
   if (state.peers.has(peerId)) {
     const peer = state.peers.get(peerId);
     peer.name = peerName || peer.name;
+    if (userId) peer.userId = userId;
     return peer;
   }
-  return createPeer(peerId, peerName);
+  return createPeer(peerId, peerName, userId);
 }
 
 async function createOfferForPeer(peerInfo, options = {}) {
-  const peer = ensurePeer(peerInfo.id, peerInfo.name);
+  const peer = ensurePeer(peerInfo.id, peerInfo.name, peerInfo.userId);
   await syncLocalSendersForPeer(peer);
   await makeOffer(peer, options);
 }
@@ -7226,6 +7248,7 @@ function handleLogEntry(message) {
 function formatLogEntry(entry) {
   const name = escapeHtmlText(entry.name || "누군가");
   const room = escapeHtmlText(entry.roomName || "");
+  const by = escapeHtmlText(entry.byName || "대표자");
   switch (entry.type) {
     case "voice-join":
       return { icon: "🔊", html: `<b>${name}</b>님이 <b>${room}</b> 통화방에 입장했습니다.` };
@@ -7237,6 +7260,10 @@ function formatLogEntry(entry) {
       return { icon: "📝", html: `<b>${name}</b>님이 메모장 <b>${room}</b>을 편집했습니다.` };
     case "member-join":
       return { icon: "➕", html: `<b>${name}</b>님이 채널에 참여했습니다.` };
+    case "force-mute":
+      return { icon: "🔇", html: `<b>${by}</b>님이 <b>${name}</b>님을 음소거했습니다.` };
+    case "voice-kick":
+      return { icon: "🚪", html: `<b>${by}</b>님이 <b>${name}</b>님을 <b>${room}</b>에서 내보냈습니다.` };
     default:
       return { icon: "•", html: `<b>${name}</b>님의 활동` };
   }
@@ -8068,11 +8095,43 @@ function renderCurrentRoom() {
   if (!state.currentRoom) {
     dom.currentRoomName.textContent = "통화 없음";
     dom.currentRoomMeta.textContent = "방에 들어가면 마이크가 켜집니다.";
+    stopCallRuntimeTimer();
     return;
   }
   dom.currentRoomName.textContent = state.currentRoom.name;
-  dom.currentRoomMeta.textContent = `${state.currentRoom.count}/${state.currentRoom.limit}명`;
+  dom.currentRoomMeta.textContent = currentRoomMetaText();
   if (dom.roomLimitLiveSelect) dom.roomLimitLiveSelect.value = String(state.currentRoom.limit);
+  startCallRuntimeTimer();
+}
+
+function currentRoomMetaText() {
+  const r = state.currentRoom;
+  if (!r) return "";
+  const started = r.startedAt || state.roomsMeta?.[r.id]?.startedAt || 0;
+  const runtime = started ? ` · 통화 ${formatDuration(Date.now() - started)}` : "";
+  return `${r.count}/${r.limit}명${runtime}`;
+}
+
+// 통화 경과 시간을 1초마다 갱신한다(방에 있을 때만).
+function startCallRuntimeTimer() {
+  if (state.callRuntimeTimer) return;
+  state.callRuntimeTimer = window.setInterval(() => {
+    if (!state.currentRoom) { stopCallRuntimeTimer(); return; }
+    dom.currentRoomMeta.textContent = currentRoomMetaText();
+  }, 1000);
+}
+
+function stopCallRuntimeTimer() {
+  if (state.callRuntimeTimer) { clearInterval(state.callRuntimeTimer); state.callRuntimeTimer = 0; }
+}
+
+function formatDuration(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
 }
 
 function renderParticipants() {
@@ -8137,6 +8196,25 @@ function appendParticipant({ id, name, status, self = false, peer = null }) {
       screenButton.textContent = state.selectedScreenPeerId === peer.id ? "보고 있음" : "화면 보기";
       card.append(screenButton);
     }
+    // 대표자에게만 보이는 강제 음소거 / 내보내기(다른 대표자에겐 숨김).
+    if (canModerateCall() && !isPeerCallOwner(peer)) {
+      const mod = document.createElement("div");
+      mod.className = "participant-mod";
+      const muteBtn = document.createElement("button");
+      muteBtn.type = "button";
+      muteBtn.className = "participant-mod-btn";
+      muteBtn.dataset.modAction = "force-mute";
+      muteBtn.dataset.modPeerId = peer.id;
+      muteBtn.textContent = "음소거";
+      const kickBtn = document.createElement("button");
+      kickBtn.type = "button";
+      kickBtn.className = "participant-mod-btn danger";
+      kickBtn.dataset.modAction = "kick";
+      kickBtn.dataset.modPeerId = peer.id;
+      kickBtn.textContent = "내보내기";
+      mod.append(muteBtn, kickBtn);
+      card.append(mod);
+    }
   } else {
     if (state.screenSharing) {
       const badge = document.createElement("span");
@@ -8147,6 +8225,35 @@ function appendParticipant({ id, name, status, self = false, peer = null }) {
     card.append(header, meters);
   }
   dom.participantList.append(card);
+}
+
+// 현재 통화가 속한 채널(권한 판단용). state.currentChannelId 가 아니라 통화방 채널을 쓴다.
+function currentCallChannel() {
+  const id = state.currentRoom?.channelId;
+  return id ? state.channels.find((c) => c.id === id) || null : null;
+}
+
+function canModerateCall() {
+  return isChannelOwner(currentCallChannel());
+}
+
+function isPeerCallOwner(peer) {
+  const ch = currentCallChannel();
+  if (!ch || !peer?.userId) return false;
+  return ch.ownerId === peer.userId || (ch.managerIds || []).includes(peer.userId);
+}
+
+function handleCallModeration(action, peerId) {
+  if (!state.currentRoom || !peerId) return;
+  const peer = state.peers.get(peerId);
+  if (!peer) return;
+  if (action === "force-mute") {
+    sendSocket({ type: "room:force-mute", roomId: state.currentRoom.id, targetId: peerId });
+    setMessage(`${peer.name}님을 음소거했습니다.`);
+  } else if (action === "kick") {
+    if (!confirm(`${peer.name}님을 통화방에서 내보낼까요?`)) return;
+    sendSocket({ type: "room:kick-user", roomId: state.currentRoom.id, targetId: peerId });
+  }
 }
 
 function makeParticipantMeter(labelText, key) {
