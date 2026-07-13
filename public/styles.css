@@ -1390,6 +1390,8 @@ body.draw-open .log-panel {
   align-items: center;
   gap: 10px;
   min-width: 0;
+  margin-top: 8px;
+  padding-left: 10px;
 }
 .file-input {
   position: absolute;
