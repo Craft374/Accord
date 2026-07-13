@@ -586,6 +586,10 @@ function joinVoiceRoom(client, roomId) {
     send(client, { type: "error", message: "채널 멤버만 입장할 수 있습니다." });
     return;
   }
+  if (!store.canAccessRoom(found.channel.id, found.room.id, client.userId, client.isAdmin)) {
+    send(client, { type: "error", message: "이 방에 접근할 권한이 없습니다." });
+    return;
+  }
 
   const limit = roomLimitOf(found.room);
   // 정원 초과 검사(이미 이 방에 있던 경우는 제외).
@@ -919,8 +923,64 @@ function handleChannelMessage(client, message) {
         notifyChannelMembers(message.channelId);
         return true;
       });
+    case "channel:create-role":
+      return ownerAction(client, message.channelId, () => {
+        const r = store.createRole(message.channelId, message.name);
+        if (r.error) return channelError(client, r.error);
+        notifyChannelMembers(message.channelId);
+        return true;
+      });
+    case "channel:update-role":
+      return ownerAction(client, message.channelId, () => {
+        const r = store.updateRole(message.channelId, message.roleId, { name: message.name, color: message.color });
+        if (r.error) return channelError(client, r.error);
+        notifyChannelMembers(message.channelId);
+        return true;
+      });
+    case "channel:delete-role":
+      return ownerAction(client, message.channelId, () => {
+        const r = store.deleteRole(message.channelId, message.roleId);
+        if (r.error) return channelError(client, r.error);
+        notifyChannelMembers(message.channelId);
+        return true;
+      });
+    case "channel:set-role-member":
+      return ownerAction(client, message.channelId, () => {
+        const r = store.setRoleMember(message.channelId, message.roleId, message.userId, Boolean(message.value));
+        if (r.error) return channelError(client, r.error);
+        // 권한이 바뀐 유저의 방 목록(접근 가능 방)이 달라질 수 있으니 대상 유저도 강제 정리 후 갱신.
+        refreshRoomAccess(message.channelId, message.userId);
+        notifyChannelMembers(message.channelId);
+        return true;
+      });
+    case "channel:set-room-perm":
+      return ownerAction(client, message.channelId, () => {
+        const value = message.value === null || message.value === undefined ? null : Boolean(message.value);
+        const r = store.setRoomPerm(message.channelId, message.roomId, message.kind, message.targetId, message.perm, value);
+        if (r.error) return channelError(client, r.error);
+        // 접근 권한이 바뀌면 이미 방에 접속 중인, 이제 권한 없는 유저를 내보낸다.
+        refreshRoomAccess(message.channelId);
+        notifyChannelMembers(message.channelId);
+        return true;
+      });
     default:
       return false;
+  }
+}
+
+// 권한 변경 후, 해당 채널의 방에 접속(통화)해 있으나 이제 접근 권한이 없는 유저를 내보낸다.
+// onlyUserId 를 주면 그 유저만 검사한다.
+function refreshRoomAccess(channelId, onlyUserId = "") {
+  const channel = store.getChannel(channelId);
+  if (!channel) return;
+  for (const c of clients.values()) {
+    if (!c.userId || !c.roomId) continue;
+    if (onlyUserId && c.userId !== onlyUserId) continue;
+    const room = rooms.get(c.roomId);
+    if (!room || room.channelId !== channelId) continue;
+    if (!store.canAccessRoom(channelId, c.roomId, c.userId, c.isAdmin)) {
+      leaveRoom(c, true);
+    }
   }
 }
 
@@ -1012,10 +1072,13 @@ function forceLeaveChannelRooms(client, channelId) {
 const CHAT_TEXT_MAX = 4000;
 const CHAT_FILES_MAX = 10;
 
-// 읽기 전용 방이면 대표자(관리자 포함)만 쓸 수 있다. 그 외에는 항상 쓰기 허용.
+// 방에 쓰기(채팅·메모편집·그리기)가 가능한지. 읽기 전용 방은 대표자만,
+// 그 외에는 권한 시스템의 사용(use) 권한을 따른다. 대표자/관리자는 항상 허용.
 function isRoomWritable(ctx, client) {
-  if (!ctx.room.readOnly) return true;
-  return store.isChannelOwner(ctx.channel.id, client.userId, client.isAdmin);
+  if (ctx.room.readOnly && !store.isChannelOwner(ctx.channel.id, client.userId, client.isAdmin)) {
+    return false;
+  }
+  return store.canUseRoom(ctx.channel.id, ctx.room.id, client.userId, client.isAdmin);
 }
 
 function handleChatMessage(client, message) {
@@ -1109,6 +1172,10 @@ function resolveChatRoom(client, roomId) {
   }
   if (!store.isChannelMember(found.channel.id, client.userId, client.isAdmin)) {
     send(client, { type: "chat-error", message: "채널 멤버만 이용할 수 있습니다." });
+    return null;
+  }
+  if (!store.canAccessRoom(found.channel.id, found.room.id, client.userId, client.isAdmin)) {
+    send(client, { type: "chat-error", message: "이 방에 접근할 권한이 없습니다." });
     return null;
   }
   return found;
@@ -1276,6 +1343,10 @@ function resolveMemoRoom(client, roomId) {
   }
   if (!store.isChannelMember(found.channel.id, client.userId, client.isAdmin)) {
     send(client, { type: "memo-error", message: "채널 멤버만 이용할 수 있습니다." });
+    return null;
+  }
+  if (!store.canAccessRoom(found.channel.id, found.room.id, client.userId, client.isAdmin)) {
+    send(client, { type: "memo-error", message: "이 방에 접근할 권한이 없습니다." });
     return null;
   }
   return found;
@@ -1554,6 +1625,10 @@ function resolveDrawRoom(client, roomId) {
     send(client, { type: "draw-error", message: "채널 멤버만 이용할 수 있습니다." });
     return null;
   }
+  if (!store.canAccessRoom(found.channel.id, found.room.id, client.userId, client.isAdmin)) {
+    send(client, { type: "draw-error", message: "이 방에 접근할 권한이 없습니다." });
+    return null;
+  }
   return found;
 }
 
@@ -1597,6 +1672,10 @@ function resolveLogRoom(client, roomId) {
   }
   if (!store.isChannelMember(found.channel.id, client.userId, client.isAdmin)) {
     send(client, { type: "log-error", message: "채널 멤버만 이용할 수 있습니다." });
+    return null;
+  }
+  if (!store.canAccessRoom(found.channel.id, found.room.id, client.userId, client.isAdmin)) {
+    send(client, { type: "log-error", message: "로그방에 접근할 권한이 없습니다." });
     return null;
   }
   return found;

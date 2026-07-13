@@ -380,6 +380,7 @@ function createChannel(ownerId, name) {
     icon: "", // 채널 아이콘 이미지(data URL)
     inviteCode: makeInviteCode(),
     members: [ownerId],
+    roles: [], // 권한 역할 목록 [{ id, name, color, memberIds:[] }]
     rooms: [
       { id: newId(), name: "일반", type: "voice", limit: DEFAULT_ROOM_LIMIT },
       { id: newId(), name: "공지", type: "chat" },
@@ -529,6 +530,148 @@ function setRoomReadOnly(channelId, roomId, value) {
   return { channel, room };
 }
 
+// ===== 권한 역할(Role) =====
+const ROLE_COLORS = ["#5865f2", "#3ba55d", "#faa61a", "#ed4245", "#eb459e", "#9b59b6", "#1abc9c", "#e67e22"];
+const ROOM_PERM_KEYS = ["access", "use"]; // 방별 권한: 접근 / 사용(채팅·그리기·메모편집)
+
+function cleanRoleName(value) {
+  return String(value || "").trim().slice(0, 24) || "새 역할";
+}
+
+function cleanColor(value, fallback) {
+  const v = String(value || "").trim();
+  return /^#[0-9a-fA-F]{6}$/.test(v) ? v.toLowerCase() : (fallback || ROLE_COLORS[0]);
+}
+
+// 채널의 역할 배열을 항상 배열로 보장(레거시 채널 마이그레이션).
+function rolesOf(channel) {
+  if (!Array.isArray(channel.roles)) channel.roles = [];
+  return channel.roles;
+}
+
+function createRole(channelId, name) {
+  const channel = getChannel(channelId);
+  if (!channel) return { error: "채널을 찾을 수 없습니다." };
+  const roles = rolesOf(channel);
+  if (roles.length >= 30) return { error: "역할은 최대 30개까지 만들 수 있습니다." };
+  const role = { id: newId(), name: cleanRoleName(name), color: ROLE_COLORS[roles.length % ROLE_COLORS.length], memberIds: [] };
+  roles.push(role);
+  persistChannels();
+  return { channel, role };
+}
+
+function updateRole(channelId, roleId, { name, color } = {}) {
+  const channel = getChannel(channelId);
+  if (!channel) return { error: "채널을 찾을 수 없습니다." };
+  const role = rolesOf(channel).find((r) => r.id === roleId);
+  if (!role) return { error: "역할을 찾을 수 없습니다." };
+  if (name !== undefined) role.name = cleanRoleName(name);
+  if (color !== undefined) role.color = cleanColor(color, role.color);
+  persistChannels();
+  return { channel, role };
+}
+
+function deleteRole(channelId, roleId) {
+  const channel = getChannel(channelId);
+  if (!channel) return { error: "채널을 찾을 수 없습니다." };
+  channel.roles = rolesOf(channel).filter((r) => r.id !== roleId);
+  // 각 방의 권한 오버라이드에서도 해당 역할을 제거한다.
+  for (const room of channel.rooms) {
+    if (room.perms && room.perms.roles) delete room.perms.roles[roleId];
+  }
+  persistChannels();
+  return { channel };
+}
+
+// 역할에 유저를 추가/제거한다(채널 멤버만 가능).
+function setRoleMember(channelId, roleId, userId, value) {
+  const channel = getChannel(channelId);
+  if (!channel) return { error: "채널을 찾을 수 없습니다." };
+  const role = rolesOf(channel).find((r) => r.id === roleId);
+  if (!role) return { error: "역할을 찾을 수 없습니다." };
+  if (value && !channel.members.includes(userId)) return { error: "채널 멤버만 역할을 부여할 수 있습니다." };
+  role.memberIds = Array.isArray(role.memberIds) ? role.memberIds : [];
+  if (value) {
+    if (!role.memberIds.includes(userId)) role.memberIds.push(userId);
+  } else {
+    role.memberIds = role.memberIds.filter((id) => id !== userId);
+  }
+  persistChannels();
+  return { channel, role };
+}
+
+// 방별 권한 오버라이드를 설정한다. kind: "role" | "user", value: true(허용)/false(거부)/null(상속).
+function setRoomPerm(channelId, roomId, kind, targetId, perm, value) {
+  const channel = getChannel(channelId);
+  if (!channel) return { error: "채널을 찾을 수 없습니다." };
+  const room = channel.rooms.find((r) => r.id === roomId);
+  if (!room) return { error: "방을 찾을 수 없습니다." };
+  if (!ROOM_PERM_KEYS.includes(perm)) return { error: "알 수 없는 권한입니다." };
+  const bucket = kind === "user" ? "users" : "roles";
+  if (!room.perms) room.perms = {};
+  if (!room.perms[bucket]) room.perms[bucket] = {};
+  if (!room.perms[bucket][targetId]) room.perms[bucket][targetId] = {};
+  const entry = room.perms[bucket][targetId];
+  if (value === null || value === undefined) delete entry[perm];
+  else entry[perm] = Boolean(value);
+  if (Object.keys(entry).length === 0) delete room.perms[bucket][targetId];
+  persistChannels();
+  return { channel, room };
+}
+
+// 방 타입별 권한 기본값. 로그방만 접근이 기본 비공개, 나머지는 모두 허용.
+function defaultRoomPerm(roomType, perm) {
+  if (perm === "access") return roomType !== "log";
+  return true;
+}
+
+// 특정 유저의 방 권한을 해석한다. 반환: { access, use }.
+// 우선순위: 관리자/대표 > 유저 오버라이드 > 역할 오버라이드(허용이 거부보다 우선) > 기본값.
+function resolveRoomPerms(channel, room, userId, isAdmin = false) {
+  if (isAdmin || channel.ownerId === userId || (channel.managers || []).includes(userId)) {
+    return { access: true, use: true };
+  }
+  const roleIds = rolesOf(channel).filter((r) => (r.memberIds || []).includes(userId)).map((r) => r.id);
+  return resolveWithRoles(room, roleIds, userId);
+}
+
+// 명시적 역할 집합/유저로 권한을 계산한다(미리보기·해석 공용).
+function resolveWithRoles(room, roleIds, userId) {
+  const perms = room.perms || {};
+  const resolveOne = (perm) => {
+    if (userId) {
+      const uo = perms.users && perms.users[userId];
+      if (uo && uo[perm] !== undefined) return Boolean(uo[perm]);
+    }
+    let allow = false, deny = false;
+    for (const rid of roleIds) {
+      const ro = perms.roles && perms.roles[rid];
+      if (ro && ro[perm] !== undefined) { if (ro[perm]) allow = true; else deny = true; }
+    }
+    if (allow) return true;
+    if (deny) return false;
+    return defaultRoomPerm(room.type, perm);
+  };
+  return { access: resolveOne("access"), use: resolveOne("use") };
+}
+
+function canAccessRoom(channelId, roomId, userId, isAdmin = false) {
+  const channel = getChannel(channelId);
+  if (!channel) return false;
+  const room = channel.rooms.find((r) => r.id === roomId);
+  if (!room) return false;
+  return resolveRoomPerms(channel, room, userId, isAdmin).access;
+}
+
+function canUseRoom(channelId, roomId, userId, isAdmin = false) {
+  const channel = getChannel(channelId);
+  if (!channel) return false;
+  const room = channel.rooms.find((r) => r.id === roomId);
+  if (!room) return false;
+  const p = resolveRoomPerms(channel, room, userId, isAdmin);
+  return p.access && p.use;
+}
+
 function setRoomLimit(channelId, roomId, limit) {
   const channel = getChannel(channelId);
   if (!channel) return { error: "채널을 찾을 수 없습니다." };
@@ -580,7 +723,15 @@ function channelSummary(channel) {
     icon: channel.icon || "",
     inviteCode: channel.inviteCode,
     memberIds: channel.members.slice(),
-    rooms: channel.rooms.map((r) => ({ id: r.id, name: r.name, type: r.type, ...(r.type === "voice" ? { limit: r.limit || DEFAULT_ROOM_LIMIT } : {}), ...(r.readOnly ? { readOnly: true } : {}) })),
+    roles: rolesOf(channel).map((r) => ({ id: r.id, name: r.name, color: r.color, memberIds: (r.memberIds || []).slice() })),
+    rooms: channel.rooms.map((r) => ({
+      id: r.id,
+      name: r.name,
+      type: r.type,
+      ...(r.type === "voice" ? { limit: r.limit || DEFAULT_ROOM_LIMIT } : {}),
+      ...(r.readOnly ? { readOnly: true } : {}),
+      ...(r.perms ? { perms: r.perms } : {}),
+    })),
     createdAt: channel.createdAt,
   };
 }
@@ -924,6 +1075,15 @@ module.exports = {
   renameRoom,
   setRoomLimit,
   setRoomReadOnly,
+  // 권한 역할
+  createRole,
+  updateRole,
+  deleteRole,
+  setRoleMember,
+  setRoomPerm,
+  resolveRoomPerms,
+  canAccessRoom,
+  canUseRoom,
   renameChannel,
   deleteChannel,
   findRoom,

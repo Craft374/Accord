@@ -174,6 +174,7 @@ const dom = {
   roomLimitInput: document.querySelector("#roomLimitInput"),
   roomReadOnlyField: document.querySelector("#roomReadOnlyField"),
   roomReadOnlyInput: document.querySelector("#roomReadOnlyInput"),
+  roomPermsButton: document.querySelector("#roomPermsButton"),
   chatPanel: document.querySelector("#chatPanel"),
   chatRoomName: document.querySelector("#chatRoomName"),
   chatSubtitle: document.querySelector("#chatSubtitle"),
@@ -246,6 +247,7 @@ const dom = {
   copyInviteButton: document.querySelector("#copyInviteButton"),
   channelRenameInput: document.querySelector("#channelRenameInput"),
   channelRenameButton: document.querySelector("#channelRenameButton"),
+  channelRolesButton: document.querySelector("#channelRolesButton"),
   channelLeaveButton: document.querySelector("#channelLeaveButton"),
   channelDeleteButton: document.querySelector("#channelDeleteButton"),
   channelMenuMessage: document.querySelector("#channelMenuMessage"),
@@ -1322,7 +1324,16 @@ async function handleSocketMessage(message) {
   if (message.type === "channels") {
     state.channels = message.channels || [];
     reconcileCurrentChannel(message.selectId);
+    // 미리보기 대상이 사라졌으면(역할 삭제 등) 미리보기 종료.
+    if (rolePreview.active) {
+      const ch = currentChannel();
+      const stillExists = ch && (rolePreview.kind === "role"
+        ? (ch.roles || []).some((r) => r.id === rolePreview.id)
+        : (ch.members || []).some((m) => m.id === rolePreview.id));
+      if (!stillExists) { rolePreview.active = false; rolePreview.kind = ""; rolePreview.id = ""; }
+    }
     renderChannels();
+    renderPermsModal(); // 권한 모달이 열려 있으면 최신 데이터로 갱신
     verifyActiveChat();
     verifyActiveMemo();
     verifyActiveDraw();
@@ -5953,9 +5964,73 @@ function isChannelCreator(channel) {
   return Boolean(state.auth.user?.isAdmin) || channel.ownerId === state.auth.user?.id;
 }
 
-// 읽기 전용 방이면 대표자만 쓸 수 있다. 그 외에는 누구나 쓰기 가능.
+// ===== 권한 시스템(클라이언트 해석) =====
+// 서버 data-store 의 resolveRoomPerms 와 동일한 규칙을 클라이언트에서도 계산한다
+// (방 숨김·입력 비활성화·미리보기용). 실제 강제는 서버가 담당한다.
+const rolePreview = { active: false, kind: "", id: "" }; // 미리보기: kind 'role'|'user', id
+
+function defaultRoomPerm(type, perm) {
+  if (perm === "access") return type !== "log";
+  return true;
+}
+
+// 명시적 역할집합/유저로 방 권한을 계산. 반환 { access, use }.
+function resolveRoomPermsWith(room, roleIds, userId) {
+  const perms = room.perms || {};
+  const one = (perm) => {
+    if (userId) {
+      const uo = perms.users && perms.users[userId];
+      if (uo && uo[perm] !== undefined) return Boolean(uo[perm]);
+    }
+    let allow = false, deny = false;
+    for (const rid of roleIds || []) {
+      const ro = perms.roles && perms.roles[rid];
+      if (ro && ro[perm] !== undefined) { if (ro[perm]) allow = true; else deny = true; }
+    }
+    if (allow) return true;
+    if (deny) return false;
+    return defaultRoomPerm(room.type, perm);
+  };
+  return { access: one("access"), use: one("use") };
+}
+
+function rolesOfUser(channel, userId) {
+  return (channel.roles || []).filter((r) => (r.memberIds || []).includes(userId)).map((r) => r.id);
+}
+
+function isChannelOwnerId(channel, userId) {
+  if (!channel || !userId) return false;
+  return channel.ownerId === userId || (channel.managerIds || []).includes(userId);
+}
+
+// 특정 유저의 방 권한(대표/관리자는 전권).
+function roomPermsForUser(channel, room, userId, isAdmin) {
+  if (isAdmin || isChannelOwnerId(channel, userId)) return { access: true, use: true, owner: true };
+  return { ...resolveRoomPermsWith(room, rolesOfUser(channel, userId), userId), owner: false };
+}
+
+// 지금 화면에 적용할 "관점"의 방 권한. 미리보기가 켜져 있으면 그 관점으로 계산한다.
+function viewRoomPerms(channel, room) {
+  if (rolePreview.active && channel) {
+    if (rolePreview.kind === "user") {
+      return roomPermsForUser(channel, room, rolePreview.id, false);
+    }
+    // 역할 미리보기: 그 역할 하나만 가진 일반 멤버 관점.
+    return { ...resolveRoomPermsWith(room, [rolePreview.id], null), owner: false };
+  }
+  if (isChannelOwner(channel)) return { access: true, use: true, owner: true };
+  return { ...resolveRoomPermsWith(room, rolesOfUser(channel, state.auth.user?.id), state.auth.user?.id), owner: false };
+}
+
+// 방이 현재 관점에서 보이는지(접근 권한).
+function canSeeRoom(channel, room) {
+  return viewRoomPerms(channel, room).access;
+}
+
+// 읽기 전용 방이면 대표자만 쓸 수 있다. 그 외에는 권한 시스템의 사용(use) 권한을 따른다.
 function canWriteRoom(channel, room) {
-  return !room?.readOnly || isChannelOwner(channel);
+  if (room?.readOnly && !isChannelOwner(channel)) return false;
+  return viewRoomPerms(channel, room).use;
 }
 
 function reconcileCurrentChannel(preferId) {
@@ -6037,9 +6112,15 @@ function renderRooms() {
   dom.roomList.innerHTML = "";
   const channel = currentChannel();
   if (!channel) return;
-  const owner = isChannelOwner(channel);
+  // 미리보기 중에는 대표 전용 버튼(방 추가/삭제)도 숨겨 실제 유저 화면처럼 보여준다.
+  const owner = isChannelOwner(channel) && !rolePreview.active;
+
+  // 미리보기 배너(대표가 특정 역할/유저 관점을 확인 중)
+  if (rolePreview.active) dom.roomList.append(buildPreviewBanner(channel));
 
   for (const room of channel.rooms) {
+    // 접근 권한이 없는 방은 목록에서 숨긴다(미리보기 중이면 그 관점 기준).
+    if (!canSeeRoom(channel, room)) continue;
     const meta = ROOM_TYPE_META[room.type] || ROOM_TYPE_META.voice;
     const item = document.createElement("div");
     item.className = "room-item";
@@ -6196,6 +6277,457 @@ function makeBadge(text) {
   return badge;
 }
 
+// ===== 권한 미리보기 · 역할/권한 관리 모달 =====
+function escapeHtml(str) { return escapeHtmlText(str); }
+
+function previewTargetName(channel) {
+  if (!channel) return "";
+  if (rolePreview.kind === "role") {
+    const role = (channel.roles || []).find((r) => r.id === rolePreview.id);
+    return role ? role.name : "(삭제된 역할)";
+  }
+  const m = (channel.members || []).find((u) => u.id === rolePreview.id);
+  return m ? (m.displayName || `유저#${m.code}`) : "(알 수 없는 유저)";
+}
+
+function buildPreviewBanner(channel) {
+  const bar = document.createElement("div");
+  bar.className = "preview-banner";
+  const label = document.createElement("span");
+  const kindText = rolePreview.kind === "role" ? "역할" : "유저";
+  label.innerHTML = `👁 미리보기 · <b>${escapeHtml(previewTargetName(channel))}</b> ${kindText} 관점`;
+  const stop = document.createElement("button");
+  stop.className = "preview-stop";
+  stop.textContent = "미리보기 종료";
+  stop.dataset.previewStop = "1";
+  bar.append(label, stop);
+  return bar;
+}
+
+function startRolePreview(kind, id) {
+  rolePreview.active = true;
+  rolePreview.kind = kind;
+  rolePreview.id = id;
+  closePermsModal();
+  renderRooms();
+}
+
+function stopRolePreview() {
+  rolePreview.active = false;
+  rolePreview.kind = "";
+  rolePreview.id = "";
+  renderRooms();
+}
+
+let permsModalEl = null;
+const permsState = { tab: "roles", roomId: "", selectedRoleId: "" };
+
+function permsChannel() {
+  return currentChannel();
+}
+
+function openPermsModal(focusRoomId) {
+  const channel = permsChannel();
+  if (!channel || !isChannelOwner(channel)) return;
+  if (focusRoomId) { permsState.tab = "rooms"; permsState.roomId = focusRoomId; }
+  if (!permsState.roomId || !channel.rooms.some((r) => r.id === permsState.roomId)) {
+    permsState.roomId = channel.rooms[0]?.id || "";
+  }
+  ensurePermsModal();
+  permsModalEl.hidden = false;
+  renderPermsModal();
+}
+function closePermsModal() { if (permsModalEl) permsModalEl.hidden = true; }
+
+function ensurePermsModal() {
+  if (permsModalEl) return;
+  permsModalEl = document.createElement("div");
+  permsModalEl.className = "modal-backdrop";
+  permsModalEl.id = "permsModal";
+  permsModalEl.hidden = true;
+  permsModalEl.innerHTML = `
+    <div class="modal perms-modal" role="dialog" aria-modal="true">
+      <header class="modal-head">
+        <h2>역할 · 권한 관리</h2>
+        <button class="ghost small" data-perms-close="1">닫기</button>
+      </header>
+      <div class="perms-tabs">
+        <button class="perms-tab" data-perms-tab="roles">역할</button>
+        <button class="perms-tab" data-perms-tab="rooms">방별 권한</button>
+        <button class="perms-tab" data-perms-tab="preview">미리보기</button>
+      </div>
+      <div class="modal-body perms-body"></div>
+    </div>`;
+  document.body.append(permsModalEl);
+  permsModalEl.addEventListener("click", onPermsModalClick);
+  permsModalEl.addEventListener("change", onPermsModalChange);
+}
+
+function renderPermsModal() {
+  if (!permsModalEl || permsModalEl.hidden) return;
+  const channel = permsChannel();
+  if (!channel) { closePermsModal(); return; }
+  permsModalEl.querySelectorAll(".perms-tab").forEach((t) => {
+    t.classList.toggle("active", t.dataset.permsTab === permsState.tab);
+  });
+  const body = permsModalEl.querySelector(".perms-body");
+  body.innerHTML = "";
+  if (permsState.tab === "roles") body.append(buildRolesPane(channel));
+  else if (permsState.tab === "rooms") body.append(buildRoomPermsPane(channel));
+  else body.append(buildPreviewPane(channel));
+}
+
+// --- 역할 관리 탭 ---
+function buildRolesPane(channel) {
+  const wrap = document.createElement("div");
+  wrap.className = "perms-pane";
+  const roles = channel.roles || [];
+
+  const top = document.createElement("div");
+  top.className = "perms-row-add";
+  top.innerHTML = `<input class="perms-input" data-role-new placeholder="새 역할 이름" maxlength="24" />
+    <button class="primary small" data-role-create="1">역할 추가</button>`;
+  wrap.append(top);
+
+  if (!roles.length) {
+    const empty = document.createElement("p");
+    empty.className = "modal-hint";
+    empty.textContent = "아직 역할이 없습니다. 역할을 만들어 여러 멤버를 한 번에 관리하세요.";
+    wrap.append(empty);
+  }
+
+  const selId = permsState.selectedRoleId && roles.some((r) => r.id === permsState.selectedRoleId)
+    ? permsState.selectedRoleId : (roles[0]?.id || "");
+
+  const grid = document.createElement("div");
+  grid.className = "perms-roles-grid";
+
+  const list = document.createElement("div");
+  list.className = "perms-role-list";
+  for (const role of roles) {
+    const btn = document.createElement("button");
+    btn.className = "perms-role-item" + (role.id === selId ? " active" : "");
+    btn.dataset.roleSelect = role.id;
+    btn.innerHTML = `<span class="role-dot" style="background:${role.color || "#5865f2"}"></span>
+      <span class="role-name">${escapeHtml(role.name)}</span>
+      <span class="role-count">${(role.memberIds || []).length}</span>`;
+    list.append(btn);
+  }
+  grid.append(list);
+
+  const detail = document.createElement("div");
+  detail.className = "perms-role-detail";
+  const role = roles.find((r) => r.id === selId);
+  if (role) detail.append(buildRoleDetail(channel, role));
+  else detail.innerHTML = `<p class="modal-hint">역할을 선택하면 이름·색·멤버를 편집할 수 있습니다.</p>`;
+  grid.append(detail);
+  wrap.append(grid);
+  return wrap;
+}
+
+function buildRoleDetail(channel, role) {
+  const box = document.createElement("div");
+  const head = document.createElement("div");
+  head.className = "perms-role-edit";
+  head.innerHTML = `
+    <label class="field"><span>역할 이름</span>
+      <input class="perms-input" data-role-name="${role.id}" value="${escapeHtml(role.name)}" maxlength="24" /></label>
+    <label class="field"><span>색상</span>
+      <input type="color" data-role-color="${role.id}" value="${role.color || "#5865f2"}" /></label>
+    <button class="danger small" data-role-delete="${role.id}">역할 삭제</button>`;
+  box.append(head);
+
+  const membersTitle = document.createElement("p");
+  membersTitle.className = "perms-subtitle";
+  membersTitle.textContent = "이 역할을 가진 멤버";
+  box.append(membersTitle);
+
+  const memberBox = document.createElement("div");
+  memberBox.className = "perms-member-list";
+  for (const m of channel.members || []) {
+    const has = (role.memberIds || []).includes(m.id);
+    const row = document.createElement("label");
+    row.className = "perms-member-row";
+    row.innerHTML = `<input type="checkbox" data-role-member="${role.id}" data-user-id="${m.id}" ${has ? "checked" : ""} />
+      <span>${escapeHtml(m.displayName || ("유저#" + m.code))} <em>#${escapeHtml(m.code)}</em></span>`;
+    memberBox.append(row);
+  }
+  box.append(memberBox);
+  return box;
+}
+
+// --- 방별 권한 탭 ---
+const PERM_LABELS = {
+  access: "접근",
+  use: { chat: "채팅", draw: "그리기", memo: "편집", voice: "발언", log: "보기" },
+};
+function useLabelFor(roomType) {
+  return PERM_LABELS.use[roomType] || "사용";
+}
+// 이 방 타입에서 편집할 권한 키 목록.
+function permKeysForRoom(roomType) {
+  if (roomType === "voice" || roomType === "log") return ["access"]; // 통화·로그는 접근만
+  return ["access", "use"];
+}
+
+function buildRoomPermsPane(channel) {
+  const wrap = document.createElement("div");
+  wrap.className = "perms-pane";
+
+  const sel = document.createElement("div");
+  sel.className = "perms-room-select";
+  const label = document.createElement("span");
+  label.textContent = "방 선택";
+  const dropdown = document.createElement("select");
+  dropdown.dataset.roomSelect = "1";
+  for (const r of channel.rooms) {
+    const opt = document.createElement("option");
+    opt.value = r.id;
+    opt.textContent = `${(ROOM_TYPE_META[r.type] || {}).icon || ""} ${r.name}`;
+    if (r.id === permsState.roomId) opt.selected = true;
+    dropdown.append(opt);
+  }
+  sel.append(label, dropdown);
+  wrap.append(sel);
+
+  const room = channel.rooms.find((r) => r.id === permsState.roomId);
+  if (!room) { wrap.append(el("p", "modal-hint", "방을 선택하세요.")); return wrap; }
+
+  const keys = permKeysForRoom(room.type);
+  const hint = document.createElement("p");
+  hint.className = "modal-hint";
+  hint.textContent = room.type === "log"
+    ? "로그방은 기본적으로 관리자·대표만 볼 수 있습니다. 아래에서 역할/유저에게 접근을 허용하세요."
+    : "각 칸을 눌러 허용 → 거부 → 기본(상속) 순으로 바꿉니다. 기본값은 모두 허용입니다.";
+  wrap.append(hint);
+
+  // 헤더
+  const table = document.createElement("div");
+  table.className = "perms-table";
+  const header = document.createElement("div");
+  header.className = "perms-trow perms-thead";
+  header.append(el("div", "perms-tcell name", "대상"));
+  for (const k of keys) {
+    const t = k === "access" ? "접근" : useLabelFor(room.type);
+    header.append(el("div", "perms-tcell", t));
+  }
+  table.append(header);
+
+  // 역할 행
+  for (const role of channel.roles || []) {
+    table.append(buildPermRow(room, "role", role.id,
+      `<span class="role-dot" style="background:${role.color || "#5865f2"}"></span>${escapeHtml(role.name)}`, keys));
+  }
+  // 유저별(오버라이드가 있는 유저 + 추가 버튼)
+  const userOverrides = Object.keys((room.perms && room.perms.users) || {});
+  for (const uid of userOverrides) {
+    const m = (channel.members || []).find((u) => u.id === uid);
+    const nm = m ? escapeHtml(m.displayName || ("유저#" + m.code)) : "(비멤버)";
+    table.append(buildPermRow(room, "user", uid, `<span class="perms-user-ic">@</span>${nm}`, keys, true));
+  }
+  wrap.append(table);
+
+  // 특정 유저 추가 드롭다운
+  const addUser = document.createElement("div");
+  addUser.className = "perms-room-select";
+  addUser.append(el("span", "", "특정 유저 추가"));
+  const udd = document.createElement("select");
+  udd.dataset.permAddUser = "1";
+  udd.append(new Option("멤버 선택…", ""));
+  for (const m of channel.members || []) {
+    if (userOverrides.includes(m.id)) continue;
+    udd.append(new Option(`${m.displayName || ("유저#" + m.code)} #${m.code}`, m.id));
+  }
+  addUser.append(udd);
+  wrap.append(addUser);
+  return wrap;
+}
+
+// tri-state 권한 행. perm 값: true/false/undefined(상속)
+function buildPermRow(room, kind, targetId, labelHtml, keys, isUser) {
+  const row = document.createElement("div");
+  row.className = "perms-trow";
+  const nameCell = document.createElement("div");
+  nameCell.className = "perms-tcell name";
+  nameCell.innerHTML = labelHtml;
+  row.append(nameCell);
+  const bucket = kind === "user" ? "users" : "roles";
+  const entry = (room.perms && room.perms[bucket] && room.perms[bucket][targetId]) || {};
+  for (const k of keys) {
+    const cell = document.createElement("div");
+    cell.className = "perms-tcell";
+    const cur = entry[k]; // true/false/undefined
+    const state = cur === true ? "allow" : cur === false ? "deny" : "inherit";
+    const btn = document.createElement("button");
+    btn.className = "perm-tri " + state;
+    btn.dataset.permSet = "1";
+    btn.dataset.kind = kind;
+    btn.dataset.targetId = targetId;
+    btn.dataset.perm = k;
+    btn.dataset.roomId = room.id;
+    btn.textContent = state === "allow" ? "✓ 허용" : state === "deny" ? "✕ 거부" : "– 기본";
+    cell.append(btn);
+    row.append(cell);
+  }
+  return row;
+}
+
+// --- 미리보기 탭 ---
+function buildPreviewPane(channel) {
+  const wrap = document.createElement("div");
+  wrap.className = "perms-pane";
+  wrap.append(el("p", "modal-hint", "역할이나 멤버를 고르면 그 관점에서 보이는 방·기능을 미리 확인합니다. 실제 화면에도 적용해 볼 수 있어요."));
+
+  const picker = document.createElement("div");
+  picker.className = "perms-preview-picks";
+  // 역할 목록
+  const roleCol = document.createElement("div");
+  roleCol.className = "perms-preview-col";
+  roleCol.append(el("p", "perms-subtitle", "역할"));
+  for (const role of channel.roles || []) {
+    const b = document.createElement("button");
+    b.className = "perms-pick";
+    b.dataset.previewPick = "role";
+    b.dataset.id = role.id;
+    b.innerHTML = `<span class="role-dot" style="background:${role.color || "#5865f2"}"></span>${escapeHtml(role.name)}`;
+    roleCol.append(b);
+  }
+  if (!(channel.roles || []).length) roleCol.append(el("p", "modal-hint", "역할 없음"));
+  // 멤버 목록
+  const userCol = document.createElement("div");
+  userCol.className = "perms-preview-col";
+  userCol.append(el("p", "perms-subtitle", "멤버"));
+  for (const m of channel.members || []) {
+    const b = document.createElement("button");
+    b.className = "perms-pick";
+    b.dataset.previewPick = "user";
+    b.dataset.id = m.id;
+    b.textContent = m.displayName || ("유저#" + m.code);
+    userCol.append(b);
+  }
+  picker.append(roleCol, userCol);
+  wrap.append(picker);
+
+  // 결과 미리보기(선택된 대상이 있으면)
+  const target = permsState.previewTarget;
+  if (target) {
+    const res = document.createElement("div");
+    res.className = "perms-preview-result";
+    const isUserOwner = target.kind === "user" && isChannelOwnerId(channel, target.id);
+    res.append(el("p", "perms-subtitle",
+      `결과 · ${escapeHtml(previewNameOf(channel, target))}${isUserOwner ? " (대표 → 전권)" : ""}`));
+    for (const room of channel.rooms) {
+      const p = target.kind === "user"
+        ? roomPermsForUser(channel, room, target.id, false)
+        : { ...resolveRoomPermsWith(room, [target.id], null), owner: false };
+      const line = document.createElement("div");
+      line.className = "perms-preview-line" + (p.access ? "" : " no-access");
+      const ic = (ROOM_TYPE_META[room.type] || {}).icon || "";
+      let caps = p.access ? "접근 O" : "접근 X (숨김)";
+      if (p.access && (room.type === "chat" || room.type === "draw" || room.type === "memo")) {
+        caps += ` · ${useLabelFor(room.type)} ${p.use ? "O" : "X"}`;
+      }
+      line.innerHTML = `<span>${ic} ${escapeHtml(room.name)}</span><span class="perms-caps">${caps}</span>`;
+      res.append(line);
+    }
+    const apply = document.createElement("button");
+    apply.className = "primary";
+    apply.dataset.previewApply = "1";
+    apply.textContent = "이 관점으로 실제 화면 미리보기";
+    res.append(apply);
+    wrap.append(res);
+  }
+  return wrap;
+}
+
+function previewNameOf(channel, target) {
+  if (target.kind === "role") {
+    const r = (channel.roles || []).find((x) => x.id === target.id);
+    return r ? r.name + " 역할" : "역할";
+  }
+  const m = (channel.members || []).find((x) => x.id === target.id);
+  return m ? (m.displayName || ("유저#" + m.code)) : "유저";
+}
+
+// 작은 엘리먼트 헬퍼
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+function onPermsModalClick(event) {
+  const channel = permsChannel();
+  if (!channel) return;
+  const t = event.target;
+  if (t === permsModalEl || t.closest?.("[data-perms-close]")) { closePermsModal(); return; }
+  const tab = t.closest?.("[data-perms-tab]");
+  if (tab) { permsState.tab = tab.dataset.permsTab; renderPermsModal(); return; }
+  const cid = channel.id;
+
+  // 역할 추가
+  if (t.closest?.("[data-role-create]")) {
+    const input = permsModalEl.querySelector("[data-role-new]");
+    const name = (input?.value || "").trim();
+    sendSocket({ type: "channel:create-role", channelId: cid, name: name || "새 역할" });
+    if (input) input.value = "";
+    return;
+  }
+  const roleSel = t.closest?.("[data-role-select]");
+  if (roleSel) { permsState.selectedRoleId = roleSel.dataset.roleSelect; renderPermsModal(); return; }
+  const roleDel = t.closest?.("[data-role-delete]");
+  if (roleDel) {
+    if (window.confirm("이 역할을 삭제할까요? 관련 권한 설정도 함께 지워집니다.")) {
+      sendSocket({ type: "channel:delete-role", channelId: cid, roleId: roleDel.dataset.roleDelete });
+    }
+    return;
+  }
+  // tri-state 권한 토글: 기본→허용→거부→기본
+  const tri = t.closest?.("[data-perm-set]");
+  if (tri) {
+    const cur = tri.classList.contains("allow") ? true : tri.classList.contains("deny") ? false : undefined;
+    const next = cur === undefined ? true : cur === true ? false : null; // null=상속으로
+    sendSocket({ type: "channel:set-room-perm", channelId: cid, roomId: tri.dataset.roomId,
+      kind: tri.dataset.kind, targetId: tri.dataset.targetId, perm: tri.dataset.perm, value: next });
+    return;
+  }
+  // 미리보기 대상 선택
+  const pick = t.closest?.("[data-preview-pick]");
+  if (pick) { permsState.previewTarget = { kind: pick.dataset.previewPick, id: pick.dataset.id }; renderPermsModal(); return; }
+  const applyPrev = t.closest?.("[data-preview-apply]");
+  if (applyPrev && permsState.previewTarget) {
+    startRolePreview(permsState.previewTarget.kind, permsState.previewTarget.id);
+    return;
+  }
+}
+
+// 역할 이름/색 변경, 방 선택, 유저 추가 (change 이벤트)
+function onPermsModalChange(event) {
+  const channel = permsChannel();
+  if (!channel) return;
+  const cid = channel.id;
+  const t = event.target;
+  const rn = t.closest?.("[data-role-name]");
+  if (rn) { sendSocket({ type: "channel:update-role", channelId: cid, roleId: rn.dataset.roleName, name: rn.value }); return; }
+  const rc = t.closest?.("[data-role-color]");
+  if (rc) { sendSocket({ type: "channel:update-role", channelId: cid, roleId: rc.dataset.roleColor, color: rc.value }); return; }
+  const rs = t.closest?.("[data-room-select]");
+  if (rs) { permsState.roomId = rs.value; renderPermsModal(); return; }
+  const memberChk = t.closest?.("[data-role-member]");
+  if (memberChk) {
+    sendSocket({ type: "channel:set-role-member", channelId: cid, roleId: memberChk.dataset.roleMember,
+      userId: memberChk.dataset.userId, value: memberChk.checked });
+    return;
+  }
+  const au = t.closest?.("[data-perm-add-user]");
+  if (au && au.value) {
+    // 접근 권한을 기본으로 명시(오버라이드 행 생성). 상속과 동일 효과지만 행이 나타난다.
+    sendSocket({ type: "channel:set-room-perm", channelId: cid, roomId: permsState.roomId,
+      kind: "user", targetId: au.value, perm: "access", value: true });
+  }
+}
+
 // ===== 채널 이벤트 · 모달 =====
 function bindChannelEvents() {
   bindCropEvents();
@@ -6235,6 +6767,8 @@ function bindChannelEvents() {
       }
       return;
     }
+    const previewStop = event.target?.closest?.("[data-preview-stop]");
+    if (previewStop) { stopRolePreview(); return; }
     const add = event.target?.closest?.("[data-room-add]");
     if (add) { openRoomModal(); return; }
     const head = event.target?.closest?.(".room-item-head");
@@ -6255,6 +6789,11 @@ function bindChannelEvents() {
   dom.roomRenameClose?.addEventListener("click", closeRoomRenameModal);
   dom.roomRenameModal?.addEventListener("click", (e) => { if (e.target === dom.roomRenameModal) closeRoomRenameModal(); });
   dom.roomRenameConfirm?.addEventListener("click", confirmRoomRename);
+  dom.roomPermsButton?.addEventListener("click", () => {
+    const id = roomRenameTargetId;
+    closeRoomRenameModal();
+    openPermsModal(id);
+  });
   dom.roomRenameInput?.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); confirmRoomRename(); } });
 
   dom.memberList?.addEventListener("click", (event) => {
@@ -6325,6 +6864,12 @@ function bindChannelEvents() {
     if (!name) { setChannelMenuMessage("이름을 입력해 주세요."); return; }
     sendSocket({ type: "channel:rename", channelId: channel.id, name });
     setChannelMenuMessage("저장했습니다.", true);
+  });
+  dom.channelRolesButton?.addEventListener("click", () => {
+    const channel = currentChannel();
+    if (!channel || !isChannelOwner(channel)) return;
+    closeChannelMenu();
+    openPermsModal();
   });
   dom.channelLeaveButton?.addEventListener("click", () => {
     const channel = currentChannel();
@@ -8651,6 +9196,7 @@ function openRoomRenameModal(roomId) {
   if (dom.roomLimitInput) dom.roomLimitInput.value = String(found.room.limit || 8);
   if (dom.roomReadOnlyField) dom.roomReadOnlyField.hidden = !canReadOnly;
   if (dom.roomReadOnlyInput) dom.roomReadOnlyInput.checked = Boolean(found.room.readOnly);
+  if (dom.roomPermsButton) dom.roomPermsButton.hidden = !isChannelOwner(found.channel);
   dom.roomRenameModal.hidden = false;
   dom.roomRenameInput.focus();
   dom.roomRenameInput.select();
@@ -8690,6 +9236,7 @@ function openChannelMenu() {
   dom.channelRenameInput.value = channel.name || "";
   if (dom.channelRenameInput) dom.channelRenameInput.disabled = !owner;
   if (dom.channelRenameButton) dom.channelRenameButton.hidden = !owner;
+  if (dom.channelRolesButton) dom.channelRolesButton.hidden = !owner; // 역할·권한은 대표만
   if (dom.channelDeleteButton) {
     dom.channelDeleteButton.hidden = !creator; // 삭제는 창설자만
     // 다른 멤버가 남아 있으면 삭제 불가(창설자 혼자일 때만)

@@ -3495,3 +3495,143 @@ audio,
 .channel-menu-actions {
   flex-wrap: wrap;
 }
+
+/* ===== 역할 · 권한 시스템 ===== */
+.preview-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 4px 6px 8px;
+  padding: 8px 10px;
+  background: rgba(88, 101, 242, 0.16);
+  border: 1px solid var(--blurple);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--heading);
+}
+.preview-banner b { color: #fff; }
+.preview-stop {
+  flex: none;
+  padding: 4px 8px;
+  border: none;
+  border-radius: var(--radius-xs);
+  background: var(--blurple);
+  color: #fff;
+  font-size: 11px;
+  cursor: pointer;
+}
+.preview-stop:hover { background: var(--blurple-strong); }
+
+.perms-modal { width: min(720px, 94vw); max-height: 88vh; display: flex; flex-direction: column; }
+.perms-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--line);
+}
+.perms-tab {
+  padding: 10px 14px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+}
+.perms-tab:hover { color: var(--text); }
+.perms-tab.active { color: var(--heading); border-bottom-color: var(--blurple); }
+.perms-body { overflow-y: auto; }
+.perms-pane { display: flex; flex-direction: column; gap: 12px; }
+
+.perms-row-add { display: flex; gap: 8px; }
+.perms-input {
+  flex: 1;
+  background: var(--bg-input);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-xs);
+  color: var(--text);
+  padding: 8px 10px;
+  font-size: 14px;
+}
+.small { padding: 6px 12px; font-size: 13px; }
+
+.perms-roles-grid { display: grid; grid-template-columns: 200px 1fr; gap: 12px; }
+.perms-role-list { display: flex; flex-direction: column; gap: 4px; max-height: 46vh; overflow-y: auto; }
+.perms-role-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px;
+  background: var(--bg-surface);
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+.perms-role-item:hover { background: var(--bg-elevated); }
+.perms-role-item.active { border-color: var(--blurple); background: var(--bg-elevated); }
+.role-dot { width: 12px; height: 12px; border-radius: 50%; flex: none; }
+.role-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.role-count { font-size: 11px; color: var(--muted); background: var(--bg-input); padding: 1px 6px; border-radius: 10px; }
+
+.perms-role-detail { background: var(--bg-surface); border-radius: var(--radius-sm); padding: 12px; }
+.perms-role-edit { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+.perms-role-edit .field { flex: 1; min-width: 120px; }
+.perms-role-edit input[type="color"] { width: 44px; height: 38px; padding: 2px; background: var(--bg-input); border: 1px solid var(--line-strong); border-radius: var(--radius-xs); cursor: pointer; }
+.perms-subtitle { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; margin: 12px 0 6px; }
+.perms-member-list { display: flex; flex-direction: column; gap: 2px; max-height: 30vh; overflow-y: auto; }
+.perms-member-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: var(--radius-xs); cursor: pointer; }
+.perms-member-row:hover { background: var(--bg-elevated); }
+.perms-member-row em { color: var(--muted); font-style: normal; font-size: 12px; }
+
+.perms-room-select { display: flex; align-items: center; gap: 10px; }
+.perms-room-select > span { font-size: 13px; color: var(--muted); }
+.perms-room-select select, .perms-body select {
+  flex: 1;
+  background: var(--bg-input);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-xs);
+  color: var(--text);
+  padding: 8px 10px;
+  font-size: 14px;
+}
+
+.perms-table { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; }
+.perms-trow { display: grid; grid-template-columns: 1.6fr 1fr 1fr; align-items: center; border-top: 1px solid var(--line); }
+.perms-trow:first-child { border-top: none; }
+.perms-thead { background: var(--bg-surface); font-size: 12px; color: var(--muted); text-transform: uppercase; }
+.perms-tcell { padding: 8px 10px; display: flex; align-items: center; gap: 6px; }
+.perms-tcell.name { font-size: 14px; }
+.perms-user-ic { color: var(--muted); }
+.perm-tri {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-xs);
+  background: var(--bg-input);
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.perm-tri.allow { background: rgba(35, 165, 89, 0.18); border-color: var(--green); color: #7bd99e; }
+.perm-tri.deny { background: rgba(218, 55, 60, 0.18); border-color: var(--danger); color: #f0a0a2; }
+.perm-tri:hover { filter: brightness(1.15); }
+
+.perms-preview-picks { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.perms-preview-col { display: flex; flex-direction: column; gap: 4px; max-height: 30vh; overflow-y: auto; }
+.perms-pick {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px;
+  background: var(--bg-surface);
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+.perms-pick:hover { background: var(--bg-elevated); border-color: var(--line-strong); }
+.perms-preview-result { background: var(--bg-surface); border-radius: var(--radius-sm); padding: 12px; display: flex; flex-direction: column; gap: 4px; }
+.perms-preview-line { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px; border-radius: var(--radius-xs); font-size: 14px; }
+.perms-preview-line.no-access { opacity: 0.5; }
+.perms-caps { font-size: 12px; color: var(--muted); }
+.perms-preview-result .primary { margin-top: 8px; }

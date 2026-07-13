@@ -654,6 +654,7 @@
             <input id="roomReadOnlyInput" type="checkbox" />
             <span>읽기 전용 (대표자만 작성 가능)</span>
           </label>
+          <button class="secondary" id="roomPermsButton" type="button" hidden>이 방 권한 설정 (역할/유저별)</button>
           <p class="account-message" id="roomRenameMessage" aria-live="polite"></p>
           <div class="modal-actions">
             <button class="primary" id="roomRenameConfirm" type="button">저장</button>
@@ -687,6 +688,7 @@
           </label>
           <div class="modal-actions channel-menu-actions">
             <button class="secondary" id="channelRenameButton" type="button">이름 저장</button>
+            <button class="secondary" id="channelRolesButton" type="button">역할 · 권한 관리</button>
             <button class="secondary" id="channelLeaveButton" type="button">채널 나가기</button>
             <button class="danger" id="channelDeleteButton" type="button">채널 삭제</button>
           </div>
