@@ -1382,18 +1382,23 @@ body.draw-open .log-panel {
   font-weight: 600;
 }
 
-/* 파일 선택 입력 — 기본 렌더링이 위쪽으로 쏠리는 문제 방지(수직 정렬 + 다크 테마) */
+/* 파일 선택 입력 — 버튼을 위아래 균등하게 수직 중앙 정렬(다크 테마).
+   전역 input,select 규칙의 border/padding 을 제거하고 버튼 높이를 고정해
+   위쪽으로 쏠리거나 위아래 간격이 다른 문제를 없앤다. */
 input[type="file"] {
   display: inline-flex;
   align-items: center;
   width: 100%;
-  min-height: 36px;
+  min-height: 38px;
+  padding: 0;
+  border: 0;
   color: var(--muted);
   font-size: 12px;
 }
 input[type="file"]::file-selector-button {
+  height: 30px;
   margin: 0 10px 0 0;
-  padding: 7px 12px;
+  padding: 0 12px;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-xs);
   background: var(--bg-input);
@@ -1604,6 +1609,8 @@ body.dm-open .dm-panel {
 .dm-new-button {
   width: 26px;
   height: 26px;
+  min-height: 0; /* 전역 button min-height:36px 이 정사각형을 세로로 늘리는 것 방지 */
+  padding: 0;    /* 전역 button padding:0 14px 로 가로가 넓어지는 것 방지 */
   border: none;
   border-radius: var(--radius-sm);
   background: var(--bg-elevated);
@@ -3661,6 +3668,8 @@ audio,
 .perms-user-del {
   width: 26px;
   height: 26px;
+  min-height: 0; /* 전역 button min-height:36px 로 세로가 늘어나는 것 방지 */
+  padding: 0;
   border: none;
   border-radius: var(--radius-xs);
   background: transparent;

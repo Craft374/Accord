@@ -12,7 +12,7 @@ loadServerEnvFiles();
 store.init();
 seedAdminAccount();
 
-const VERSION = "2.0.0";
+const VERSION = "2.0.1";
 const PORT = Number(process.env.PORT || 25565);
 const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_HOST = cleanHost(process.env.PUBLIC_HOST || "");
