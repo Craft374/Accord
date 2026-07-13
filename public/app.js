@@ -7085,6 +7085,23 @@ function bindChatDragDrop() {
 // ===== 공동 메모장 (OT 실시간 협업 + 커서 공유) =====
 const MEMO_CURSOR_COLORS = ["#f0b232", "#23a559", "#eb459e", "#00a8fc", "#f23f43", "#e67e22", "#1abc9c", "#a855f7"];
 const MEMO_CURSOR_THROTTLE = 120;
+const MEMO_FONT_MIN = 10;
+const MEMO_FONT_MAX = 32;
+const MEMO_FONT_DEFAULT = 13;
+let memoFontSize = clampMemoFont(Number(localStorage.getItem("accordMemoFontSize")) || MEMO_FONT_DEFAULT);
+
+function clampMemoFont(px) {
+  return Math.min(MEMO_FONT_MAX, Math.max(MEMO_FONT_MIN, Math.round(px)));
+}
+
+// 편집기·미리보기 글자 크기를 함께 조절한다(Ctrl/Cmd+휠).
+function applyMemoFontSize(px) {
+  memoFontSize = clampMemoFont(px);
+  localStorage.setItem("accordMemoFontSize", String(memoFontSize));
+  if (dom.memoEditor) dom.memoEditor.style.fontSize = `${memoFontSize}px`;
+  if (dom.memoPreview) dom.memoPreview.style.fontSize = `${memoFontSize}px`;
+  renderMemoCursors(); // 캐럿 좌표가 글자 크기에 의존하므로 다시 그린다
+}
 
 function openMemoRoom(roomId) {
   const found = findRoomInChannels(roomId);
@@ -7112,6 +7129,7 @@ function openMemoRoom(roomId) {
   if (dom.memoRoomName) dom.memoRoomName.textContent = found.room.name;
   if (dom.memoEditor) { dom.memoEditor.value = ""; dom.memoEditor.disabled = true; }
   if (dom.memoPreview) dom.memoPreview.innerHTML = "";
+  applyMemoFontSize(memoFontSize); // 저장된 글자 크기 반영
   clearMemoCursors();
   applyMemoView(state.memo.view);
   setMemoStatus("불러오는 중…", "muted");
@@ -7217,10 +7235,13 @@ function handleMemoOp(message) {
     if (hadFocus) el.setSelectionRange(OT.transformCursor(selStart, r, "right"), OT.transformCursor(selEnd, r, "right"));
     el.scrollTop = scrollTop;
   }
-  // 원격 커서들도 이번 op만큼 이동
+  // 원격 커서들도 이번 op만큼 이동.
+  // 작성자 본인 커서는 삽입 위치에서 함께 앞으로 밀려야 하므로 side "right"
+  // (side "left"면 삽입 텍스트만 앞으로 나가고 커서가 제자리에 묶여 뒤로 밀리는 것처럼 보임).
   for (const cur of m.cursors.values()) {
-    cur.pos = OT.transformCursor(cur.pos, r, "left");
-    cur.sel = OT.transformCursor(cur.sel, r, "left");
+    const side = cur.clientId === message.by ? "right" : "left";
+    cur.pos = OT.transformCursor(cur.pos, r, side);
+    cur.sel = OT.transformCursor(cur.sel, r, side);
   }
   renderMemoPreview();
   renderMemoCursors();
@@ -7376,6 +7397,12 @@ function bindMemoEvents() {
     el.selectionStart = el.selectionEnd = start + 2;
     onMemoInput();
   });
+  // Ctrl(⌘)+휠 로 글자 크기 조절 — 편집기/미리보기 어느 쪽 위에서든 동작.
+  dom.memoBody?.addEventListener("wheel", (event) => {
+    if (!event.ctrlKey && !event.metaKey) return;
+    event.preventDefault();
+    applyMemoFontSize(memoFontSize + (event.deltaY < 0 ? 1 : -1));
+  }, { passive: false });
 }
 
 // ===== 공동 그림판 (draw) =====
