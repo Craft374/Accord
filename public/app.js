@@ -7182,6 +7182,12 @@ function onMemoInput() {
   const op = window.OTText.fromDiff(m.doc, newDoc);
   if (op.length) {
     m.doc = newDoc;
+    // 내 편집으로 문서가 밀린 만큼 원격 커서도 함께 이동시켜 제자리에 고정한다.
+    // (안 하면 내가 앞에 글자를 넣어도 상대 커서가 옛 위치에 묶여 뒤로 밀려 보임)
+    for (const cur of m.cursors.values()) {
+      cur.pos = window.OTText.transformCursor(cur.pos, op, "left");
+      cur.sel = window.OTText.transformCursor(cur.sel, op, "left");
+    }
     if (m.inflight === null) {
       m.inflight = op;
       sendSocket({ type: "memo:op", roomId: m.roomId, rev: m.serverRev, ops: op });
@@ -7261,6 +7267,17 @@ function handleMemoCursorLeave(message) {
   renderMemoCursors();
 }
 
+// 상대가 보내온 커서 위치는 상대 문서 기준이라, 아직 상대가 못 받은 내 미확정 op(inflight+buffer)만큼
+// 앞으로 당겨 내 로컬 문서 좌표계로 옮긴다. 안 하면 내가 편집 중일 때 상대 커서가 옛 위치로 튄다.
+function memoLocalizeCursorPos(pos) {
+  const m = state.memo;
+  const OT = window.OTText;
+  let p = pos | 0;
+  if (m.inflight) p = OT.transformCursor(p, m.inflight, "left");
+  for (const b of m.buffer) p = OT.transformCursor(p, b, "left");
+  return p;
+}
+
 function setMemoCursor(cur) {
   const m = state.memo;
   if (!m || !cur.clientId) return;
@@ -7270,8 +7287,8 @@ function setMemoCursor(cur) {
     clientId: cur.clientId,
     userId: cur.userId,
     name: cur.name || "익명",
-    pos: cur.pos | 0,
-    sel: (cur.sel ?? cur.pos) | 0,
+    pos: memoLocalizeCursorPos(cur.pos),
+    sel: memoLocalizeCursorPos(cur.sel ?? cur.pos),
     color,
   });
 }
