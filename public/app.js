@@ -6533,8 +6533,9 @@ function renderChatMessageBody(msg) {
   wrap.className = "chat-msg";
   if (msg.text) {
     const text = document.createElement("div");
-    text.className = "chat-msg-text";
-    text.textContent = msg.text; // textContent 사용 → XSS 안전, CSS pre-wrap로 줄바꿈 유지
+    text.className = "chat-msg-text markdown-inline";
+    // 사용자가 입력한 텍스트를 이스케이프한 뒤 일부 마크다운(코드블록/인라인코드/굵게 등)만 허용
+    text.innerHTML = renderChatText(msg.text);
     wrap.append(text);
   }
   if (Array.isArray(msg.files) && msg.files.length) {
@@ -6543,25 +6544,27 @@ function renderChatMessageBody(msg) {
     for (const file of msg.files) files.append(renderChatFile(file));
     wrap.append(files);
   }
-  // 삭제 권한이 있으면 hover 액션(⋯ 메뉴 / Shift 시 즉시삭제 🗑)을 붙인다.
-  if (canDeleteChatMessage(msg)) {
-    const actions = document.createElement("div");
-    actions.className = "chat-msg-actions";
-    const more = document.createElement("button");
-    more.type = "button";
-    more.className = "chat-act more";
-    more.textContent = "⋯";
-    more.title = "더보기";
-    more.addEventListener("click", (e) => { e.stopPropagation(); openChatMsgMenu(msg.id, more); });
+  // 모든 메시지에 ⋯ 메뉴(복사)를 붙인다. 삭제 권한이 있으면 즉시삭제(🗑)도 추가.
+  const canDelete = canDeleteChatMessage(msg);
+  const actions = document.createElement("div");
+  actions.className = "chat-msg-actions";
+  const more = document.createElement("button");
+  more.type = "button";
+  more.className = "chat-act more";
+  more.textContent = "⋯";
+  more.title = "더보기";
+  more.addEventListener("click", (e) => { e.stopPropagation(); openChatMsgMenu(msg, more); });
+  actions.append(more);
+  if (canDelete) {
     const trash = document.createElement("button");
     trash.type = "button";
     trash.className = "chat-act trash";
     trash.textContent = "🗑";
     trash.title = "바로 삭제 (Shift)";
     trash.addEventListener("click", (e) => { e.stopPropagation(); deleteChatMessage(msg.id, true); });
-    actions.append(more, trash);
-    wrap.append(actions);
+    actions.append(trash);
   }
+  wrap.append(actions);
   return wrap;
 }
 
@@ -6578,27 +6581,135 @@ function deleteChatMessage(msgId, immediate) {
   sendSocket({ type: "chat:delete", roomId: state.activeChat.roomId, msgId });
 }
 
-function openChatMsgMenu(msgId, anchor) {
-  closeChatMsgMenu();
-  const menu = document.createElement("div");
-  menu.className = "chat-msg-menu";
-  menu.id = "chatMsgMenu";
-  const del = document.createElement("button");
-  del.type = "button";
-  del.className = "chat-msg-menu-item danger";
-  del.textContent = "삭제";
-  del.addEventListener("click", () => { closeChatMsgMenu(); deleteChatMessage(msgId, false); });
-  menu.append(del);
-  document.body.append(menu);
+function openChatMsgMenu(msg, anchor) {
+  const items = [];
+  if (msg.text) {
+    items.push({ label: "복사", action: () => copyTextToClipboard(msg.text) });
+  }
+  if (canDeleteChatMessage(msg)) {
+    items.push({ label: "삭제", danger: true, action: () => deleteChatMessage(msg.id, false) });
+  }
+  if (!items.length) return;
   const r = anchor.getBoundingClientRect();
-  menu.style.top = `${r.bottom + 4}px`;
-  menu.style.left = `${Math.min(r.left, window.innerWidth - 150)}px`;
-  // 다음 클릭에 닫기
-  setTimeout(() => document.addEventListener("click", closeChatMsgMenu, { once: true }), 0);
+  openChatContextMenu(items, { x: r.left, y: r.bottom + 4 });
 }
 
-function closeChatMsgMenu() {
-  document.getElementById("chatMsgMenu")?.remove();
+// 공용 컨텍스트 메뉴(메시지 ⋯ / 이미지 우클릭 공용)
+function openChatContextMenu(items, pos) {
+  closeChatContextMenu();
+  const menu = document.createElement("div");
+  menu.className = "chat-msg-menu";
+  menu.id = "chatContextMenu";
+  for (const it of items) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "chat-msg-menu-item" + (it.danger ? " danger" : "");
+    btn.textContent = it.label;
+    btn.addEventListener("click", (e) => { e.stopPropagation(); closeChatContextMenu(); it.action(); });
+    menu.append(btn);
+  }
+  document.body.append(menu);
+  // 화면 밖으로 나가지 않게 위치 보정
+  const mw = menu.offsetWidth || 150;
+  const mh = menu.offsetHeight || 80;
+  const left = Math.max(8, Math.min(pos.x, window.innerWidth - mw - 8));
+  const top = Math.max(8, Math.min(pos.y, window.innerHeight - mh - 8));
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+  setTimeout(() => {
+    document.addEventListener("click", closeChatContextMenu, { once: true });
+    document.addEventListener("contextmenu", closeChatContextMenu, { once: true });
+    window.addEventListener("scroll", closeChatContextMenu, { once: true, capture: true });
+  }, 0);
+}
+
+function closeChatContextMenu() {
+  document.getElementById("chatContextMenu")?.remove();
+}
+
+async function copyTextToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    setChatHint("복사했습니다.");
+    setTimeout(() => setChatHint(""), 1500);
+  } catch {
+    setChatHint("복사에 실패했습니다.");
+  }
+}
+
+// 이미지 저장: blob으로 받아 다운로드(같은 서버 origin이라 CORS 문제 없음)
+async function saveChatImage(src, name) {
+  try {
+    const res = await fetch(src);
+    const blob = await res.blob();
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = objUrl;
+    a.download = name || src.split("/").pop() || "image";
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(objUrl), 4000);
+  } catch {
+    setChatHint("이미지를 저장하지 못했습니다.");
+    setTimeout(() => setChatHint(""), 1500);
+  }
+}
+
+// 이미지 복사: 클립보드는 PNG만 안정적으로 지원 → 필요시 캔버스로 PNG 변환
+async function copyChatImage(src) {
+  try {
+    const res = await fetch(src);
+    let blob = await res.blob();
+    if (blob.type !== "image/png") blob = await imageBlobToPng(blob);
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+    setChatHint("이미지를 복사했습니다.");
+    setTimeout(() => setChatHint(""), 1500);
+  } catch {
+    setChatHint("이미지 복사에 실패했습니다.");
+    setTimeout(() => setChatHint(""), 1500);
+  }
+}
+
+function imageBlobToPng(blob) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      canvas.getContext("2d").drawImage(img, 0, 0);
+      URL.revokeObjectURL(url);
+      canvas.toBlob((out) => out ? resolve(out) : reject(new Error("convert failed")), "image/png");
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("load failed")); };
+    img.src = url;
+  });
+}
+
+// 채팅 메시지 텍스트: 이스케이프 후 코드블록/인라인 서식만 허용(XSS 안전)
+function renderChatText(src) {
+  const str = String(src || "");
+  const parts = [];
+  const fence = /```([\s\S]*?)```/g;
+  let last = 0;
+  let m;
+  while ((m = fence.exec(str))) {
+    if (m.index > last) parts.push({ type: "text", value: str.slice(last, m.index) });
+    parts.push({ type: "code", value: m[1].replace(/^\n/, "").replace(/\n+$/, "") });
+    last = fence.lastIndex;
+  }
+  if (last < str.length) parts.push({ type: "text", value: str.slice(last) });
+  if (!parts.length) return escapeHtmlText(str);
+  return parts.map((p) => {
+    if (p.type === "code") {
+      return `<pre class="chat-code"><code>${escapeHtmlText(p.value)}</code></pre>`;
+    }
+    // 코드블록 경계의 개행만 정리, 내부 줄바꿈은 <br>로 유지
+    const escaped = escapeHtmlText(p.value.replace(/^\n+/, "").replace(/\n+$/, ""));
+    return escaped.split("\n").map((line) => inlineMarkdown(line)).join("<br>");
+  }).join("");
 }
 
 function renderChatFile(file) {
@@ -6616,6 +6727,15 @@ function renderChatFile(file) {
     img.alt = file.name || "이미지";
     img.src = url;
     link.append(img);
+    // 우클릭 → 이미지 저장/복사 메뉴
+    link.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      openChatContextMenu([
+        { label: "이미지 저장", action: () => saveChatImage(img.src, file.name) },
+        { label: "이미지 복사", action: () => copyChatImage(img.src) },
+        { label: "새 탭에서 열기", action: () => window.open(url, "_blank", "noopener") },
+      ], { x: e.clientX, y: e.clientY });
+    });
     return link;
   }
   const a = document.createElement("a");
@@ -6726,6 +6846,7 @@ function sendChatMessage() {
   if (!text && !files.length) return;
   sendSocket({ type: "chat:send", roomId: state.activeChat.roomId, text, files });
   if (dom.chatInput) { dom.chatInput.value = ""; autoResizeChatInput(); }
+  for (const f of state.chatPendingFiles) if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
   state.chatPendingFiles = [];
   renderChatAttachments();
   setChatHint("");
@@ -6765,14 +6886,17 @@ async function handleChatFiles(fileList) {
       setChatHint(`${file.name}: 50MB를 넘어 첨부할 수 없습니다.`);
       continue;
     }
+    const isImage = (file.type || "").startsWith("image/");
     const entry = {
       name: file.name,
       size: file.size,
       mime: file.type || "application/octet-stream",
-      kind: (file.type || "").startsWith("image/") ? "image" : "file",
+      kind: isImage ? "image" : "file",
       uploading: true,
       progress: 0,
       url: "",
+      // 업로드 완료 전에도 로컬 미리보기를 보여주기 위한 objectURL
+      previewUrl: isImage ? URL.createObjectURL(file) : "",
     };
     state.chatPendingFiles.push(entry);
     renderChatAttachments();
@@ -6785,6 +6909,7 @@ async function handleChatFiles(fileList) {
       entry.uploading = false;
       renderChatAttachments();
     } catch (error) {
+      if (entry.previewUrl) URL.revokeObjectURL(entry.previewUrl);
       state.chatPendingFiles = state.chatPendingFiles.filter((f) => f !== entry);
       renderChatAttachments();
       setChatHint(error.message || "업로드에 실패했습니다.");
@@ -6823,6 +6948,15 @@ function renderChatAttachments() {
   for (const f of state.chatPendingFiles) {
     const chip = document.createElement("div");
     chip.className = "chat-attach-chip" + (f.uploading ? " uploading" : "");
+    // 이미지는 썸네일 미리보기를 함께 표시
+    if (f.kind === "image" && f.previewUrl) {
+      chip.classList.add("has-thumb");
+      const thumb = document.createElement("img");
+      thumb.className = "chat-attach-thumb";
+      thumb.src = f.previewUrl;
+      thumb.alt = f.name || "이미지";
+      chip.append(thumb);
+    }
     const label = document.createElement("span");
     label.className = "chat-attach-name";
     label.textContent = f.uploading
@@ -6835,6 +6969,7 @@ function renderChatAttachments() {
       remove.type = "button";
       remove.textContent = "×";
       remove.addEventListener("click", () => {
+        if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
         state.chatPendingFiles = state.chatPendingFiles.filter((x) => x !== f);
         renderChatAttachments();
       });

@@ -476,6 +476,36 @@ body.chat-open .log-panel {
   overflow-wrap: anywhere;
   word-break: break-word;
 }
+/* 채팅 인라인 마크다운 */
+.chat-msg-text code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--bg-elevated);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.86em;
+}
+.chat-msg-text .chat-code {
+  margin: 4px 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  border: 1px solid var(--line);
+  overflow-x: auto;
+  white-space: pre;
+}
+.chat-msg-text .chat-code code {
+  padding: 0;
+  background: none;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.chat-msg-text a {
+  color: #00a8fc;
+  text-decoration: none;
+}
+.chat-msg-text a:hover { text-decoration: underline; }
+.chat-msg-text strong { color: var(--heading); font-weight: 700; }
+.chat-msg-text del { color: var(--muted); }
 
 /* 메시지 hover 하이라이트 + 삭제 액션(디스코드식) */
 .chat-msg {
@@ -648,6 +678,16 @@ body.chat-shift .chat-act.trash {
   color: var(--text);
   font-size: 12px;
 }
+.chat-attach-chip.has-thumb {
+  padding-left: 6px;
+}
+.chat-attach-thumb {
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
 .chat-attach-chip.uploading {
   opacity: 0.7;
 }
@@ -688,11 +728,17 @@ body.chat-shift .chat-act.trash {
   border-radius: 50%;
   background: var(--bg-surface);
   color: var(--muted);
-  font-size: 20px;
-  line-height: 1;
   cursor: pointer;
   display: grid;
   place-items: center;
+}
+/* 텍스트 '+' 글리프는 폰트마다 중심이 어긋나 삐딱하게 보였다.
+   기하학적으로 완벽히 대칭인 SVG 아이콘으로 교체 → 어떤 폰트/OS에서도 정중앙 */
+.chat-attach-icon {
+  display: block;
+  width: 20px;
+  height: 20px;
+  pointer-events: none;
 }
 .chat-attach-button:hover {
   color: var(--text);
