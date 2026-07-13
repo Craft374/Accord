@@ -204,10 +204,12 @@ body.dm-open .app {
   display: grid;
   place-items: center;
   border-radius: 10px;
-  background: var(--blurple);
-  color: #fff;
-  font-size: 18px;
-  font-weight: 800;
+  overflow: hidden;
+}
+.brand-mark svg {
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 
 .eyebrow {
@@ -1380,6 +1382,30 @@ body.draw-open .log-panel {
   font-weight: 600;
 }
 
+/* 파일 선택 입력 — 기본 렌더링이 위쪽으로 쏠리는 문제 방지(수직 정렬 + 다크 테마) */
+input[type="file"] {
+  display: inline-flex;
+  align-items: center;
+  width: 100%;
+  min-height: 36px;
+  color: var(--muted);
+  font-size: 12px;
+}
+input[type="file"]::file-selector-button {
+  margin: 0 10px 0 0;
+  padding: 7px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-xs);
+  background: var(--bg-input);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+input[type="file"]::file-selector-button:hover {
+  background: var(--bg-surface);
+}
+
 /* ─── 전역 로그 ───────────────────────────── */
 .log-panel {
   display: none;
@@ -1503,6 +1529,11 @@ body.log-open .draw-panel {
   position: relative;
   font-size: 18px;
 }
+.dm-home-icon {
+  width: 26px;
+  height: 26px;
+  display: block;
+}
 .channel-rail-divider {
   width: 32px;
   height: 2px;
@@ -1584,6 +1615,11 @@ body.dm-open .dm-panel {
 }
 .dm-new-button:hover {
   background: var(--bg-base);
+}
+.dm-new-button svg {
+  width: 16px;
+  height: 16px;
+  display: block;
 }
 .dm-new-row {
   padding: 10px 12px;
@@ -3120,13 +3156,18 @@ audio,
 }
 .channel-icon:hover:not(:disabled) {
   border-radius: 12px;
-  background: var(--blurple);
+  background-color: var(--blurple);
   color: #fff;
 }
 .channel-icon.active {
   border-radius: 12px;
-  background: var(--blurple);
+  background-color: var(--blurple);
   color: #fff;
+}
+/* 아이콘 이미지가 있는 채널은 hover/active 시에도 배경 이미지(위치·크기)를 유지 */
+.channel-icon.has-icon:hover:not(:disabled),
+.channel-icon.has-icon.active {
+  background-color: transparent;
 }
 .channel-icon.channel-add {
   background: var(--bg-surface);
@@ -3597,7 +3638,7 @@ audio,
 }
 
 .perms-table { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; }
-.perms-trow { display: grid; grid-template-columns: 1.6fr 1fr 1fr; align-items: center; border-top: 1px solid var(--line); }
+.perms-trow { display: grid; grid-template-columns: var(--perm-cols, 1.6fr 1fr 1fr); align-items: center; border-top: 1px solid var(--line); }
 .perms-trow:first-child { border-top: none; }
 .perms-thead { background: var(--bg-surface); font-size: 12px; color: var(--muted); text-transform: uppercase; }
 .perms-tcell { padding: 8px 10px; display: flex; align-items: center; gap: 6px; }
@@ -3616,6 +3657,21 @@ audio,
 .perm-tri.allow { background: rgba(35, 165, 89, 0.18); border-color: var(--green); color: #7bd99e; }
 .perm-tri.deny { background: rgba(218, 55, 60, 0.18); border-color: var(--danger); color: #f0a0a2; }
 .perm-tri:hover { filter: brightness(1.15); }
+.perms-del-cell { padding: 4px 6px; justify-content: center; }
+.perms-user-del {
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+.perms-user-del:hover { background: rgba(218, 55, 60, 0.18); color: var(--danger); }
 
 .perms-preview-picks { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .perms-preview-col { display: flex; flex-direction: column; gap: 4px; max-height: 30vh; overflow-y: auto; }

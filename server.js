@@ -12,7 +12,7 @@ loadServerEnvFiles();
 store.init();
 seedAdminAccount();
 
-const VERSION = "0.2.47";
+const VERSION = "2.0.0";
 const PORT = Number(process.env.PORT || 25565);
 const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_HOST = cleanHost(process.env.PUBLIC_HOST || "");
@@ -233,6 +233,12 @@ function handleUpgrade(req, socket) {
     "",
     "",
   ].join("\r\n"));
+
+  // 유휴 상태에서 연결이 끊기지 않도록: 소켓 타임아웃 해제 + TCP keepalive.
+  // (아무 것도 안 하고 가만히 있으면 WebSocket이 닫히는 문제 방지)
+  socket.setTimeout(0);
+  socket.setKeepAlive(true, 30000);
+  socket.setNoDelay(true);
 
   const client = {
     id: crypto.randomBytes(8).toString("hex"),
@@ -753,6 +759,20 @@ function makeFrameHeader(length) {
   return header;
 }
 
+// 유휴 연결이 NAT·프록시·OS 타임아웃으로 끊기지 않도록 주기적으로 ping 프레임(opcode 9)을 보낸다.
+// 브라우저 WebSocket은 자동으로 pong으로 응답하고, 서버는 pong(opcode 10)을 무시한다.
+const PING_FRAME = Buffer.from([0x89, 0x00]);
+setInterval(() => {
+  for (const client of clients.values()) {
+    if (client.closed || !client.socket.writable) continue;
+    try {
+      client.socket.write(PING_FRAME);
+    } catch {
+      /* 다음 write 실패는 socket 'error'/'close'에서 정리된다 */
+    }
+  }
+}, 25000).unref();
+
 // 실시간 통화방 접속 현황 + 온라인 유저를 모든 로그인 클라이언트에 알린다.
 function broadcastPresence() {
   const presence = {};
@@ -959,6 +979,14 @@ function handleChannelMessage(client, message) {
         const r = store.setRoomPerm(message.channelId, message.roomId, message.kind, message.targetId, message.perm, value);
         if (r.error) return channelError(client, r.error);
         // 접근 권한이 바뀌면 이미 방에 접속 중인, 이제 권한 없는 유저를 내보낸다.
+        refreshRoomAccess(message.channelId);
+        notifyChannelMembers(message.channelId);
+        return true;
+      });
+    case "channel:clear-room-perm":
+      return ownerAction(client, message.channelId, () => {
+        const r = store.clearRoomPerm(message.channelId, message.roomId, message.kind, message.targetId);
+        if (r.error) return channelError(client, r.error);
         refreshRoomAccess(message.channelId);
         notifyChannelMembers(message.channelId);
         return true;

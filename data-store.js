@@ -532,7 +532,8 @@ function setRoomReadOnly(channelId, roomId, value) {
 
 // ===== 권한 역할(Role) =====
 const ROLE_COLORS = ["#5865f2", "#3ba55d", "#faa61a", "#ed4245", "#eb459e", "#9b59b6", "#1abc9c", "#e67e22"];
-const ROOM_PERM_KEYS = ["access", "use"]; // 방별 권한: 접근 / 사용(채팅·그리기·메모편집)
+// 방별 권한: 접근 / 사용(채팅·그리기·메모편집) / 통화방 세부(마이크·스피커·소리공유·화면공유)
+const ROOM_PERM_KEYS = ["access", "use", "voice", "sound", "screen"];
 
 function cleanRoleName(value) {
   return String(value || "").trim().slice(0, 24) || "새 역할";
@@ -619,6 +620,18 @@ function setRoomPerm(channelId, roomId, kind, targetId, perm, value) {
   return { channel, room };
 }
 
+// 특정 역할/유저의 방 권한 오버라이드를 통째로 제거한다(권한 표에서 "삭제" 버튼).
+function clearRoomPerm(channelId, roomId, kind, targetId) {
+  const channel = getChannel(channelId);
+  if (!channel) return { error: "채널을 찾을 수 없습니다." };
+  const room = channel.rooms.find((r) => r.id === roomId);
+  if (!room) return { error: "방을 찾을 수 없습니다." };
+  const bucket = kind === "user" ? "users" : "roles";
+  if (room.perms && room.perms[bucket]) delete room.perms[bucket][targetId];
+  persistChannels();
+  return { channel, room };
+}
+
 // 방 타입별 권한 기본값. 로그방만 접근이 기본 비공개, 나머지는 모두 허용.
 function defaultRoomPerm(roomType, perm) {
   if (perm === "access") return roomType !== "log";
@@ -652,7 +665,13 @@ function resolveWithRoles(room, roleIds, userId) {
     if (deny) return false;
     return defaultRoomPerm(room.type, perm);
   };
-  return { access: resolveOne("access"), use: resolveOne("use") };
+  return {
+    access: resolveOne("access"),
+    use: resolveOne("use"),
+    voice: resolveOne("voice"),
+    sound: resolveOne("sound"),
+    screen: resolveOne("screen"),
+  };
 }
 
 function canAccessRoom(channelId, roomId, userId, isAdmin = false) {
@@ -1081,6 +1100,7 @@ module.exports = {
   deleteRole,
   setRoleMember,
   setRoomPerm,
+  clearRoomPerm,
   resolveRoomPerms,
   canAccessRoom,
   canUseRoom,

@@ -648,6 +648,10 @@ async function connect() {
   updateControls();
 }
 
+let socketEverConnected = false;
+let reconnectTimer = 0;
+let reconnectAttempts = 0;
+
 function openSocket() {
   return new Promise((resolve, reject) => {
     const url = new URL(serverUrl);
@@ -660,6 +664,7 @@ function openSocket() {
 
     state.socket.addEventListener("open", () => {
       window.clearTimeout(failTimer);
+      socketEverConnected = true;
       logClientEvent("websocket-open", url.toString());
       resolve();
     });
@@ -675,11 +680,15 @@ function openSocket() {
 
     state.socket.addEventListener("close", () => {
       logClientEvent("socket-close", "server connection closed");
-      recordClientError("socket-close", "서버 WebSocket 연결이 닫혔습니다.");
-      setStatus("서버 끊김", "bad");
-      setMessage("서버와 연결이 끊겼습니다.");
       resetRoomState();
       updateControls();
+      // 한 번이라도 연결됐던 경우엔 자동 재연결(유휴 끊김 대비). 최초 연결 실패는 init에서 처리.
+      if (socketEverConnected) {
+        scheduleReconnect();
+      } else {
+        setStatus("서버 끊김", "bad");
+        setMessage("서버와 연결이 끊겼습니다.");
+      }
     });
 
     state.socket.addEventListener("error", () => {
@@ -688,6 +697,28 @@ function openSocket() {
       reject(new Error("서버 연결을 확인해 주세요."));
     });
   });
+}
+
+// 유휴 상태 등으로 연결이 끊기면 지수 백오프로 다시 연결하고 인증을 복원한다.
+function scheduleReconnect() {
+  if (reconnectTimer) return;
+  reconnectAttempts += 1;
+  const delay = Math.min(15000, 1000 * 2 ** Math.min(reconnectAttempts - 1, 4));
+  setStatus("재연결 중", "");
+  setMessage(`서버와 연결이 끊겨 다시 연결하는 중입니다… (${reconnectAttempts}회)`);
+  reconnectTimer = window.setTimeout(async () => {
+    reconnectTimer = 0;
+    try {
+      await openSocket();
+      reconnectAttempts = 0;
+      attemptAuthResume();
+      logClientEvent("client-env", getClientEnvironmentSummary());
+      setStatus("서버 연결", "good");
+      setMessage("서버에 다시 연결되었습니다.");
+    } catch {
+      scheduleReconnect();
+    }
+  }, delay);
 }
 
 // ===== 계정 · 인증 · 관리자 =====
@@ -1338,6 +1369,8 @@ async function handleSocketMessage(message) {
     verifyActiveMemo();
     verifyActiveDraw();
     verifyActiveLog();
+    enforceCurrentRoomMediaPerms(); // 통화 중 권한 회수 시 소리/화면 공유 강제 종료
+    updateControls();               // 발언·공유 버튼 상태를 최신 권한으로 갱신
     return;
   }
 
@@ -5900,18 +5933,21 @@ function applyRemoteVolumes() {
 
 function applyPlaybackVolume(playback) {
   if (!playback) return;
-  playback.audio.muted = false;
+  // 듣기 권한이 없으면(스피커 차단) 원격 오디오를 음소거한다.
+  const blocked = Boolean(state.listenBlocked);
+  playback.audio.muted = blocked;
 
   const raw = getPlaybackVolumePercent(playback);
   const gain = Math.max(0, Math.min(2, raw / 100));
   playback.volumeGain = gain;
+  const effGain = blocked ? 0 : gain;
 
   const pipeline = ensurePlaybackPipeline(playback);
   if (!pipeline) {
     if (playback.audio.srcObject !== playback.sourceStream) {
       playback.audio.srcObject = playback.sourceStream;
     }
-    playback.audio.volume = gain;
+    playback.audio.volume = effGain;
     playback.audio.play().catch(() => {});
     updatePlaybackOutputLevel(playback);
     updateSystemEchoFilterPlaybackGain(playback);
@@ -5921,7 +5957,7 @@ function applyPlaybackVolume(playback) {
   if (playback.audio.srcObject !== playback.sourceStream) {
     playback.audio.srcObject = playback.sourceStream;
   }
-  playback.pipeline.gainNode.gain.value = gain;
+  playback.pipeline.gainNode.gain.value = effGain;
   playback.audio.volume = 0;
   playback.pipeline.context.resume()
     .catch(() => {})
@@ -5991,7 +6027,13 @@ function resolveRoomPermsWith(room, roleIds, userId) {
     if (deny) return false;
     return defaultRoomPerm(room.type, perm);
   };
-  return { access: one("access"), use: one("use") };
+  return {
+    access: one("access"),
+    use: one("use"),
+    voice: one("voice"),
+    sound: one("sound"),
+    screen: one("screen"),
+  };
 }
 
 function rolesOfUser(channel, userId) {
@@ -6033,6 +6075,49 @@ function canWriteRoom(channel, room) {
   return viewRoomPerms(channel, room).use;
 }
 
+// 현재 통화 중인 방이 속한 채널·방 객체를 채널 목록에서 찾는다.
+function currentCallRoomContext() {
+  const cur = state.currentRoom;
+  if (!cur) return null;
+  for (const channel of state.channels) {
+    const room = (channel.rooms || []).find((r) => r.id === cur.id);
+    if (room) return { channel, room };
+  }
+  return null;
+}
+
+// 현재 통화방에서 "나"의 실제 권한(미리보기와 무관). 발언/소리공유/화면공유 판정용.
+function currentRoomPerms() {
+  const ctx = currentCallRoomContext();
+  if (!ctx) return null;
+  if (isChannelOwner(ctx.channel)) {
+    return { access: true, use: true, voice: true, sound: true, screen: true, owner: true };
+  }
+  const p = resolveRoomPermsWith(ctx.room, rolesOfUser(ctx.channel, state.auth.user?.id), state.auth.user?.id);
+  return { ...p, owner: false };
+}
+
+// 듣기 금지(스피커 권한 없음) 시 원격 오디오를 음소거한다.
+function applyListenBlock(blocked) {
+  const next = Boolean(blocked);
+  if (state.listenBlocked === next) return;
+  state.listenBlocked = next;
+  applyRemoteVolumes();
+}
+
+// 통화 중 권한이 회수되면 이미 켜져 있던 소리/화면 공유를 강제로 끈다.
+function enforceCurrentRoomMediaPerms() {
+  const rp = currentRoomPerms();
+  if (!rp || rp.owner) return;
+  if (rp.sound === false && state.systemSharing) {
+    dom.systemAudioToggle.checked = false;
+    stopSystemAudio().catch(() => {});
+  }
+  if (rp.screen === false && state.screenSharing) {
+    stopScreenShare().catch(() => {});
+  }
+}
+
 function reconcileCurrentChannel(preferId) {
   if (preferId && state.channels.some((c) => c.id === preferId)) {
     state.currentChannelId = preferId;
@@ -6067,7 +6152,7 @@ function renderChannelRail() {
   home.className = "channel-icon channel-home" + (state.dm.open ? " active" : "");
   home.dataset.dmHome = "1";
   home.title = "다이렉트 메시지";
-  home.textContent = "✉";
+  home.innerHTML = `<svg class="dm-home-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2.2"/><path d="m3.5 7.5 8.5 6 8.5-6"/></svg>`;
   const unreadTotal = dmUnreadTotal();
   if (unreadTotal > 0) {
     const badge = document.createElement("span");
@@ -6464,9 +6549,19 @@ const PERM_LABELS = {
 function useLabelFor(roomType) {
   return PERM_LABELS.use[roomType] || "사용";
 }
+// 권한 표 헤더 라벨.
+function permHeaderLabel(roomType, key) {
+  if (key === "access") return "접근";
+  if (key === "use") return useLabelFor(roomType);
+  if (key === "voice") return "마이크·스피커";
+  if (key === "sound") return "소리 공유";
+  if (key === "screen") return "화면 공유";
+  return key;
+}
 // 이 방 타입에서 편집할 권한 키 목록.
 function permKeysForRoom(roomType) {
-  if (roomType === "voice" || roomType === "log") return ["access"]; // 통화·로그는 접근만
+  if (roomType === "voice") return ["access", "voice", "sound", "screen"]; // 통화방 세부 권한
+  if (roomType === "log") return ["access"]; // 로그는 접근만
   return ["access", "use"];
 }
 
@@ -6498,19 +6593,23 @@ function buildRoomPermsPane(channel) {
   hint.className = "modal-hint";
   hint.textContent = room.type === "log"
     ? "로그방은 기본적으로 관리자·대표만 볼 수 있습니다. 아래에서 역할/유저에게 접근을 허용하세요."
-    : "각 칸을 눌러 허용 → 거부 → 기본(상속) 순으로 바꿉니다. 기본값은 모두 허용입니다.";
+    : (room.type === "voice"
+      ? "통화방은 접근 외에 마이크·스피커(듣기), 소리 공유, 화면 공유 권한을 따로 설정할 수 있습니다. 역할 칸은 허용 → 거부 → 기본, 특정 유저 칸은 허용 ↔ 거부로 바뀌고 오른쪽 × 로 유저를 제거합니다."
+      : "역할 칸은 허용 → 거부 → 기본(상속) 순으로 바뀝니다. 특정 유저 칸은 허용 ↔ 거부로 토글하고, 오른쪽 × 로 유저를 표에서 제거합니다.");
   wrap.append(hint);
 
   // 헤더
   const table = document.createElement("div");
   table.className = "perms-table";
+  // 컬럼: 대상 + 권한들 + 삭제(정렬용 마지막 칸)
+  table.style.setProperty("--perm-cols", `1.6fr ${keys.map(() => "1fr").join(" ")} 40px`);
   const header = document.createElement("div");
   header.className = "perms-trow perms-thead";
   header.append(el("div", "perms-tcell name", "대상"));
   for (const k of keys) {
-    const t = k === "access" ? "접근" : useLabelFor(room.type);
-    header.append(el("div", "perms-tcell", t));
+    header.append(el("div", "perms-tcell", permHeaderLabel(room.type, k)));
   }
+  header.append(el("div", "perms-tcell perms-del-cell", ""));
   table.append(header);
 
   // 역할 행
@@ -6543,7 +6642,8 @@ function buildRoomPermsPane(channel) {
   return wrap;
 }
 
-// tri-state 권한 행. perm 값: true/false/undefined(상속)
+// 권한 행. 역할은 3단계(허용/거부/기본), 유저는 2단계(허용↔거부) + 삭제 버튼.
+// perm 값: true(허용)/false(거부)/undefined(상속=기본)
 function buildPermRow(room, kind, targetId, labelHtml, keys, isUser) {
   const row = document.createElement("div");
   row.className = "perms-trow";
@@ -6557,18 +6657,38 @@ function buildPermRow(room, kind, targetId, labelHtml, keys, isUser) {
     const cell = document.createElement("div");
     cell.className = "perms-tcell";
     const cur = entry[k]; // true/false/undefined
-    const state = cur === true ? "allow" : cur === false ? "deny" : "inherit";
     const btn = document.createElement("button");
-    btn.className = "perm-tri " + state;
     btn.dataset.permSet = "1";
     btn.dataset.kind = kind;
     btn.dataset.targetId = targetId;
     btn.dataset.perm = k;
     btn.dataset.roomId = room.id;
-    btn.textContent = state === "allow" ? "✓ 허용" : state === "deny" ? "✕ 거부" : "– 기본";
+    if (isUser) {
+      // 유저: 허용 ↔ 거부 (상속 없음). 명시하지 않은 값은 기본(허용)으로 표시.
+      const deny = cur === false;
+      btn.className = "perm-tri " + (deny ? "deny" : "allow");
+      btn.textContent = deny ? "✕ 거부" : "✓ 허용";
+    } else {
+      const stateName = cur === true ? "allow" : cur === false ? "deny" : "inherit";
+      btn.className = "perm-tri " + stateName;
+      btn.textContent = stateName === "allow" ? "✓ 허용" : stateName === "deny" ? "✕ 거부" : "– 기본";
+    }
     cell.append(btn);
     row.append(cell);
   }
+  // 삭제 열 — 유저 행에만 버튼, 나머지는 정렬용 빈 칸.
+  const delCell = document.createElement("div");
+  delCell.className = "perms-tcell perms-del-cell";
+  if (isUser) {
+    const del = document.createElement("button");
+    del.className = "perms-user-del";
+    del.dataset.permUserDel = targetId;
+    del.dataset.roomId = room.id;
+    del.title = "이 유저 권한 제거";
+    del.textContent = "×";
+    delCell.append(del);
+  }
+  row.append(delCell);
   return row;
 }
 
@@ -6683,13 +6803,25 @@ function onPermsModalClick(event) {
     }
     return;
   }
-  // tri-state 권한 토글: 기본→허용→거부→기본
+  // 권한 토글: 역할은 기본→허용→거부→기본, 유저는 허용↔거부.
   const tri = t.closest?.("[data-perm-set]");
   if (tri) {
-    const cur = tri.classList.contains("allow") ? true : tri.classList.contains("deny") ? false : undefined;
-    const next = cur === undefined ? true : cur === true ? false : null; // null=상속으로
+    let next;
+    if (tri.dataset.kind === "user") {
+      next = tri.classList.contains("deny") ? true : false; // 허용 ↔ 거부
+    } else {
+      const cur = tri.classList.contains("allow") ? true : tri.classList.contains("deny") ? false : undefined;
+      next = cur === undefined ? true : cur === true ? false : null; // null=상속으로
+    }
     sendSocket({ type: "channel:set-room-perm", channelId: cid, roomId: tri.dataset.roomId,
       kind: tri.dataset.kind, targetId: tri.dataset.targetId, perm: tri.dataset.perm, value: next });
+    return;
+  }
+  // 유저 권한 행 삭제(오버라이드 통째로 제거)
+  const permUserDel = t.closest?.("[data-perm-user-del]");
+  if (permUserDel) {
+    sendSocket({ type: "channel:clear-room-perm", channelId: cid, roomId: permUserDel.dataset.roomId,
+      kind: "user", targetId: permUserDel.dataset.permUserDel });
     return;
   }
   // 미리보기 대상 선택
@@ -9599,17 +9731,29 @@ function updateControls() {
   document.body.classList.toggle("in-call", inRoom);
   const canShareSystem = isDirectSystemAudioSupported() || isVirtualSystemAudioSupported();
   const canSendScreen = isScreenShareSendSupported();
+  // 통화방 권한(발언·소리공유·화면공유). 대표/관리자는 항상 전권.
+  const rp = inRoom ? currentRoomPerms() : null;
+  const denyVoice = Boolean(rp) && !rp.owner && rp.voice === false;
+  const denySound = Boolean(rp) && !rp.owner && rp.sound === false;
+  const denyScreen = Boolean(rp) && !rp.owner && rp.screen === false;
+  // 발언 금지 시 강제 음소거, 듣기 금지 시 원격 오디오 음소거.
+  if (denyVoice && !state.muted) {
+    state.muted = true;
+    applyMicTrackEnabled();
+  }
+  applyListenBlock(denyVoice);
   dom.leaveButton.disabled = !inRoom;
-  dom.muteButton.disabled = !inRoom || !state.rawMicTrack;
+  dom.muteButton.disabled = !inRoom || !state.rawMicTrack || denyVoice;
+  dom.muteButton.title = denyVoice ? "이 통화방에서 마이크·스피커 권한이 없습니다." : "";
   dom.repairAudioButton.disabled = !inRoom || !state.rawMicTrack || state.applyingSettings;
   dom.muteButton.textContent = state.muted ? "마이크 켜기" : "마이크 끄기";
-  dom.systemAudioAction.hidden = !canShareSystem;
-  dom.systemAudioToggle.disabled = !canShareSystem || state.applyingSettings;
+  dom.systemAudioAction.hidden = !canShareSystem || denySound;
+  dom.systemAudioToggle.disabled = !canShareSystem || state.applyingSettings || denySound;
   dom.systemAudioToggle.checked = state.systemSharing || (!inRoom && dom.systemAudioToggle.checked);
-  if (!canShareSystem) dom.systemAudioToggle.checked = false;
-  dom.screenShareButton.hidden = !canSendScreen;
-  dom.screenSharePanel.hidden = !canSendScreen;
-  dom.screenShareButton.disabled = !canSendScreen || !inRoom || state.applyingSettings;
+  if (!canShareSystem || denySound) dom.systemAudioToggle.checked = false;
+  dom.screenShareButton.hidden = !canSendScreen || denyScreen;
+  dom.screenSharePanel.hidden = !canSendScreen || denyScreen;
+  dom.screenShareButton.disabled = !canSendScreen || !inRoom || state.applyingSettings || denyScreen;
   if (dom.openScreenTestButton) dom.openScreenTestButton.disabled = !canSendScreen || typeof desktop.openScreenTestWindow !== "function";
   dom.screenShareButton.textContent = state.screenSharing ? "화면 공유 끄기" : "화면 공유";
   dom.systemInputField.hidden = !isVirtualSystemAudioSupported();
