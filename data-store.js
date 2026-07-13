@@ -13,7 +13,9 @@ const MESSAGES_DIR = path.join(DATA_DIR, "messages");
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const MEMO_DIR = path.join(DATA_DIR, "memo");
 const DRAW_DIR = path.join(DATA_DIR, "draw");
+const LOG_DIR = path.join(DATA_DIR, "log");
 const MAX_MESSAGES_PER_ROOM = 1000; // 방별 보관 메시지 상한(초과 시 오래된 것부터 정리)
+const MAX_LOG_PER_CHANNEL = 500; // 채널별 보관 로그 상한(초과 시 오래된 것부터 정리)
 const UPLOAD_MAX_BYTES = 50 * 1024 * 1024; // 파일 업로드 최대 50MB
 const MEMO_MAX_LEN = 200000; // 메모장 최대 길이(약 200KB)
 const DRAW_MAX_BYTES = 8 * 1024 * 1024; // 그림판 문서 최대 크기(약 8MB, 붙여넣은 이미지 포함)
@@ -532,6 +534,7 @@ function renameChannel(channelId, name) {
 function deleteChannel(channelId) {
   const channel = getChannel(channelId);
   if (channel) for (const room of channel.rooms) { deleteRoomMessages(room.id); deleteRoomMemo(room.id); deleteRoomDraw(room.id); }
+  deleteChannelLog(channelId);
   const before = channelsDb.channels.length;
   channelsDb.channels = channelsDb.channels.filter((c) => c.id !== channelId);
   if (channelsDb.channels.length !== before) persistChannels();
@@ -758,6 +761,42 @@ function deleteRoomDraw(roomId) {
   }
 }
 
+// ===== 전역 로그 =====
+// 채널 단위 이벤트 타임라인. 방이 아니라 채널에 종속되므로(로그방 여러 개여도 같은 피드),
+// server-data/log/<channelId>.json 에 저장한다. isSafeRoomId 는 id 형식 검사라 채널에도 재사용.
+function logFile(channelId) {
+  return path.join(LOG_DIR, `${channelId}.json`);
+}
+
+function getChannelLog(channelId, limit = MAX_LOG_PER_CHANNEL) {
+  if (!isSafeRoomId(channelId)) return [];
+  const list = readJson(logFile(channelId), []);
+  if (!Array.isArray(list)) return [];
+  return limit && list.length > limit ? list.slice(-limit) : list;
+}
+
+function appendChannelLog(channelId, entry) {
+  if (!isSafeRoomId(channelId)) return { error: "잘못된 채널입니다." };
+  fs.mkdirSync(LOG_DIR, { recursive: true });
+  const list = readJson(logFile(channelId), []);
+  const logs = Array.isArray(list) ? list : [];
+  logs.push(entry);
+  if (logs.length > MAX_LOG_PER_CHANNEL) {
+    logs.splice(0, logs.length - MAX_LOG_PER_CHANNEL);
+  }
+  writeJsonAtomic(logFile(channelId), logs);
+  return { entry };
+}
+
+function deleteChannelLog(channelId) {
+  if (!isSafeRoomId(channelId)) return;
+  try {
+    fs.unlinkSync(logFile(channelId));
+  } catch {
+    /* 파일 없으면 무시 */
+  }
+}
+
 module.exports = {
   init,
   createUser,
@@ -815,4 +854,8 @@ module.exports = {
   saveDraw,
   deleteRoomDraw,
   DRAW_MAX_BYTES,
+  // 전역 로그
+  getChannelLog,
+  appendChannelLog,
+  deleteChannelLog,
 };

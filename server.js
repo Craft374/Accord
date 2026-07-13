@@ -12,7 +12,7 @@ loadServerEnvFiles();
 store.init();
 seedAdminAccount();
 
-const VERSION = "0.2.44";
+const VERSION = "0.2.45";
 const PORT = Number(process.env.PORT || 25565);
 const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_HOST = cleanHost(process.env.PUBLIC_HOST || "");
@@ -249,6 +249,8 @@ function handleUpgrade(req, socket) {
     chatRoomId: "", // 현재 보고 있는 채팅방(입력중 표시 대상 판별용)
     memoRoomId: "", // 현재 보고 있는 메모장(실시간 동기화 대상 판별용)
     drawRoomId: "", // 현재 보고 있는 그림판(실시간 동기화 대상 판별용)
+    logRoomId: "", // 현재 보고 있는 로그방(실시간 로그 대상 판별용)
+    logChannelId: "", // 그 로그방이 속한 채널(채널 단위 피드라 따로 보관)
   };
 
   clients.set(client.id, client);
@@ -342,6 +344,7 @@ function handleMessage(client, message) {
   if (handleChatMessage(client, message)) return;
   if (handleMemoMessage(client, message)) return;
   if (handleDrawMessage(client, message)) return;
+  if (handleLogMessage(client, message)) return;
 
   if (message.type === "set-name") {
     client.name = cleanName(message.name);
@@ -616,6 +619,7 @@ function joinVoiceRoom(client, roomId) {
     });
   }
 
+  logChannelEvent(found.channel.id, client, "voice-join", { roomName: room.name });
   broadcastPresence();
 }
 
@@ -627,6 +631,7 @@ function leaveRoom(client, notify) {
 
   room.clients.delete(client.id);
   logServer(`left room=${room.name} remaining=${room.clients.size}`, client);
+  logChannelEvent(room.channelId, client, "voice-leave", { roomName: room.name });
   if (room.clients.size === 0) {
     rooms.delete(room.id); // 실시간 접속 항목만 정리(방 메타데이터는 채널에 영속).
   } else {
@@ -650,6 +655,8 @@ function removeClient(client) {
   if (client.userId) store.recordConnection(client.userId, client.ip, "disconnect");
   leaveMemo(client);
   leaveDraw(client);
+  client.logRoomId = "";
+  client.logChannelId = "";
   leaveRoom(client, false);
   clients.delete(client.id);
   client.socket.destroy();
@@ -756,10 +763,14 @@ function handleChannelMessage(client, message) {
       return true;
     }
     case "channel:join": {
+      // 새로 들어온 경우에만 로그를 남기기 위해 참가 전 멤버 여부를 확인한다.
+      const target = store.getChannelByInvite(message.code);
+      const wasMember = target ? store.isChannelMember(target.id, client.userId) : false;
       const result = store.joinChannelByCode(client.userId, message.code);
       if (result.error) return channelError(client, result.error);
       logServer(`channel join name=${result.channel.name}`, client);
       notifyChannelMembers(result.channel.id);
+      if (!wasMember) logChannelEvent(result.channel.id, client, "member-join", {});
       send(client, { type: "channel-selected", channelId: result.channel.id });
       return true;
     }
@@ -1164,6 +1175,10 @@ function handleMemoMessage(client, message) {
       d.history.push(o);
       const rev = d.history.length;
       scheduleMemoPersist(ctx.room.id, client.userId);
+      // 키 입력마다가 아니라, 편집 세션당 한 번꼴로만 로그를 남긴다(2분 스로틀).
+      if (logThrottleOk(`memo-edit:${ctx.room.id}:${client.userId}`, 120000)) {
+        logChannelEvent(ctx.channel.id, client, "memo-edit", { roomName: ctx.room.name });
+      }
       const payload = { type: "memo:op", roomId: ctx.room.id, rev, ops: o, by: client.id };
       for (const c of clients.values()) {
         if (c.memoRoomId === ctx.room.id) send(c, payload); // 발신자 포함(ack 겸용)
@@ -1322,9 +1337,14 @@ function handleDrawMessage(client, message) {
     case "draw:open": {
       const ctx = resolveDrawRoom(client, message.roomId);
       if (!ctx) return true;
+      const wasViewing = client.drawRoomId === ctx.room.id;
       client.drawRoomId = ctx.room.id;
       const d = getDrawDoc(ctx.room.id);
       send(client, { type: "draw:state", roomId: ctx.room.id, doc: d.doc });
+      // 재접속/재열기 도배를 막기 위해 30초 스로틀. 이미 보던 방을 다시 열면 기록 안 함.
+      if (!wasViewing && logThrottleOk(`draw-join:${ctx.room.id}:${client.userId}`, 30000)) {
+        logChannelEvent(ctx.channel.id, client, "draw-join", { roomName: ctx.room.name });
+      }
       return true;
     }
     case "draw:close": {
@@ -1456,6 +1476,81 @@ function resolveDrawRoom(client, roomId) {
     return null;
   }
   return found;
+}
+
+// ===== 전역 로그 =====
+// 채널 단위 이벤트 타임라인(통화 입/퇴장·그림판 참여·메모 편집·채널 참여). 방이 아니라 채널에 종속되므로
+// 로그방이 여러 개여도 같은 피드를 본다. 이벤트마다 파일에 append 하고, 그 채널의 로그방을 보고 있는
+// 클라이언트에게만 실시간 전달한다(안 보는 사람은 다음에 열 때 전체 history 를 받는다).
+const LOG_THROTTLE = new Map(); // key -> lastTs. 연속 이벤트(편집·재접속) 도배 방지.
+
+// windowMs 안에 같은 key 이벤트가 또 오면 false(기록 생략), 아니면 true 로 통과시키고 시각을 갱신.
+function logThrottleOk(key, windowMs) {
+  const now = Date.now();
+  const last = LOG_THROTTLE.get(key) || 0;
+  if (now - last < windowMs) return false;
+  LOG_THROTTLE.set(key, now);
+  return true;
+}
+
+function logChannelEvent(channelId, actor, type, extra = {}) {
+  if (!channelId || !type) return;
+  const user = actor && actor.userId ? store.findById(actor.userId) : null;
+  const entry = {
+    id: crypto.randomBytes(6).toString("hex"),
+    type,
+    at: Date.now(),
+    userId: actor ? actor.userId : "",
+    name: user ? (user.displayName || user.username || "") : (actor ? actor.name : ""),
+    ...extra,
+  };
+  store.appendChannelLog(channelId, entry);
+  for (const c of clients.values()) {
+    if (c.logChannelId === channelId) send(c, { type: "log:entry", channelId, entry });
+  }
+}
+
+function resolveLogRoom(client, roomId) {
+  const found = store.findRoom(String(roomId || ""));
+  if (!found || found.room.type !== "log") {
+    send(client, { type: "log-error", message: "로그방을 찾지 못했습니다." });
+    return null;
+  }
+  if (!store.isChannelMember(found.channel.id, client.userId, client.isAdmin)) {
+    send(client, { type: "log-error", message: "채널 멤버만 이용할 수 있습니다." });
+    return null;
+  }
+  return found;
+}
+
+function handleLogMessage(client, message) {
+  if (typeof message.type !== "string" || !message.type.startsWith("log:")) return false;
+  if (!client.userId) {
+    send(client, { type: "log-error", message: "로그인이 필요합니다." });
+    return true;
+  }
+  switch (message.type) {
+    case "log:open": {
+      const ctx = resolveLogRoom(client, message.roomId);
+      if (!ctx) return true;
+      client.logRoomId = ctx.room.id;
+      client.logChannelId = ctx.channel.id;
+      send(client, {
+        type: "log:history",
+        roomId: ctx.room.id,
+        channelId: ctx.channel.id,
+        entries: store.getChannelLog(ctx.channel.id),
+      });
+      return true;
+    }
+    case "log:close": {
+      client.logRoomId = "";
+      client.logChannelId = "";
+      return true;
+    }
+    default:
+      return false;
+  }
 }
 
 function cleanName(value) {

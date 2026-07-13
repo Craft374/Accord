@@ -120,6 +120,8 @@ const state = {
   chatTypingSentAt: 0,
   // 메모장
   memo: null, // { roomId, channelId, name, rev, remotePending, saveTimer, view }
+  // 전역 로그
+  activeLog: null, // { roomId, channelId, name, entries: [] }
 };
 
 const dom = {
@@ -202,6 +204,11 @@ const dom = {
   drawCanvas: document.querySelector("#drawCanvas"),
   drawLayerAdd: document.querySelector("#drawLayerAdd"),
   drawLayerList: document.querySelector("#drawLayerList"),
+  logPanel: document.querySelector("#logPanel"),
+  logRoomName: document.querySelector("#logRoomName"),
+  logSubtitle: document.querySelector("#logSubtitle"),
+  logScroll: document.querySelector("#logScroll"),
+  logList: document.querySelector("#logList"),
   channelMenuModal: document.querySelector("#channelMenuModal"),
   channelMenuClose: document.querySelector("#channelMenuClose"),
   channelInviteCode: document.querySelector("#channelInviteCode"),
@@ -1282,6 +1289,7 @@ async function handleSocketMessage(message) {
     verifyActiveChat();
     verifyActiveMemo();
     verifyActiveDraw();
+    verifyActiveLog();
     return;
   }
 
@@ -1363,6 +1371,21 @@ async function handleSocketMessage(message) {
 
   if (message.type === "draw-error") {
     if (state.draw) setDrawStatus(message.message || "그림판 오류", "bad");
+    return;
+  }
+
+  if (message.type === "log:history") {
+    handleLogHistory(message);
+    return;
+  }
+
+  if (message.type === "log:entry") {
+    handleLogEntry(message);
+    return;
+  }
+
+  if (message.type === "log-error") {
+    if (state.activeLog && dom.logSubtitle) dom.logSubtitle.textContent = message.message || "로그 오류";
     return;
   }
 
@@ -5942,6 +5965,8 @@ function renderRooms() {
     if (state.currentRoom?.id === room.id) item.classList.add("active");
     if (state.activeChat?.roomId === room.id) item.classList.add("active");
     if (state.memo?.roomId === room.id) item.classList.add("active");
+    if (state.draw?.roomId === room.id) item.classList.add("active");
+    if (state.activeLog?.roomId === room.id) item.classList.add("active");
 
     const head = document.createElement("button");
     head.className = "room-item-head";
@@ -6242,6 +6267,7 @@ function selectChannel(channelId) {
   if (state.activeChat && state.activeChat.channelId !== channelId) closeChatView();
   if (state.memo && state.memo.channelId !== channelId) closeMemoView();
   if (state.draw && state.draw.channelId !== channelId) closeDrawView();
+  if (state.activeLog && state.activeLog.channelId !== channelId) closeLogView();
   state.currentChannelId = channelId;
   renderChannels();
 }
@@ -6251,23 +6277,33 @@ function openRoom(roomId, roomType) {
     closeChatView();
     closeMemoView();
     closeDrawView();
+    closeLogView();
     joinRoom(roomId);
   } else if (roomType === "chat") {
     closeMemoView();
     closeDrawView();
+    closeLogView();
     openChatRoom(roomId);
   } else if (roomType === "memo") {
     closeChatView();
     closeDrawView();
+    closeLogView();
     openMemoRoom(roomId);
   } else if (roomType === "draw") {
     closeChatView();
     closeMemoView();
+    closeLogView();
     openDrawRoom(roomId);
+  } else if (roomType === "log") {
+    closeChatView();
+    closeMemoView();
+    closeDrawView();
+    openLogRoom(roomId);
   } else {
     closeChatView();
     closeMemoView();
     closeDrawView();
+    closeLogView();
     const meta = ROOM_TYPE_META[roomType] || {};
     setMessage(`${meta.label || "이 방"}은 다음 단계에서 열립니다. (준비 중)`);
   }
@@ -7124,6 +7160,150 @@ function verifyActiveDraw() {
   state.draw.name = found.room.name;
   state.draw.channelId = found.channel.id;
   if (dom.drawRoomName) dom.drawRoomName.textContent = found.room.name;
+}
+
+// ===== 전역 로그 =====
+// 채널 단위 이벤트 타임라인(읽기 전용). 서버가 통화 입/퇴장·그림판 참여·메모 편집·채널 참여를 기록하고,
+// 로그방을 보고 있으면 새 이벤트가 실시간으로 내려온다. 로그는 방이 아니라 채널에 종속된다.
+const LOG_MAX_ENTRIES = 500;
+
+function openLogRoom(roomId) {
+  const found = findRoomInChannels(roomId);
+  if (!found) return;
+  if (state.activeLog?.roomId === roomId) {
+    document.body.classList.add("log-open");
+    return;
+  }
+  state.activeLog = { roomId, channelId: found.channel.id, name: found.room.name, entries: [] };
+  document.body.classList.add("log-open");
+  if (dom.logRoomName) dom.logRoomName.textContent = found.room.name;
+  if (dom.logSubtitle) dom.logSubtitle.textContent = found.channel.name;
+  if (dom.logList) dom.logList.innerHTML = '<li class="log-empty">불러오는 중…</li>';
+  sendSocket({ type: "log:open", roomId });
+  renderRooms();
+}
+
+function closeLogView() {
+  if (!state.activeLog) return;
+  sendSocket({ type: "log:close" });
+  state.activeLog = null;
+  document.body.classList.remove("log-open");
+  renderRooms();
+}
+
+// 채널 목록 갱신 후, 보고 있던 로그방이 사라졌거나 이름이 바뀌었는지 확인.
+function verifyActiveLog() {
+  if (!state.activeLog) return;
+  const found = findRoomInChannels(state.activeLog.roomId);
+  if (!found || found.room.type !== "log") { closeLogView(); return; }
+  state.activeLog.name = found.room.name;
+  state.activeLog.channelId = found.channel.id;
+  if (dom.logRoomName) dom.logRoomName.textContent = found.room.name;
+  if (dom.logSubtitle) dom.logSubtitle.textContent = found.channel.name;
+}
+
+function handleLogHistory(message) {
+  if (!state.activeLog || state.activeLog.roomId !== message.roomId) return;
+  state.activeLog.entries = Array.isArray(message.entries) ? message.entries : [];
+  renderLogEntries();
+  scrollLogToBottom();
+}
+
+function handleLogEntry(message) {
+  if (!state.activeLog || state.activeLog.channelId !== message.channelId) return;
+  const entry = message.entry;
+  if (!entry || !entry.id) return;
+  const list = state.activeLog.entries;
+  if (list.some((e) => e.id === entry.id)) return; // 중복 수신 방지
+  const stick = logIsNearBottom();
+  list.push(entry);
+  if (list.length > LOG_MAX_ENTRIES) list.splice(0, list.length - LOG_MAX_ENTRIES);
+  renderLogEntries();
+  if (stick) scrollLogToBottom();
+}
+
+// 이벤트 종류별 아이콘 + 설명 문구. name/roomName 은 반드시 이스케이프해서 넣는다.
+function formatLogEntry(entry) {
+  const name = escapeHtmlText(entry.name || "누군가");
+  const room = escapeHtmlText(entry.roomName || "");
+  switch (entry.type) {
+    case "voice-join":
+      return { icon: "🔊", html: `<b>${name}</b>님이 <b>${room}</b> 통화방에 입장했습니다.` };
+    case "voice-leave":
+      return { icon: "👋", html: `<b>${name}</b>님이 <b>${room}</b> 통화방에서 나갔습니다.` };
+    case "draw-join":
+      return { icon: "🎨", html: `<b>${name}</b>님이 그림판 <b>${room}</b>에 참여했습니다.` };
+    case "memo-edit":
+      return { icon: "📝", html: `<b>${name}</b>님이 메모장 <b>${room}</b>을 편집했습니다.` };
+    case "member-join":
+      return { icon: "➕", html: `<b>${name}</b>님이 채널에 참여했습니다.` };
+    default:
+      return { icon: "•", html: `<b>${name}</b>님의 활동` };
+  }
+}
+
+function renderLogEntries() {
+  if (!dom.logList) return;
+  const entries = state.activeLog?.entries || [];
+  if (!entries.length) {
+    dom.logList.innerHTML = '<li class="log-empty">아직 기록된 활동이 없습니다.</li>';
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  let lastDay = "";
+  for (const entry of entries) {
+    const day = logDayLabel(entry.at);
+    if (day !== lastDay) {
+      const divider = document.createElement("li");
+      divider.className = "log-day";
+      divider.textContent = day;
+      frag.append(divider);
+      lastDay = day;
+    }
+    const { icon, html } = formatLogEntry(entry);
+    const li = document.createElement("li");
+    li.className = "log-entry";
+    const ic = document.createElement("span");
+    ic.className = "log-entry-icon";
+    ic.textContent = icon;
+    const body = document.createElement("span");
+    body.className = "log-entry-body";
+    body.innerHTML = html;
+    const time = document.createElement("span");
+    time.className = "log-entry-time";
+    time.textContent = logTime(entry.at);
+    li.append(ic, body, time);
+    frag.append(li);
+  }
+  dom.logList.innerHTML = "";
+  dom.logList.append(frag);
+}
+
+function logTime(ts) {
+  const d = new Date(Number(ts) || 0);
+  return d.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+function logDayLabel(ts) {
+  const d = new Date(Number(ts) || 0);
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+  const sameDay = (a, b) =>
+    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  if (sameDay(d, today)) return "오늘";
+  if (sameDay(d, yesterday)) return "어제";
+  return d.toLocaleDateString("ko-KR", { year: "numeric", month: "long", day: "numeric", weekday: "short" });
+}
+
+function scrollLogToBottom() {
+  if (dom.logScroll) dom.logScroll.scrollTop = dom.logScroll.scrollHeight;
+}
+
+function logIsNearBottom() {
+  const el = dom.logScroll;
+  if (!el) return true;
+  return el.scrollHeight - el.scrollTop - el.clientHeight < 80;
 }
 
 function setDrawStatus(text, tone) {
