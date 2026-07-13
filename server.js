@@ -12,7 +12,7 @@ loadServerEnvFiles();
 store.init();
 seedAdminAccount();
 
-const VERSION = "0.2.46";
+const VERSION = "0.2.47";
 const PORT = Number(process.env.PORT || 25565);
 const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_HOST = cleanHost(process.env.PUBLIC_HOST || "");
@@ -884,6 +884,13 @@ function handleChannelMessage(client, message) {
         notifyChannelMembers(message.channelId);
         return true;
       });
+    case "channel:set-room-readonly":
+      return ownerAction(client, message.channelId, () => {
+        const r = store.setRoomReadOnly(message.channelId, message.roomId, Boolean(message.value));
+        if (r.error) return channelError(client, r.error);
+        notifyChannelMembers(message.channelId);
+        return true;
+      });
     case "channel:kick":
       return ownerAction(client, message.channelId, () => {
         const r = store.removeMember(message.channelId, message.userId);
@@ -1005,6 +1012,12 @@ function forceLeaveChannelRooms(client, channelId) {
 const CHAT_TEXT_MAX = 4000;
 const CHAT_FILES_MAX = 10;
 
+// 읽기 전용 방이면 대표자(관리자 포함)만 쓸 수 있다. 그 외에는 항상 쓰기 허용.
+function isRoomWritable(ctx, client) {
+  if (!ctx.room.readOnly) return true;
+  return store.isChannelOwner(ctx.channel.id, client.userId, client.isAdmin);
+}
+
 function handleChatMessage(client, message) {
   if (typeof message.type !== "string" || !message.type.startsWith("chat:")) return false;
   if (!client.userId) {
@@ -1031,6 +1044,10 @@ function handleChatMessage(client, message) {
     case "chat:send": {
       const ctx = resolveChatRoom(client, message.roomId);
       if (!ctx) return true;
+      if (!isRoomWritable(ctx, client)) {
+        send(client, { type: "chat-error", message: "읽기 전용 방입니다. 대표자만 작성할 수 있습니다." });
+        return true;
+      }
       const text = String(message.text || "").slice(0, CHAT_TEXT_MAX).replace(/\s+$/, "");
       const files = cleanChatFiles(message.files);
       if (!text && !files.length) {
@@ -1204,6 +1221,10 @@ function handleMemoMessage(client, message) {
     case "memo:op": {
       const ctx = resolveMemoRoom(client, message.roomId);
       if (!ctx) return true;
+      if (!isRoomWritable(ctx, client)) {
+        send(client, { type: "memo-error", message: "읽기 전용 메모입니다. 대표자만 편집할 수 있습니다." });
+        return true;
+      }
       const d = getMemoDoc(ctx.room.id);
       let o = message.ops;
       if (!Array.isArray(o)) return true;
@@ -1369,11 +1390,26 @@ function findDrawLayer(doc, layerId) {
   return doc.layers.find((l) => l.id === String(layerId || ""));
 }
 
+const DRAW_WRITE_TYPES = new Set([
+  "draw:stroke", "draw:undo", "draw:clear", "draw:resize",
+  "draw:layer-add", "draw:layer-remove", "draw:layer-update", "draw:layer-reorder",
+]);
+
 function handleDrawMessage(client, message) {
   if (typeof message.type !== "string" || !message.type.startsWith("draw:")) return false;
   if (!client.userId) {
     send(client, { type: "draw-error", message: "로그인이 필요합니다." });
     return true;
+  }
+
+  // 읽기 전용 그림판이면 대표자가 아닌 사람의 쓰기 동작을 막는다(열람/상태 수신은 허용).
+  if (DRAW_WRITE_TYPES.has(message.type)) {
+    const ctx = resolveDrawRoom(client, message.roomId);
+    if (!ctx) return true;
+    if (!isRoomWritable(ctx, client)) {
+      send(client, { type: "draw-error", message: "읽기 전용 그림판입니다. 대표자만 그릴 수 있습니다." });
+      return true;
+    }
   }
 
   switch (message.type) {

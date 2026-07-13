@@ -649,6 +649,10 @@
             <span>최대 인원 (1~99)</span>
             <input id="roomLimitInput" type="number" min="1" max="99" step="1" inputmode="numeric" />
           </label>
+          <label class="field checkbox-field" id="roomReadOnlyField" hidden>
+            <input id="roomReadOnlyInput" type="checkbox" />
+            <span>읽기 전용 (대표자만 작성 가능)</span>
+          </label>
           <p class="account-message" id="roomRenameMessage" aria-live="polite"></p>
           <div class="modal-actions">
             <button class="primary" id="roomRenameConfirm" type="button">저장</button>

@@ -514,6 +514,21 @@ function renameRoom(channelId, roomId, name) {
   return { channel, room };
 }
 
+// 읽기 전용 토글(채팅/메모/그림만). 통화방은 P2P라 서버가 발언을 막을 수 없어 제외.
+function setRoomReadOnly(channelId, roomId, value) {
+  const channel = getChannel(channelId);
+  if (!channel) return { error: "채널을 찾을 수 없습니다." };
+  const room = channel.rooms.find((r) => r.id === roomId);
+  if (!room) return { error: "방을 찾을 수 없습니다." };
+  if (!["chat", "memo", "draw"].includes(room.type)) {
+    return { error: "채팅·메모·그림 방만 읽기 전용으로 설정할 수 있습니다." };
+  }
+  if (value) room.readOnly = true;
+  else delete room.readOnly;
+  persistChannels();
+  return { channel, room };
+}
+
 function setRoomLimit(channelId, roomId, limit) {
   const channel = getChannel(channelId);
   if (!channel) return { error: "채널을 찾을 수 없습니다." };
@@ -565,7 +580,7 @@ function channelSummary(channel) {
     icon: channel.icon || "",
     inviteCode: channel.inviteCode,
     memberIds: channel.members.slice(),
-    rooms: channel.rooms.map((r) => ({ id: r.id, name: r.name, type: r.type, ...(r.type === "voice" ? { limit: r.limit || DEFAULT_ROOM_LIMIT } : {}) })),
+    rooms: channel.rooms.map((r) => ({ id: r.id, name: r.name, type: r.type, ...(r.type === "voice" ? { limit: r.limit || DEFAULT_ROOM_LIMIT } : {}), ...(r.readOnly ? { readOnly: true } : {}) })),
     createdAt: channel.createdAt,
   };
 }
@@ -908,6 +923,7 @@ module.exports = {
   removeRoom,
   renameRoom,
   setRoomLimit,
+  setRoomReadOnly,
   renameChannel,
   deleteChannel,
   findRoom,

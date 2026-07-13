@@ -172,6 +172,8 @@ const dom = {
   roomRenameMessage: document.querySelector("#roomRenameMessage"),
   roomLimitField: document.querySelector("#roomLimitField"),
   roomLimitInput: document.querySelector("#roomLimitInput"),
+  roomReadOnlyField: document.querySelector("#roomReadOnlyField"),
+  roomReadOnlyInput: document.querySelector("#roomReadOnlyInput"),
   chatPanel: document.querySelector("#chatPanel"),
   chatRoomName: document.querySelector("#chatRoomName"),
   chatSubtitle: document.querySelector("#chatSubtitle"),
@@ -5950,6 +5952,11 @@ function isChannelCreator(channel) {
   return Boolean(state.auth.user?.isAdmin) || channel.ownerId === state.auth.user?.id;
 }
 
+// 읽기 전용 방이면 대표자만 쓸 수 있다. 그 외에는 누구나 쓰기 가능.
+function canWriteRoom(channel, room) {
+  return !room?.readOnly || isChannelOwner(channel);
+}
+
 function reconcileCurrentChannel(preferId) {
   if (preferId && state.channels.some((c) => c.id === preferId)) {
     state.currentChannelId = preferId;
@@ -6418,9 +6425,22 @@ function openChatRoom(roomId) {
   renderChatAttachments();
   setChatHint("");
   if (dom.chatInput) { dom.chatInput.value = ""; autoResizeChatInput(); }
+  applyChatReadOnly(found);
   sendSocket({ type: "chat:open", roomId });
   renderRooms();
   dom.chatInput?.focus();
+}
+
+// 읽기 전용 방에서는 대표자가 아닌 사람의 입력창을 잠근다.
+function applyChatReadOnly(found) {
+  const writable = canWriteRoom(found.channel, found.room);
+  if (state.activeChat) state.activeChat.writable = writable;
+  if (dom.chatInput) {
+    dom.chatInput.disabled = !writable;
+    dom.chatInput.placeholder = writable ? "메시지를 입력하세요" : "읽기 전용 방입니다 (대표자만 작성)";
+  }
+  if (dom.chatSendButton) dom.chatSendButton.disabled = !writable;
+  if (dom.chatAttachButton) dom.chatAttachButton.disabled = !writable;
 }
 
 function closeChatView() {
@@ -6442,6 +6462,7 @@ function verifyActiveChat() {
   state.activeChat.channelId = found.channel.id;
   if (dom.chatRoomName) dom.chatRoomName.textContent = found.room.name;
   if (dom.chatSubtitle) dom.chatSubtitle.textContent = found.channel.name;
+  applyChatReadOnly(found); // 읽기 전용 설정이 바뀌었을 수 있어 재적용
   renderChatMessages(); // 멤버 정보가 새로 도착했을 수 있어 아바타 갱신
 }
 
@@ -6950,6 +6971,7 @@ function openMemoRoom(roomId) {
     cursors: new Map(), // clientId -> { userId, name, pos, sel, color }
     cursorSentAt: 0,
     lastCursor: "",
+    writable: canWriteRoom(found.channel, found.room),
   };
   document.body.classList.add("memo-open");
   if (dom.memoRoomName) dom.memoRoomName.textContent = found.room.name;
@@ -6978,7 +7000,9 @@ function verifyActiveMemo() {
   if (!found || found.room.type !== "memo") { closeMemoView(); return; }
   state.memo.name = found.room.name;
   state.memo.channelId = found.channel.id;
+  state.memo.writable = canWriteRoom(found.channel, found.room);
   if (dom.memoRoomName) dom.memoRoomName.textContent = found.room.name;
+  if (dom.memoEditor) dom.memoEditor.disabled = !state.memo.writable;
 }
 
 function handleMemoState(message) {
@@ -6988,12 +7012,13 @@ function handleMemoState(message) {
   m.serverRev = message.rev || 0;
   m.inflight = null;
   m.buffer = [];
-  if (dom.memoEditor) { dom.memoEditor.disabled = false; dom.memoEditor.value = m.doc; }
+  if (dom.memoEditor) { dom.memoEditor.disabled = !m.writable; dom.memoEditor.value = m.doc; }
   renderMemoPreview();
   m.cursors.clear();
   for (const cur of message.cursors || []) setMemoCursor(cur);
   renderMemoCursors();
-  setMemoStatus(m.doc ? "실시간 편집 중" : "빈 메모 — 함께 편집됩니다", "muted");
+  if (!m.writable) setMemoStatus("읽기 전용 — 대표자만 편집", "muted");
+  else setMemoStatus(m.doc ? "실시간 편집 중" : "빈 메모 — 함께 편집됩니다", "muted");
 }
 
 // 로컬 편집 → 변경분(op)을 만들어 서버로 보낸다.
@@ -7246,6 +7271,7 @@ function openDrawRoom(roomId) {
     myStrokes: [], // 내가 그린 획 스택(실행취소용) { layerId, strokeId }
     imageCache: new Map(),
     loaded: false,
+    writable: canWriteRoom(found.channel, found.room),
   };
   document.body.classList.add("draw-open");
   if (dom.drawRoomName) dom.drawRoomName.textContent = found.room.name;
@@ -7272,6 +7298,7 @@ function verifyActiveDraw() {
   if (!found || found.room.type !== "draw") { closeDrawView(); return; }
   state.draw.name = found.room.name;
   state.draw.channelId = found.channel.id;
+  state.draw.writable = canWriteRoom(found.channel, found.room);
   if (dom.drawRoomName) dom.drawRoomName.textContent = found.room.name;
 }
 
@@ -7793,6 +7820,7 @@ function drawPointFromEvent(event) {
 function onDrawPointerDown(event) {
   const d = state.draw;
   if (!d || !d.loaded) return;
+  if (!d.writable) { setDrawStatus("읽기 전용 그림판 — 대표자만 그릴 수 있어요", "bad"); return; }
   if (event.button !== undefined && event.button !== 0) return;
   const layer = findDrawLayer(d.activeLayerId);
   if (!layer) return;
@@ -8092,7 +8120,7 @@ function handleDrawSocketMessage(message) {
     case "draw:state": {
       buildDrawFromDoc(message.doc || {});
       d.loaded = true;
-      setDrawStatus("", "");
+      setDrawStatus(d.writable ? "" : "읽기 전용 — 대표자만 그릴 수 있어요", d.writable ? "" : "muted");
       break;
     }
     case "draw:stroke": {
@@ -8348,10 +8376,13 @@ function openRoomRenameModal(roomId) {
   roomRenameTargetId = roomId;
   dom.roomRenameInput.value = found.room.name || "";
   if (dom.roomRenameMessage) dom.roomRenameMessage.textContent = "";
-  // 통화방이면 최대 인원 필드를 보여준다.
+  // 통화방이면 최대 인원 필드를, 채팅/메모/그림이면 읽기 전용 필드를 보여준다.
   const isVoice = found.room.type === "voice";
+  const canReadOnly = ["chat", "memo", "draw"].includes(found.room.type);
   if (dom.roomLimitField) dom.roomLimitField.hidden = !isVoice;
   if (dom.roomLimitInput) dom.roomLimitInput.value = String(found.room.limit || 8);
+  if (dom.roomReadOnlyField) dom.roomReadOnlyField.hidden = !canReadOnly;
+  if (dom.roomReadOnlyInput) dom.roomReadOnlyInput.checked = Boolean(found.room.readOnly);
   dom.roomRenameModal.hidden = false;
   dom.roomRenameInput.focus();
   dom.roomRenameInput.select();
@@ -8372,6 +8403,11 @@ function confirmRoomRename() {
     const limit = Math.max(1, Math.min(99, Math.floor(Number(dom.roomLimitInput.value) || 8)));
     if (limit !== (found.room.limit || 8)) {
       sendSocket({ type: "channel:set-room-limit", channelId: found.channel.id, roomId: roomRenameTargetId, limit });
+    }
+  } else if (["chat", "memo", "draw"].includes(found.room.type) && dom.roomReadOnlyInput) {
+    const value = dom.roomReadOnlyInput.checked;
+    if (value !== Boolean(found.room.readOnly)) {
+      sendSocket({ type: "channel:set-room-readonly", channelId: found.channel.id, roomId: roomRenameTargetId, value });
     }
   }
   closeRoomRenameModal();
