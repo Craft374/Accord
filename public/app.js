@@ -194,6 +194,7 @@ const dom = {
   memoEditor: document.querySelector("#memoEditor"),
   memoPreview: document.querySelector("#memoPreview"),
   memoCursors: document.querySelector("#memoCursors"),
+  memoGutter: document.querySelector("#memoGutter"),
   memoViewSplit: document.querySelector("#memoViewSplit"),
   memoViewEdit: document.querySelector("#memoViewEdit"),
   memoViewPreview: document.querySelector("#memoViewPreview"),
@@ -7100,7 +7101,8 @@ function applyMemoFontSize(px) {
   localStorage.setItem("accordMemoFontSize", String(memoFontSize));
   if (dom.memoEditor) dom.memoEditor.style.fontSize = `${memoFontSize}px`;
   if (dom.memoPreview) dom.memoPreview.style.fontSize = `${memoFontSize}px`;
-  renderMemoCursors(); // 캐럿 좌표가 글자 크기에 의존하므로 다시 그린다
+  if (dom.memoGutter) dom.memoGutter.style.fontSize = `${memoFontSize}px`;
+  renderMemoCursors(); // 캐럿 좌표·줄번호가 글자 크기에 의존하므로 다시 그린다
 }
 
 function openMemoRoom(roomId) {
@@ -7316,6 +7318,7 @@ function renderMemoCursors() {
   const layer = dom.memoCursors;
   const el = dom.memoEditor;
   if (!m || !layer || !el) return;
+  renderMemoGutter(); // 줄번호도 같은 좌표계로 함께 갱신
   layer.innerHTML = "";
   if (m.view === "preview") return; // 편집기가 숨겨져 있으면 커서 표시 안함
   for (const cur of m.cursors.values()) {
@@ -7361,6 +7364,11 @@ function getCaretCoordinates(el, position) {
   s.whiteSpace = "pre-wrap";
   s.wordWrap = "break-word";
   for (const prop of MIRROR_PROPS) s[prop] = computed[prop];
+  // 스크롤바가 있으면 실제 텍스트박스가 좁아지므로 clientWidth 기준 콘텐츠 폭으로 줄바꿈을 맞춘다.
+  const padL0 = parseFloat(computed.paddingLeft) || 0;
+  const padR0 = parseFloat(computed.paddingRight) || 0;
+  s.boxSizing = "content-box";
+  s.width = `${Math.max(0, el.clientWidth - padL0 - padR0)}px`;
   div.textContent = el.value.substring(0, position);
   const span = document.createElement("span");
   span.textContent = el.value.substring(position) || ".";
@@ -7372,6 +7380,85 @@ function getCaretCoordinates(el, position) {
   };
   div.textContent = "";
   return coords;
+}
+
+// 각 논리적 줄(\n 기준)이 시작되는 세로 픽셀 위치를 한 번의 레이아웃으로 계산한다.
+// textarea의 실제 콘텐츠 너비로 미러를 맞춰 soft-wrap(줄 감김)까지 동일하게 재현 → 줄번호가 감긴 줄만큼 아래로 밀려 정렬된다.
+let memoLineMirror = null;
+function getMemoLineTops(el) {
+  if (!memoLineMirror) {
+    memoLineMirror = document.createElement("div");
+    memoLineMirror.setAttribute("aria-hidden", "true");
+    document.body.appendChild(memoLineMirror);
+  }
+  const div = memoLineMirror;
+  const computed = getComputedStyle(el);
+  const s = div.style;
+  s.position = "absolute";
+  s.visibility = "hidden";
+  s.top = "0";
+  s.left = "-9999px";
+  s.overflow = "hidden";
+  s.whiteSpace = "pre-wrap";
+  s.wordWrap = "break-word";
+  for (const prop of MIRROR_PROPS) s[prop] = computed[prop];
+  // 스크롤바 유무와 무관하게 실제 텍스트박스 너비로 줄바꿈을 맞춘다.
+  const padL = parseFloat(computed.paddingLeft) || 0;
+  const padR = parseFloat(computed.paddingRight) || 0;
+  s.boxSizing = "content-box";
+  s.width = `${Math.max(0, el.clientWidth - padL - padR)}px`;
+  div.textContent = "";
+  const lines = el.value.split("\n");
+  const markers = [];
+  for (let i = 0; i < lines.length; i++) {
+    // 폭 0의 inline-block(vertical-align:top) 마커를 줄 맨 앞에 두면 offsetTop이 그 줄 라인박스의 '위쪽'을 가리킨다.
+    // (텍스트 span의 offsetTop은 half-leading만큼 아래라 줄번호가 살짝 내려가므로 이 방식을 쓴다.)
+    // 실제 줄바꿈은 마커 뒤의 텍스트 노드가 담당하므로 감긴 줄도 첫 행 위치가 잡힌다.
+    const marker = document.createElement("span");
+    marker.style.display = "inline-block";
+    marker.style.width = "0";
+    marker.style.verticalAlign = "top";
+    marker.textContent = "​"; // zero-width space — 빈 줄에서도 라인박스가 생기게
+    div.appendChild(marker);
+    markers.push(marker);
+    if (lines[i]) div.appendChild(document.createTextNode(lines[i]));
+    if (i < lines.length - 1) div.appendChild(document.createTextNode("\n"));
+  }
+  const borderTop = parseInt(computed.borderTopWidth || "0", 10) || 0;
+  const tops = markers.map((mk) => mk.offsetTop + borderTop);
+  div.textContent = "";
+  return tops;
+}
+
+// 줄번호 거터를 그린다. 자릿수에 맞춰 폭·편집기 좌패딩을 조정하고, 편집기 세로 스크롤과 동기화한다.
+function renderMemoGutter() {
+  const m = state.memo;
+  const gutter = dom.memoGutter;
+  const el = dom.memoEditor;
+  if (!m || !gutter || !el) return;
+  if (m.view === "preview") { gutter.innerHTML = ""; return; }
+  const lineCount = el.value ? el.value.split("\n").length : 1;
+  const digits = String(lineCount).length;
+  const gutterW = Math.ceil(digits * memoFontSize * 0.62) + 18;
+  if (gutter._memoWidth !== gutterW) {
+    gutter.style.width = `${gutterW}px`;
+    el.style.paddingLeft = `${gutterW + 6}px`; // 텍스트가 거터를 침범하지 않도록
+    gutter._memoWidth = gutterW;
+  }
+  const tops = getMemoLineTops(el);
+  const scrollTop = el.scrollTop;
+  const frag = document.createDocumentFragment();
+  for (let i = 0; i < tops.length; i++) {
+    const y = tops[i] - scrollTop;
+    if (y < -memoFontSize * 2 || y > el.clientHeight + memoFontSize) continue; // 화면 밖 줄은 생략
+    const n = document.createElement("span");
+    n.className = "memo-line-no";
+    n.textContent = String(i + 1);
+    n.style.top = `${y}px`;
+    frag.appendChild(n);
+  }
+  gutter.innerHTML = "";
+  gutter.appendChild(frag);
 }
 
 function renderMemoPreview() {
@@ -7420,6 +7507,8 @@ function bindMemoEvents() {
     event.preventDefault();
     applyMemoFontSize(memoFontSize + (event.deltaY < 0 ? 1 : -1));
   }, { passive: false });
+  // 창/패널 크기가 바뀌면 줄바꿈 위치가 달라지므로 줄번호·커서를 다시 계산.
+  window.addEventListener("resize", () => { if (state.memo) renderMemoCursors(); });
 }
 
 // ===== 공동 그림판 (draw) =====

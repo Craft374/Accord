@@ -956,6 +956,30 @@ body.memo-open .log-panel {
 .memo-editor:disabled {
   opacity: 0.5;
 }
+/* 줄번호 거터 — 편집기와 같은 폰트/줄높이로 원격커서와 동일한 미러 좌표계에 맞춰 배치 */
+.memo-gutter {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  overflow: hidden;
+  pointer-events: none;
+  background: var(--bg-base);
+  border-right: 1px solid var(--line);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--muted);
+  user-select: none;
+}
+.memo-line-no {
+  position: absolute;
+  right: 8px;
+  line-height: 1.6;
+  text-align: right;
+  opacity: 0.65;
+  font-variant-numeric: tabular-nums;
+}
 /* 원격 커서 오버레이 */
 .memo-cursors {
   position: absolute;
