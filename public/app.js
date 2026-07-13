@@ -425,6 +425,13 @@ async function init() {
 }
 
 function bindEvents() {
+  // 커스텀 파일 선택 버튼: 선택한 파일 이름을 옆에 표시(다른 change 핸들러보다 먼저 바인딩).
+  document.querySelectorAll(".file-input").forEach((input) => {
+    input.addEventListener("change", () => {
+      const nameEl = input.closest(".file-picker")?.querySelector(".file-name");
+      if (nameEl) nameEl.textContent = input.files?.[0]?.name || "선택된 파일 없음";
+    });
+  });
   dom.launcherButton.addEventListener("click", () => desktop.backToLauncher?.());
   dom.settingsButton?.addEventListener("click", () => toggleSettingsModal(true));
   dom.settingsCloseButton?.addEventListener("click", () => toggleSettingsModal(false));

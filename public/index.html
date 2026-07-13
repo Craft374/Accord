@@ -514,10 +514,14 @@
                 <span>이메일 (선택)</span>
                 <input id="accountEmailInput" type="email" autocomplete="off" maxlength="120" />
               </label>
-              <label class="field">
+              <div class="field">
                 <span>프로필 이미지</span>
-                <input id="accountAvatarInput" type="file" accept="image/*" />
-              </label>
+                <div class="file-picker">
+                  <label class="file-cta" for="accountAvatarInput">파일 선택</label>
+                  <span class="file-name">선택된 파일 없음</span>
+                  <input id="accountAvatarInput" type="file" accept="image/*" class="file-input" />
+                </div>
+              </div>
             </div>
             <div class="modal-actions">
               <button class="primary" id="saveProfileButton" type="button">프로필 저장</button>
@@ -684,10 +688,14 @@
           </div>
           <div class="channel-icon-row" id="channelIconRow">
             <span class="channel-icon-preview" id="channelIconPreview" aria-hidden="true"></span>
-            <label class="field channel-icon-field">
+            <div class="field channel-icon-field">
               <span>채널 아이콘</span>
-              <input id="channelIconInput" type="file" accept="image/*" />
-            </label>
+              <div class="file-picker">
+                <label class="file-cta" for="channelIconInput">파일 선택</label>
+                <span class="file-name">선택된 파일 없음</span>
+                <input id="channelIconInput" type="file" accept="image/*" class="file-input" />
+              </div>
+            </div>
           </div>
           <label class="field" id="channelRenameField">
             <span>채널 이름 변경</span>
@@ -762,10 +770,14 @@
         <form class="auth-form" id="registerForm" hidden>
           <div class="auth-avatar-row">
             <span class="account-avatar large" id="registerAvatarPreview" aria-hidden="true"></span>
-            <label class="field auth-avatar-field">
+            <div class="field auth-avatar-field">
               <span>프로필 이미지 (선택)</span>
-              <input id="registerAvatar" type="file" accept="image/*" />
-            </label>
+              <div class="file-picker">
+                <label class="file-cta" for="registerAvatar">파일 선택</label>
+                <span class="file-name">선택된 파일 없음</span>
+                <input id="registerAvatar" type="file" accept="image/*" class="file-input" />
+              </div>
+            </div>
           </div>
           <label class="field">
             <span>아이디 (영문/숫자 3~20자)</span>

@@ -1382,23 +1382,33 @@ body.draw-open .log-panel {
   font-weight: 600;
 }
 
-/* 파일 선택 입력 — 버튼을 위아래 균등하게 수직 중앙 정렬(다크 테마).
-   전역 input,select 규칙의 border/padding 을 제거하고 버튼 높이를 고정해
-   위쪽으로 쏠리거나 위아래 간격이 다른 문제를 없앤다. */
-input[type="file"] {
+/* 파일 선택 — 네이티브 file 버튼(::file-selector-button)은 라벨 수직정렬이
+   OS/Electron마다 어긋나 삐딱하게 보인다. 네이티브 input은 화면에서 숨기고
+   커스텀 라벨 버튼(.file-cta)으로 대체해 정렬을 완전히 제어한다. */
+.file-picker {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.file-cta {
   display: inline-flex;
   align-items: center;
-  width: 100%;
-  min-height: 38px;
-  padding: 0;
-  border: 0;
-  color: var(--muted);
-  font-size: 12px;
-}
-input[type="file"]::file-selector-button {
-  height: 30px;
-  margin: 0 10px 0 0;
-  padding: 0 12px;
+  justify-content: center;
+  height: 34px;
+  min-height: 0;
+  padding: 0 14px;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-xs);
   background: var(--bg-input);
@@ -1406,9 +1416,19 @@ input[type="file"]::file-selector-button {
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
+  white-space: nowrap;
+  flex: none;
 }
-input[type="file"]::file-selector-button:hover {
+.file-cta:hover {
   background: var(--bg-surface);
+}
+.file-name {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ─── 전역 로그 ───────────────────────────── */
