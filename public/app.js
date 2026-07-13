@@ -124,6 +124,15 @@ const state = {
   memo: null, // { roomId, channelId, name, rev, remotePending, saveTimer, view }
   // 전역 로그
   activeLog: null, // { roomId, channelId, name, entries: [] }
+  // 다이렉트 메시지
+  dm: {
+    open: false, // DM 모드(메인 영역을 DM 패널로 전환)
+    threads: [], // [{ id, userId, partner, lastAt, lastText, lastFrom }]
+    activeUserId: "", // 현재 열려 있는 대화 상대
+    partner: null, // 활성 상대 유저 정보
+    messages: [],
+    unread: {}, // userId -> 안 읽은 수
+  },
 };
 
 const dom = {
@@ -211,6 +220,23 @@ const dom = {
   logSubtitle: document.querySelector("#logSubtitle"),
   logScroll: document.querySelector("#logScroll"),
   logList: document.querySelector("#logList"),
+  dmPanel: document.querySelector("#dmPanel"),
+  dmNewButton: document.querySelector("#dmNewButton"),
+  dmNewRow: document.querySelector("#dmNewRow"),
+  dmCodeInput: document.querySelector("#dmCodeInput"),
+  dmFindButton: document.querySelector("#dmFindButton"),
+  dmFindMsg: document.querySelector("#dmFindMsg"),
+  dmThreadList: document.querySelector("#dmThreadList"),
+  dmConvHead: document.querySelector("#dmConvHead"),
+  dmConvAvatar: document.querySelector("#dmConvAvatar"),
+  dmConvName: document.querySelector("#dmConvName"),
+  dmConvCode: document.querySelector("#dmConvCode"),
+  dmScroll: document.querySelector("#dmScroll"),
+  dmMessages: document.querySelector("#dmMessages"),
+  dmEmpty: document.querySelector("#dmEmpty"),
+  dmComposer: document.querySelector("#dmComposer"),
+  dmInput: document.querySelector("#dmInput"),
+  dmSendButton: document.querySelector("#dmSendButton"),
   channelMenuModal: document.querySelector("#channelMenuModal"),
   channelMenuClose: document.querySelector("#channelMenuClose"),
   channelInviteCode: document.querySelector("#channelInviteCode"),
@@ -427,6 +453,7 @@ function bindEvents() {
   bindChatEvents();
   bindMemoEvents();
   bindDrawEvents();
+  bindDmEvents();
 
   dom.inputDeviceSelect.addEventListener("change", () => {
     resetEchoProbe();
@@ -1395,6 +1422,13 @@ async function handleSocketMessage(message) {
     if (state.activeLog && dom.logSubtitle) dom.logSubtitle.textContent = message.message || "로그 오류";
     return;
   }
+
+  if (message.type === "dm:threads") { handleDmThreads(message); return; }
+  if (message.type === "dm:history") { handleDmHistory(message); return; }
+  if (message.type === "dm:message") { handleIncomingDm(message); return; }
+  if (message.type === "dm:deleted") { handleDmDeleted(message); return; }
+  if (message.type === "dm:user") { handleDmUser(message); return; }
+  if (message.type === "dm-error") { handleDmError(message); return; }
 
   if (message.type === "presence") {
     state.presence = message.rooms || {};
@@ -5945,6 +5979,23 @@ function renderChannels() {
 function renderChannelRail() {
   if (!dom.channelRail) return;
   dom.channelRail.innerHTML = "";
+  // 최상단 DM(홈) 버튼
+  const home = document.createElement("button");
+  home.className = "channel-icon channel-home" + (state.dm.open ? " active" : "");
+  home.dataset.dmHome = "1";
+  home.title = "다이렉트 메시지";
+  home.textContent = "✉";
+  const unreadTotal = dmUnreadTotal();
+  if (unreadTotal > 0) {
+    const badge = document.createElement("span");
+    badge.className = "channel-unread";
+    badge.textContent = unreadTotal > 99 ? "99+" : String(unreadTotal);
+    home.append(badge);
+  }
+  dom.channelRail.append(home);
+  const divider = document.createElement("div");
+  divider.className = "channel-rail-divider";
+  dom.channelRail.append(divider);
   for (const channel of state.channels) {
     const btn = document.createElement("button");
     btn.className = "channel-icon" + (channel.id === state.currentChannelId ? " active" : "");
@@ -6151,10 +6202,12 @@ function bindChannelEvents() {
     dom.channelIconInput.value = "";
   });
   dom.channelRail?.addEventListener("click", (event) => {
+    const home = event.target?.closest?.("[data-dm-home]");
+    if (home) { openDmMode(); return; }
     const add = event.target?.closest?.("[data-channel-add]");
-    if (add) { openChannelModal(); return; }
+    if (add) { closeDmMode(); openChannelModal(); return; }
     const icon = event.target?.closest?.("[data-channel-id]");
-    if (icon) selectChannel(icon.dataset.channelId);
+    if (icon) { closeDmMode(); selectChannel(icon.dataset.channelId); }
   });
   // 우클릭으로 채널 설정 열기(#6)
   dom.channelRail?.addEventListener("contextmenu", (event) => {
@@ -6806,6 +6859,44 @@ function bindChatEvents() {
   bindChatDragDrop();
 }
 
+function bindDmEvents() {
+  dom.dmNewButton?.addEventListener("click", () => {
+    if (!dom.dmNewRow) return;
+    dom.dmNewRow.hidden = !dom.dmNewRow.hidden;
+    setDmFindMsg("");
+    if (!dom.dmNewRow.hidden) dom.dmCodeInput?.focus();
+  });
+  dom.dmFindButton?.addEventListener("click", dmFindByCode);
+  dom.dmCodeInput?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); dmFindByCode(); }
+  });
+  dom.dmThreadList?.addEventListener("click", (event) => {
+    const item = event.target?.closest?.("[data-dm-user]");
+    if (item) openDmConversation(item.dataset.dmUser);
+  });
+  dom.dmMessages?.addEventListener("click", (event) => {
+    const del = event.target?.closest?.("[data-dm-delete]");
+    if (!del) return;
+    if (!confirm("이 메시지를 삭제할까요?")) return;
+    sendSocket({ type: "dm:delete", userId: state.dm.activeUserId, msgId: del.dataset.dmDelete });
+  });
+  dom.dmSendButton?.addEventListener("click", sendDmText);
+  dom.dmInput?.addEventListener("input", autoResizeDmInput);
+  dom.dmInput?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      sendDmText();
+    }
+  });
+}
+
+function dmFindByCode() {
+  const raw = (dom.dmCodeInput?.value || "").trim().replace(/^#/, "");
+  if (!raw) { setDmFindMsg("코드를 입력하세요."); return; }
+  setDmFindMsg("찾는 중…");
+  sendSocket({ type: "dm:find", code: raw });
+}
+
 function bindChatDragDrop() {
   const panel = dom.chatPanel;
   const overlay = dom.chatDropOverlay;
@@ -7331,6 +7422,230 @@ function logIsNearBottom() {
   const el = dom.logScroll;
   if (!el) return true;
   return el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+}
+
+// ===== 다이렉트 메시지(DM) =====
+// 채널과 별개인 1:1 대화. 유저 코드(#XXXX)로 상대를 찾고, 메인 영역을 DM 패널로 전환한다.
+const DM_GROUP_GAP = 5 * 60 * 1000;
+
+function dmUnreadTotal() {
+  return Object.values(state.dm.unread).reduce((a, b) => a + (b || 0), 0);
+}
+
+function openDmMode() {
+  state.dm.open = true;
+  // 다른 채널 패널은 닫되 통화(WebRTC)는 유지된다.
+  closeChatView();
+  closeMemoView();
+  closeDrawView();
+  closeLogView();
+  document.body.classList.add("dm-open");
+  renderChannelRail();
+  sendSocket({ type: "dm:list" });
+  renderDmThreads();
+  if (state.dm.activeUserId) openDmConversation(state.dm.activeUserId);
+  else showDmEmpty();
+}
+
+function closeDmMode() {
+  if (!state.dm.open) return;
+  state.dm.open = false;
+  document.body.classList.remove("dm-open");
+  if (dom.dmNewRow) dom.dmNewRow.hidden = true;
+  renderChannelRail();
+}
+
+function showDmEmpty() {
+  if (dom.dmConvHead) dom.dmConvHead.hidden = true;
+  if (dom.dmComposer) dom.dmComposer.hidden = true;
+  if (dom.dmEmpty) dom.dmEmpty.hidden = false;
+  if (dom.dmMessages) dom.dmMessages.innerHTML = "";
+}
+
+function renderDmThreads() {
+  if (!dom.dmThreadList) return;
+  dom.dmThreadList.innerHTML = "";
+  if (!state.dm.threads.length) {
+    const li = document.createElement("li");
+    li.className = "dm-thread-empty";
+    li.textContent = "아직 대화가 없습니다.";
+    dom.dmThreadList.append(li);
+    return;
+  }
+  for (const t of state.dm.threads) {
+    const li = document.createElement("li");
+    li.className = "dm-thread" + (t.userId === state.dm.activeUserId ? " active" : "");
+    li.dataset.dmUser = t.userId;
+    const av = document.createElement("span");
+    av.className = "dm-thread-avatar";
+    setAvatar(av, t.partner);
+    const body = document.createElement("div");
+    body.className = "dm-thread-body";
+    const nameEl = document.createElement("div");
+    nameEl.className = "dm-thread-name";
+    nameEl.textContent = t.partner?.displayName || "유저";
+    const preview = document.createElement("div");
+    preview.className = "dm-thread-preview";
+    preview.textContent = t.lastText || "";
+    body.append(nameEl, preview);
+    li.append(av, body);
+    const unread = state.dm.unread[t.userId] || 0;
+    if (unread > 0 && t.userId !== state.dm.activeUserId) {
+      const badge = document.createElement("span");
+      badge.className = "dm-thread-unread";
+      badge.textContent = unread > 99 ? "99+" : String(unread);
+      li.append(badge);
+    }
+    dom.dmThreadList.append(li);
+  }
+}
+
+function openDmConversation(userId) {
+  if (!userId) return;
+  state.dm.activeUserId = userId;
+  delete state.dm.unread[userId];
+  state.dm.messages = [];
+  if (dom.dmEmpty) dom.dmEmpty.hidden = true;
+  if (dom.dmMessages) dom.dmMessages.innerHTML = '<p class="dm-loading">불러오는 중…</p>';
+  const t = state.dm.threads.find((x) => x.userId === userId);
+  if (t) setDmHeader(t.partner);
+  else if (state.dm.partner?.id === userId) setDmHeader(state.dm.partner);
+  if (dom.dmComposer) dom.dmComposer.hidden = false;
+  sendSocket({ type: "dm:open", userId });
+  renderDmThreads();
+  renderChannelRail();
+  dom.dmInput?.focus();
+}
+
+function setDmHeader(partner) {
+  if (!partner) return;
+  state.dm.partner = partner;
+  if (dom.dmConvHead) dom.dmConvHead.hidden = false;
+  if (dom.dmConvName) dom.dmConvName.textContent = partner.displayName || "유저";
+  if (dom.dmConvCode) dom.dmConvCode.textContent = "#" + (partner.code || "----");
+  if (dom.dmConvAvatar) setAvatar(dom.dmConvAvatar, partner);
+}
+
+function handleDmThreads(message) {
+  state.dm.threads = message.threads || [];
+  if (state.dm.open) renderDmThreads();
+  renderChannelRail();
+}
+
+function handleDmHistory(message) {
+  if (message.userId !== state.dm.activeUserId) return;
+  if (message.partner) setDmHeader(message.partner);
+  state.dm.messages = message.messages || [];
+  renderDmMessages();
+  scrollDmToBottom();
+}
+
+function handleIncomingDm(message) {
+  const users = message.users || [];
+  const myId = state.auth.user?.id;
+  const partnerId = users.find((u) => u !== myId) || "";
+  if (!partnerId) return;
+  const isActive = state.dm.open && state.dm.activeUserId === partnerId;
+  if (isActive) {
+    state.dm.messages.push(message.message);
+    renderDmMessages();
+    scrollDmToBottom();
+  } else if (message.message.userId !== myId) {
+    state.dm.unread[partnerId] = (state.dm.unread[partnerId] || 0) + 1;
+    renderChannelRail();
+    if (state.dm.open) renderDmThreads();
+  }
+}
+
+function handleDmDeleted(message) {
+  const users = message.users || [];
+  const myId = state.auth.user?.id;
+  const partnerId = users.find((u) => u !== myId) || "";
+  if (state.dm.open && state.dm.activeUserId === partnerId) {
+    state.dm.messages = state.dm.messages.filter((m) => m.id !== message.msgId);
+    renderDmMessages();
+  }
+}
+
+function handleDmUser(message) {
+  const u = message.user;
+  if (!u) return;
+  state.dm.partner = u;
+  if (dom.dmNewRow) dom.dmNewRow.hidden = true;
+  if (dom.dmCodeInput) dom.dmCodeInput.value = "";
+  setDmFindMsg("");
+  openDmConversation(u.id);
+}
+
+function handleDmError(message) {
+  if (message.action === "find") { setDmFindMsg(message.message || "찾을 수 없습니다."); return; }
+  setMessage(message.message || "DM 오류가 발생했습니다.");
+}
+
+function setDmFindMsg(text) {
+  if (dom.dmFindMsg) dom.dmFindMsg.textContent = text || "";
+}
+
+function sendDmText() {
+  const userId = state.dm.activeUserId;
+  if (!userId || !dom.dmInput) return;
+  const text = dom.dmInput.value.trim();
+  if (!text) return;
+  sendSocket({ type: "dm:send", userId, text });
+  dom.dmInput.value = "";
+  autoResizeDmInput();
+}
+
+function renderDmMessages() {
+  if (!dom.dmMessages) return;
+  dom.dmMessages.innerHTML = "";
+  const myId = state.auth.user?.id;
+  let prev = null;
+  for (const msg of state.dm.messages) {
+    const grouped = prev && prev.userId === msg.userId && (msg.at - prev.at) < DM_GROUP_GAP;
+    const row = document.createElement("div");
+    row.className = "dm-msg" + (grouped ? " grouped" : "") + (msg.userId === myId ? " mine" : "");
+    row.dataset.msgId = msg.id;
+    if (!grouped) {
+      const head = document.createElement("div");
+      head.className = "dm-msg-head";
+      const nameEl = document.createElement("b");
+      nameEl.textContent = msg.name || "유저";
+      const time = document.createElement("span");
+      time.textContent = formatChatTime(msg.at);
+      head.append(nameEl, time);
+      row.append(head);
+    }
+    const line = document.createElement("div");
+    line.className = "dm-msg-line";
+    const text = document.createElement("span");
+    text.className = "dm-msg-text";
+    text.textContent = msg.text || "";
+    line.append(text);
+    if (msg.userId === myId) {
+      const del = document.createElement("button");
+      del.className = "dm-msg-del";
+      del.type = "button";
+      del.dataset.dmDelete = msg.id;
+      del.title = "삭제";
+      del.textContent = "🗑";
+      line.append(del);
+    }
+    row.append(line);
+    dom.dmMessages.append(row);
+    prev = msg;
+  }
+}
+
+function scrollDmToBottom() {
+  if (dom.dmScroll) dom.dmScroll.scrollTop = dom.dmScroll.scrollHeight;
+}
+
+function autoResizeDmInput() {
+  const el = dom.dmInput;
+  if (!el) return;
+  el.style.height = "auto";
+  el.style.height = Math.min(el.scrollHeight, 120) + "px";
 }
 
 function setDrawStatus(text, tone) {

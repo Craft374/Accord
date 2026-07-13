@@ -12,7 +12,7 @@ loadServerEnvFiles();
 store.init();
 seedAdminAccount();
 
-const VERSION = "0.2.45";
+const VERSION = "0.2.46";
 const PORT = Number(process.env.PORT || 25565);
 const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_HOST = cleanHost(process.env.PUBLIC_HOST || "");
@@ -251,6 +251,7 @@ function handleUpgrade(req, socket) {
     drawRoomId: "", // 현재 보고 있는 그림판(실시간 동기화 대상 판별용)
     logRoomId: "", // 현재 보고 있는 로그방(실시간 로그 대상 판별용)
     logChannelId: "", // 그 로그방이 속한 채널(채널 단위 피드라 따로 보관)
+    dmUserId: "", // 현재 보고 있는 DM 상대(읽음 판별용)
   };
 
   clients.set(client.id, client);
@@ -345,6 +346,7 @@ function handleMessage(client, message) {
   if (handleMemoMessage(client, message)) return;
   if (handleDrawMessage(client, message)) return;
   if (handleLogMessage(client, message)) return;
+  if (handleDmMessage(client, message)) return;
 
   if (message.type === "set-name") {
     client.name = cleanName(message.name);
@@ -694,6 +696,7 @@ function removeClient(client) {
   leaveDraw(client);
   client.logRoomId = "";
   client.logChannelId = "";
+  client.dmUserId = "";
   leaveRoom(client, false);
   clients.delete(client.id);
   client.socket.destroy();
@@ -1586,6 +1589,139 @@ function handleLogMessage(client, message) {
     case "log:close": {
       client.logRoomId = "";
       client.logChannelId = "";
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
+// ===== 다이렉트 메시지(1:1 DM) =====
+// 채널과 무관한 개인 대화. 유저 코드(#XXXX)로 상대를 찾고, 대화별 파일에 영속한다.
+const DM_TEXT_MAX = 4000;
+
+// DM 상대에게 보여줄 공개 정보(email 등 민감정보 제외).
+function dmUserView(user) {
+  if (!user) return null;
+  return { id: user.id, displayName: user.displayName || user.username || `유저#${user.code}`, code: user.code, avatar: user.avatar || "" };
+}
+
+// 특정 userId 로 로그인한 모든 접속에 전달(같은 계정 여러 탭 대응).
+function deliverToUser(userId, payload) {
+  if (!userId) return;
+  for (const c of clients.values()) if (c.userId === userId) send(c, payload);
+}
+
+// 스레드마다 상대 유저 정보를 붙여서 반환.
+function dmThreadsFor(userId) {
+  return store.listDmThreads(userId).map((t) => {
+    const otherId = (t.users || []).find((u) => u !== userId) || "";
+    const other = store.findById(otherId);
+    return {
+      id: t.id,
+      userId: otherId,
+      partner: other ? dmUserView(other) : { id: otherId, displayName: "(삭제된 계정)", code: "----", avatar: "" },
+      lastAt: t.lastAt || 0,
+      lastText: t.lastText || "",
+      lastFrom: t.lastFrom || "",
+    };
+  });
+}
+
+function sendDmThreads(userId) {
+  const threads = dmThreadsFor(userId);
+  deliverToUser(userId, { type: "dm:threads", threads });
+}
+
+function handleDmMessage(client, message) {
+  if (typeof message.type !== "string" || !message.type.startsWith("dm:")) return false;
+  if (!client.userId) {
+    send(client, { type: "dm-error", message: "로그인이 필요합니다." });
+    return true;
+  }
+  switch (message.type) {
+    case "dm:list": {
+      send(client, { type: "dm:threads", threads: dmThreadsFor(client.userId) });
+      return true;
+    }
+    case "dm:find": {
+      const user = store.findByCode(message.code);
+      if (!user) {
+        send(client, { type: "dm-error", action: "find", message: "해당 코드의 유저를 찾지 못했습니다." });
+        return true;
+      }
+      if (user.id === client.userId) {
+        send(client, { type: "dm-error", action: "find", message: "자기 자신에게는 보낼 수 없습니다." });
+        return true;
+      }
+      send(client, { type: "dm:user", user: dmUserView(user) });
+      return true;
+    }
+    case "dm:open": {
+      const partner = store.findById(String(message.userId || ""));
+      if (!partner || partner.id === client.userId) {
+        send(client, { type: "dm-error", message: "상대를 찾지 못했습니다." });
+        return true;
+      }
+      client.dmUserId = partner.id;
+      send(client, {
+        type: "dm:history",
+        userId: partner.id,
+        partner: dmUserView(partner),
+        messages: store.getDmMessages(client.userId, partner.id),
+      });
+      return true;
+    }
+    case "dm:close": {
+      client.dmUserId = "";
+      return true;
+    }
+    case "dm:send": {
+      const partner = store.findById(String(message.userId || ""));
+      if (!partner || partner.id === client.userId) {
+        send(client, { type: "dm-error", message: "상대를 찾지 못했습니다." });
+        return true;
+      }
+      const text = String(message.text || "").slice(0, DM_TEXT_MAX).replace(/\s+$/, "");
+      if (!text) {
+        send(client, { type: "dm-error", message: "빈 메시지는 보낼 수 없습니다." });
+        return true;
+      }
+      const me = store.findById(client.userId);
+      const msg = {
+        id: crypto.randomBytes(8).toString("hex"),
+        userId: client.userId,
+        name: me ? me.displayName : client.name,
+        code: me ? me.code : "",
+        text,
+        at: Date.now(),
+      };
+      const res = store.addDmMessage(client.userId, partner.id, msg);
+      if (res.error) {
+        send(client, { type: "dm-error", message: res.error });
+        return true;
+      }
+      const payload = { type: "dm:message", users: [client.userId, partner.id], message: msg };
+      deliverToUser(client.userId, payload);
+      deliverToUser(partner.id, payload);
+      sendDmThreads(client.userId);
+      sendDmThreads(partner.id);
+      return true;
+    }
+    case "dm:delete": {
+      const partner = store.findById(String(message.userId || ""));
+      if (!partner) return true;
+      const list = store.getDmMessages(client.userId, partner.id);
+      const target = list.find((m) => m.id === message.msgId);
+      if (!target) return true; // 이미 삭제됨
+      if (target.userId !== client.userId) {
+        send(client, { type: "dm-error", message: "본인 메시지만 삭제할 수 있습니다." });
+        return true;
+      }
+      store.deleteDmMessage(client.userId, partner.id, message.msgId);
+      const payload = { type: "dm:deleted", users: [client.userId, partner.id], msgId: message.msgId };
+      deliverToUser(client.userId, payload);
+      deliverToUser(partner.id, payload);
       return true;
     }
     default:

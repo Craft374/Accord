@@ -14,8 +14,11 @@ const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const MEMO_DIR = path.join(DATA_DIR, "memo");
 const DRAW_DIR = path.join(DATA_DIR, "draw");
 const LOG_DIR = path.join(DATA_DIR, "log");
+const DM_DIR = path.join(DATA_DIR, "dm");
+const DM_INDEX_FILE = path.join(DATA_DIR, "dm-threads.json");
 const MAX_MESSAGES_PER_ROOM = 1000; // 방별 보관 메시지 상한(초과 시 오래된 것부터 정리)
 const MAX_LOG_PER_CHANNEL = 500; // 채널별 보관 로그 상한(초과 시 오래된 것부터 정리)
+const MAX_DM_PER_THREAD = 2000; // DM 대화별 보관 메시지 상한
 const UPLOAD_MAX_BYTES = 50 * 1024 * 1024; // 파일 업로드 최대 50MB
 const MEMO_MAX_LEN = 200000; // 메모장 최대 길이(약 200KB)
 const DRAW_MAX_BYTES = 8 * 1024 * 1024; // 그림판 문서 최대 크기(약 8MB, 붙여넣은 이미지 포함)
@@ -33,6 +36,7 @@ const ROOM_LIMIT_MAX = 99;
 let db = { users: [], codeCounter: 0 };
 let sessions = {}; // token -> { userId, createdAt }
 let channelsDb = { channels: [] };
+let dmThreads = []; // [{ id, users:[a,b], lastAt, lastText, lastFrom }]
 
 function init() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -43,6 +47,8 @@ function init() {
   if (!sessions || typeof sessions !== "object") sessions = {};
   channelsDb = readJson(CHANNELS_FILE, { channels: [] });
   if (!Array.isArray(channelsDb.channels)) channelsDb.channels = [];
+  const dm = readJson(DM_INDEX_FILE, []);
+  dmThreads = Array.isArray(dm) ? dm : [];
 }
 
 function readJson(file, fallback) {
@@ -797,6 +803,75 @@ function deleteChannelLog(channelId) {
   }
 }
 
+// ===== 다이렉트 메시지(1:1 DM) =====
+// 대화 id 는 두 userId 를 정렬해 결합한다(항상 동일). 메시지는 대화별 파일에, 스레드 목록은 인덱스에.
+function dmConvId(a, b) {
+  const x = String(a || ""), y = String(b || "");
+  return x < y ? `${x}_${y}` : `${y}_${x}`;
+}
+
+function isSafeConvId(id) {
+  return /^[a-f0-9]{16}_[a-f0-9]{16}$/.test(String(id || ""));
+}
+
+function dmFile(convId) {
+  return path.join(DM_DIR, `${convId}.json`);
+}
+
+function persistDmThreads() {
+  writeJsonAtomic(DM_INDEX_FILE, dmThreads);
+}
+
+function getDmMessages(userA, userB, limit = 300) {
+  const convId = dmConvId(userA, userB);
+  if (!isSafeConvId(convId)) return [];
+  const list = readJson(dmFile(convId), []);
+  if (!Array.isArray(list)) return [];
+  return limit && list.length > limit ? list.slice(-limit) : list;
+}
+
+function addDmMessage(userA, userB, message) {
+  const convId = dmConvId(userA, userB);
+  if (!isSafeConvId(convId)) return { error: "잘못된 대화입니다." };
+  fs.mkdirSync(DM_DIR, { recursive: true });
+  const list = readJson(dmFile(convId), []);
+  const msgs = Array.isArray(list) ? list : [];
+  msgs.push(message);
+  if (msgs.length > MAX_DM_PER_THREAD) msgs.splice(0, msgs.length - MAX_DM_PER_THREAD);
+  writeJsonAtomic(dmFile(convId), msgs);
+  // 스레드 인덱스 upsert(최근 메시지 미리보기 저장)
+  let thread = dmThreads.find((t) => t.id === convId);
+  if (!thread) {
+    thread = { id: convId, users: [String(userA), String(userB)] };
+    dmThreads.push(thread);
+  }
+  thread.lastAt = message.at;
+  thread.lastText = message.text ? String(message.text).slice(0, 120) : (message.files && message.files.length ? "[파일]" : "");
+  thread.lastFrom = message.userId;
+  persistDmThreads();
+  return { message, convId };
+}
+
+// userId 가 참여한 대화 목록(최근 순).
+function listDmThreads(userId) {
+  return dmThreads
+    .filter((t) => Array.isArray(t.users) && t.users.includes(String(userId)))
+    .sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0));
+}
+
+// 본인 메시지 하나 삭제. 삭제된 메시지 반환, 없으면 null.
+function deleteDmMessage(userA, userB, msgId) {
+  const convId = dmConvId(userA, userB);
+  if (!isSafeConvId(convId)) return null;
+  const list = readJson(dmFile(convId), []);
+  if (!Array.isArray(list)) return null;
+  const idx = list.findIndex((m) => m.id === msgId);
+  if (idx === -1) return null;
+  const [removed] = list.splice(idx, 1);
+  writeJsonAtomic(dmFile(convId), list);
+  return removed;
+}
+
 module.exports = {
   init,
   createUser,
@@ -858,4 +933,10 @@ module.exports = {
   getChannelLog,
   appendChannelLog,
   deleteChannelLog,
+  // 다이렉트 메시지
+  dmConvId,
+  getDmMessages,
+  addDmMessage,
+  listDmThreads,
+  deleteDmMessage,
 };

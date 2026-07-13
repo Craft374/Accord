@@ -167,7 +167,8 @@ h3 {
 body.chat-open .app,
 body.memo-open .app,
 body.draw-open .app,
-body.log-open .app {
+body.log-open .app,
+body.dm-open .app {
   height: 100vh;
   min-height: 0;
   overflow: hidden;
@@ -1411,6 +1412,333 @@ body.log-open .draw-panel {
   letter-spacing: 0.02em;
   color: var(--muted);
   text-transform: none;
+}
+
+/* ─── 다이렉트 메시지(DM) ─────────────────── */
+.channel-home {
+  position: relative;
+  font-size: 18px;
+}
+.channel-rail-divider {
+  width: 32px;
+  height: 2px;
+  margin: 2px auto 4px;
+  border-radius: 1px;
+  background: var(--line);
+}
+.channel-unread {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: #f23f43;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+}
+
+.dm-panel {
+  display: none;
+  min-width: 0;
+  overflow: hidden;
+  gap: 6px;
+}
+body.dm-open .layout {
+  grid-template-columns: 56px minmax(0, 1fr) !important;
+}
+body.dm-open .channel-panel,
+body.dm-open .member-list,
+body.dm-open .main-panel,
+body.dm-open .main-empty,
+body.dm-open .chat-panel,
+body.dm-open .memo-panel,
+body.dm-open .draw-panel,
+body.dm-open .log-panel {
+  display: none !important;
+}
+body.dm-open .dm-panel {
+  display: grid;
+  grid-template-columns: 232px minmax(0, 1fr);
+}
+
+.dm-threads {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+}
+.dm-threads-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.dm-threads-head h2 {
+  margin: 0;
+  font-size: 14px;
+  color: var(--heading);
+}
+.dm-new-button {
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: 16px;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+.dm-new-button:hover {
+  background: var(--bg-base);
+}
+.dm-new-row {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.dm-new-input {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+}
+.dm-new-input > span {
+  color: var(--muted);
+  font-weight: 700;
+}
+.dm-new-input input {
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-base);
+  color: var(--text);
+  font-size: 13px;
+}
+.dm-new-input button {
+  padding: 6px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--accent, #5865f2);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.dm-find-msg {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+  min-height: 14px;
+}
+.dm-thread-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+.dm-thread-empty {
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+  padding: 20px 8px;
+}
+.dm-thread {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.dm-thread:hover {
+  background: var(--bg-elevated);
+}
+.dm-thread.active {
+  background: var(--bg-elevated);
+}
+.dm-thread-avatar {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #5865f2 center/cover no-repeat;
+  font-size: 13px;
+  color: #fff;
+}
+.dm-thread-body {
+  min-width: 0;
+  flex: 1;
+}
+.dm-thread-name {
+  font-size: 13px;
+  color: var(--heading);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dm-thread-preview {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dm-thread-unread {
+  flex: 0 0 auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: #f23f43;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+}
+
+.dm-conversation {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  border-radius: var(--radius-lg);
+  background: var(--bg-base);
+}
+.dm-conv-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.dm-conv-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #5865f2 center/cover no-repeat;
+  font-size: 13px;
+  color: #fff;
+}
+.dm-conv-title h2 {
+  margin: 0;
+  font-size: 15px;
+  color: var(--heading);
+}
+.dm-conv-title p {
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+.dm-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 16px;
+}
+.dm-empty {
+  margin: auto;
+  padding: 40px 16px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+.dm-loading {
+  color: var(--muted);
+  font-size: 13px;
+}
+.dm-msg {
+  padding: 2px 0;
+}
+.dm-msg.grouped {
+  padding-top: 0;
+}
+.dm-msg-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 8px;
+}
+.dm-msg-head b {
+  font-size: 13px;
+  color: var(--heading);
+}
+.dm-msg-head span {
+  font-size: 11px;
+  color: var(--muted);
+}
+.dm-msg-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.dm-msg-text {
+  font-size: 14px;
+  color: var(--text);
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  flex: 1;
+  min-width: 0;
+}
+.dm-msg-del {
+  opacity: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 2px;
+}
+.dm-msg:hover .dm-msg-del {
+  opacity: 0.6;
+}
+.dm-msg-del:hover {
+  opacity: 1;
+}
+.dm-composer {
+  flex-shrink: 0;
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--line);
+}
+.dm-composer textarea {
+  flex: 1;
+  min-width: 0;
+  resize: none;
+  max-height: 120px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+}
+.dm-send-button {
+  align-self: flex-end;
+  padding: 9px 16px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--accent, #5865f2);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
 }
 
 /* ─── 사이드 패널: 방 만들기/목록 ─────────── */

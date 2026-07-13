@@ -284,6 +284,41 @@
           </div>
         </section>
 
+        <section class="dm-panel" id="dmPanel" aria-hidden="true">
+          <aside class="dm-threads">
+            <header class="dm-threads-head">
+              <h2>다이렉트 메시지</h2>
+              <button class="dm-new-button" id="dmNewButton" type="button" title="유저 코드로 새 DM">＋</button>
+            </header>
+            <div class="dm-new-row" id="dmNewRow" hidden>
+              <div class="dm-new-input">
+                <span>#</span>
+                <input id="dmCodeInput" type="text" placeholder="유저 코드 (예: 000A)" maxlength="8" autocomplete="off" />
+                <button id="dmFindButton" type="button">찾기</button>
+              </div>
+              <p class="dm-find-msg" id="dmFindMsg" aria-live="polite"></p>
+            </div>
+            <ul class="dm-thread-list" id="dmThreadList"></ul>
+          </aside>
+          <section class="dm-conversation" id="dmConversation">
+            <header class="dm-conv-head" id="dmConvHead" hidden>
+              <span class="dm-conv-avatar" id="dmConvAvatar" aria-hidden="true"></span>
+              <div class="dm-conv-title">
+                <h2 id="dmConvName">-</h2>
+                <p id="dmConvCode">#----</p>
+              </div>
+            </header>
+            <div class="dm-scroll" id="dmScroll">
+              <div class="dm-messages" id="dmMessages"></div>
+            </div>
+            <div class="dm-empty" id="dmEmpty">대화를 선택하거나 유저 코드로 새 DM을 시작하세요.</div>
+            <div class="dm-composer" id="dmComposer" hidden>
+              <textarea id="dmInput" rows="1" placeholder="메시지를 입력하세요" maxlength="4000"></textarea>
+              <button class="dm-send-button" id="dmSendButton" type="button">보내기</button>
+            </div>
+          </section>
+        </section>
+
         <aside class="member-list" id="memberList" hidden></aside>
       </div>
 
