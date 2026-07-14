@@ -41,6 +41,12 @@
         </div>
       </header>
 
+      <div class="focus-bar" id="focusBar">
+        <button class="ghost" id="focusLauncherButton" type="button" hidden>서버 변경</button>
+        <span class="focus-bar-title" id="focusBarTitle"></span>
+        <button class="secondary" id="focusExitButton" type="button">집중모드 나가기 (Esc)</button>
+      </div>
+
       <div class="layout">
         <nav class="channel-rail" id="channelRail" aria-label="채널 목록"></nav>
 
@@ -186,6 +192,9 @@
               <h2 id="chatRoomName">채팅방</h2>
             </div>
             <p class="chat-subtitle" id="chatSubtitle"></p>
+            <button class="focus-btn" id="chatFocusButton" type="button" title="집중모드" aria-label="집중모드">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
+            </button>
           </header>
           <div class="chat-scroll" id="chatScroll">
             <div class="chat-messages" id="chatMessages"></div>
@@ -221,6 +230,9 @@
                 <button class="memo-view-btn" id="memoViewEdit" type="button" data-memo-view="edit">편집</button>
                 <button class="memo-view-btn" id="memoViewPreview" type="button" data-memo-view="preview">미리보기</button>
               </div>
+              <button class="focus-btn" id="memoFocusButton" type="button" title="집중모드" aria-label="집중모드">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
+              </button>
             </div>
           </header>
           <div class="memo-body" id="memoBody">
@@ -267,6 +279,11 @@
                 <button class="draw-tool-btn" id="drawSaveCanvas" type="button" title="캔버스 전체 저장(PNG)">💾</button>
                 <button class="draw-tool-btn" id="drawSaveLayer" type="button" title="현재 레이어 저장(PNG)">🖼️</button>
                 <button class="draw-tool-btn" id="drawCopyCanvas" type="button" title="캔버스 이미지 복사">📋</button>
+              </div>
+              <div class="draw-tool-group">
+                <button class="draw-tool-btn focus-btn" id="drawFocusButton" type="button" title="집중모드" aria-label="집중모드">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
+                </button>
               </div>
               <span class="draw-status" id="drawStatus"></span>
             </div>

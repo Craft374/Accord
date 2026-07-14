@@ -1,6 +1,14 @@
 const desktop = window.voiceDesktop || { isDesktop: false, platform: "" };
 const serverUrl = location.origin;
 
+// 클라이언트(앱) 버전. 서버 버전(server.js VERSION)과 따로 관리하며 package.json 의 version 과 같아야 한다.
+// (scripts/check-v2.js 가 둘이 어긋나지 않는지 검사한다)
+const CLIENT_VERSION = "1.0.0";
+
+function getClientVersion() {
+  return desktop.appVersion || CLIENT_VERSION;
+}
+
 const ROOM_TYPE_META = {
   voice: { icon: "🔊", label: "통화방" },
   chat: { icon: "#", label: "채팅방" },
@@ -380,6 +388,13 @@ const dom = {
   profileChipName: document.querySelector("#profileChipName"),
   profileChipCode: document.querySelector("#profileChipCode"),
   settingsTabs: document.querySelector("#settingsTabs"),
+  focusBar: document.querySelector("#focusBar"),
+  focusBarTitle: document.querySelector("#focusBarTitle"),
+  focusExitButton: document.querySelector("#focusExitButton"),
+  focusLauncherButton: document.querySelector("#focusLauncherButton"),
+  chatFocusButton: document.querySelector("#chatFocusButton"),
+  memoFocusButton: document.querySelector("#memoFocusButton"),
+  drawFocusButton: document.querySelector("#drawFocusButton"),
   profileModal: document.querySelector("#profileModal"),
   profileCloseButton: document.querySelector("#profileCloseButton"),
   openProfileButton: document.querySelector("#openProfileButton"),
@@ -466,6 +481,11 @@ function bindEvents() {
     const tab = event.target?.closest?.("[data-settings-tab]");
     if (tab) setSettingsTab(tab.dataset.settingsTab);
   });
+  dom.chatFocusButton?.addEventListener("click", toggleFocusMode);
+  dom.memoFocusButton?.addEventListener("click", toggleFocusMode);
+  dom.drawFocusButton?.addEventListener("click", toggleFocusMode);
+  dom.focusExitButton?.addEventListener("click", exitFocusMode);
+  dom.focusLauncherButton?.addEventListener("click", () => desktop.backToLauncher?.());
   document.addEventListener("keydown", handleGlobalHotkeys);
   dom.refreshDevicesButton.addEventListener("click", () => refreshDevices());
   dom.leaveButton.addEventListener("click", () => leaveRoom("방에서 나갔습니다."));
@@ -677,7 +697,8 @@ async function connect() {
   setStatus("연결 중", "idle");
   setMessage("");
   state.config = await fetchJson(`${serverUrl}/config`);
-  dom.versionLabel.textContent = `Accord ${state.config.version || ""}`.trim();
+  dom.versionLabel.textContent = `Accord 서버 ${state.config.version || "-"} · 클라 ${getClientVersion()}`;
+  dom.versionLabel.title = `서버 버전 ${state.config.version || "-"} / 클라이언트 버전 ${getClientVersion()}`;
   updateSecurityStatus();
   await openSocket();
   attemptAuthResume();
@@ -4394,7 +4415,51 @@ function toggleProfileModal(open) {
   }
 }
 
+// ===== 집중모드 =====
+// 채팅 · 메모장 · 그림판을 화면 가득 채우고, 상단/사이드 UI를 모두 숨긴다.
+// 상단에는 "서버 변경"과 "집중모드 나가기"만 남는다.
+function focusablePanel() {
+  const body = document.body.classList;
+  if (body.contains("chat-open")) return { kind: "chat", name: state.activeChat?.name || "채팅방", icon: "#" };
+  if (body.contains("memo-open")) return { kind: "memo", name: state.memo?.name || "메모장", icon: "📝" };
+  if (body.contains("draw-open")) return { kind: "draw", name: state.draw?.name || "그림판", icon: "🎨" };
+  return null;
+}
+
+function enterFocusMode() {
+  const panel = focusablePanel();
+  if (!panel) {
+    setMessage("집중모드는 채팅방 · 메모장 · 그림판에서 사용할 수 있습니다.");
+    return;
+  }
+  closeProfileCard();
+  document.body.classList.add("focus-mode");
+  const channel = currentChannel();
+  if (dom.focusBarTitle) {
+    dom.focusBarTitle.textContent = `${panel.icon} ${panel.name}${channel ? ` · ${channel.name}` : ""}`;
+  }
+  if (dom.focusLauncherButton) dom.focusLauncherButton.hidden = !desktop.isDesktop;
+  // 레이아웃이 바뀌었으니 캔버스 등 크기에 의존하는 UI를 다시 맞춘다.
+  window.dispatchEvent(new Event("resize"));
+}
+
+function exitFocusMode() {
+  if (!document.body.classList.contains("focus-mode")) return;
+  document.body.classList.remove("focus-mode");
+  window.dispatchEvent(new Event("resize"));
+}
+
+function toggleFocusMode() {
+  if (document.body.classList.contains("focus-mode")) exitFocusMode();
+  else enterFocusMode();
+}
+
 function handleGlobalHotkeys(event) {
+  if (event.key === "Escape" && document.body.classList.contains("focus-mode")
+    && dom.settingsModal?.hidden !== false && dom.profileModal?.hidden !== false) {
+    exitFocusMode();
+    return;
+  }
   if (event.key === "Escape" && dom.profileModal && !dom.profileModal.hidden) {
     toggleProfileModal(false);
     return;
@@ -7665,6 +7730,7 @@ function closeChatView() {
   closeEmojiPicker();
   clearChatInputPreview();
   document.body.classList.remove("chat-open");
+  exitFocusMode();
   renderRooms();
 }
 
@@ -9235,6 +9301,7 @@ function closeMemoView() {
   state.memo = null;
   clearMemoCursors();
   document.body.classList.remove("memo-open");
+  exitFocusMode();
   renderRooms();
 }
 
@@ -9656,6 +9723,7 @@ function closeDrawView() {
   dom.drawCanvasStage?.classList.remove("space", "panning");
   dom.drawCanvasScroll?.classList.remove("space", "panning");
   if (dom.drawResizePop) dom.drawResizePop.hidden = true;
+  exitFocusMode();
   renderRooms();
 }
 
@@ -12494,7 +12562,7 @@ function copyTextWithFallback(text) {
 
 function buildDiagnosticsText() {
   const lines = [
-    `Accord ${state.config.version || ""}`,
+    `Accord server=${state.config.version || "-"} client=${getClientVersion()}`,
     `time=${new Date().toISOString()}`,
     `session=${state.callSessionId || "-"}`,
     getClientEnvironmentSummary(),

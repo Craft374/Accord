@@ -99,3 +99,24 @@ button {
 button:hover {
   background: var(--accent-strong);
 }
+
+/* 좌하단 버전 표시(클라이언트 · 마지막으로 확인한 서버) */
+.launcher-version {
+  position: fixed;
+  left: 14px;
+  bottom: 12px;
+  display: flex;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  pointer-events: none;
+}
+
+.launcher-version span::before {
+  content: "";
+}
+
+.launcher-version span + span::before {
+  content: "· ";
+}

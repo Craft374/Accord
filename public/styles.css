@@ -323,6 +323,80 @@ body.dm-open .app {
   grid-template-columns: 56px 232px minmax(0, 1fr);
 }
 
+/* ─── 집중모드 ───────────────────────────── */
+/* 채팅 · 메모장 · 그림판을 화면 전체로 펼치고 사이드/상단 UI를 모두 숨긴다.
+   상단에는 "서버 변경"과 "집중모드 나가기"만 남는다. */
+.focus-bar {
+  display: none;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 4px;
+}
+
+.focus-bar-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+body.focus-mode .focus-bar {
+  display: flex;
+}
+
+body.focus-mode .topbar {
+  display: none;
+}
+
+body.focus-mode .app {
+  max-width: none;
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0 8px 8px;
+}
+
+body.focus-mode .channel-rail,
+body.focus-mode .channel-panel,
+body.focus-mode .member-list,
+body.focus-mode .dm-panel {
+  display: none !important;
+}
+
+body.focus-mode .layout {
+  grid-template-columns: minmax(0, 1fr) !important;
+  gap: 0;
+}
+
+/* 패널 헤더의 집중모드 아이콘 버튼 */
+.focus-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  min-height: 0; /* 전역 button min-height:36px 상속 방지 */
+  padding: 0;    /* 전역 button padding 상속 방지 */
+  flex: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.focus-btn:hover {
+  background: var(--line-strong);
+  color: var(--heading);
+}
+
+.chat-head .focus-btn {
+  margin-left: auto;
+}
+
 .side-panel {
   display: flex;
   flex-direction: column;

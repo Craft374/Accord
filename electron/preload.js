@@ -7,9 +7,18 @@ ipcRenderer.on("program-audio-port", (event) => {
   }
 });
 
+// 클라이언트(앱) 버전은 package.json 에서 읽는다. 서버 버전과는 별개로 관리한다.
+let appVersion = "";
+try {
+  appVersion = require("../package.json").version || "";
+} catch {
+  appVersion = "";
+}
+
 contextBridge.exposeInMainWorld("voiceDesktop", {
   isDesktop: true,
   platform: process.platform,
+  appVersion,
   electronVersion: process.versions.electron || "",
   getSystemAudioSource: async () => {
     const result = await ipcRenderer.invoke("get-system-audio-source");

@@ -39,6 +39,8 @@ const programWorklet = fs.readFileSync("public/program-audio-worklet.js", "utf8"
 const helperSource = fs.readFileSync("native/windows-process-loopback/Program.cs", "utf8");
 const serverEnvExample = fs.readFileSync("server.env.example", "utf8");
 const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+const launcherJs = fs.readFileSync("shell/launcher.js", "utf8");
+const launcherHtml = fs.readFileSync("shell/index.html", "utf8");
 const pruneDist = fs.readFileSync("scripts/prune-dist.js", "utf8");
 const startHttps = fs.readFileSync("scripts/start-https.js", "utf8");
 const buildWindowsBat = fs.readFileSync("scripts/build-windows.bat", "utf8");
@@ -126,6 +128,18 @@ const checks = [
   [app.includes("getProcessingHintText") && app.includes("Chromium"), "processing hint status exists"],
   [app.includes("testAudioSettings") && html.includes("testAudioButton"), "audio diagnostics button exists"],
   [html.includes("versionLabel") && app.includes("state.config.version"), "server version label exists"],
+  [
+    app.includes(`const CLIENT_VERSION = "${pkg.version}"`),
+    `client version constant matches package.json (${pkg.version})`,
+  ],
+  [
+    /const VERSION = "\d+\.\d+\.\d+"/.test(server) && preload.includes("appVersion"),
+    "server version and client app version are tracked separately",
+  ],
+  [
+    launcherJs.includes("launcherClientVersion") && launcherHtml.includes("launcher-version"),
+    "launcher shows client version at bottom left",
+  ],
   [html.includes("statProcessing") && html.includes("statInput"), "processing status view exists"],
   [app.includes("/ 출력") && app.includes("outputName"), "quality panel shows output device"],
   [html.includes("statSetup") && app.includes("getSetupStatusText"), "setup risk status view exists"],

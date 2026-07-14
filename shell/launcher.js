@@ -1,8 +1,26 @@
 const form = document.querySelector("#serverForm");
 const input = document.querySelector("#serverInput");
 const message = document.querySelector("#message");
+const clientVersionEl = document.querySelector("#launcherClientVersion");
+const serverVersionEl = document.querySelector("#launcherServerVersion");
 
 input.value = localStorage.getItem("voiceChatServerUrl") || "https://localhost:25565";
+
+showVersions();
+
+// 좌하단 버전 표시: 클라이언트 버전은 앱에서, 서버 버전은 저장된 주소에 물어본다(실패하면 생략).
+function showVersions() {
+  const clientVersion = window.voiceDesktop?.appVersion || "";
+  if (clientVersionEl) clientVersionEl.textContent = `클라이언트 v${clientVersion || "?"}`;
+  const saved = normalizeServerUrl(input.value);
+  if (!saved || !serverVersionEl) return;
+  fetch(`${saved}/version`, { cache: "no-store" })
+    .then((res) => (res.ok ? res.json() : null))
+    .then((data) => {
+      if (data?.version) serverVersionEl.textContent = `서버 v${data.version}`;
+    })
+    .catch(() => {});
+}
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
