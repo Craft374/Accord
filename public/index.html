@@ -348,10 +348,89 @@
         <aside class="member-list" id="memberList" hidden></aside>
       </div>
 
-      <section class="dev-strip">
-        <details class="quality-panel">
-          <summary>진단 · 품질 <span class="quality-summary" id="qualitySummary">대기</span></summary>
-          <dl class="quality-grid">
+    </main>
+
+    <div class="modal-backdrop" id="settingsModal" hidden>
+      <div class="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+        <header class="modal-head">
+          <h2 id="settingsTitle">설정</h2>
+          <button class="ghost small" id="settingsCloseButton" type="button">닫기</button>
+        </header>
+        <nav class="settings-tabs" id="settingsTabs" aria-label="설정 탭">
+          <button class="settings-tab active" type="button" data-settings-tab="audio">🎧 오디오</button>
+          <button class="settings-tab" type="button" data-settings-tab="voice">🎚 음성 처리</button>
+          <button class="settings-tab" type="button" data-settings-tab="diag">📊 진단 · 품질</button>
+          <button class="settings-tab" type="button" data-settings-tab="log">🧾 진단 로그</button>
+          <button class="settings-tab" type="button" data-settings-tab="account">👤 계정</button>
+        </nav>
+        <div class="modal-body">
+          <section class="settings-pane active" data-settings-pane="audio">
+            <h3>오디오 장치</h3>
+            <div class="settings-grid">
+              <label class="field">
+                <span>입력 장치</span>
+                <select id="inputDeviceSelect"></select>
+              </label>
+              <label class="field">
+                <span>출력 장치</span>
+                <select id="outputDeviceSelect"></select>
+              </label>
+              <label class="field" id="systemInputField" hidden>
+                <span>컴퓨터 입력</span>
+                <select id="systemInputDeviceSelect"></select>
+              </label>
+              <label class="field">
+                <span>마이크 증폭 <b id="micGainValue">100%</b></span>
+                <input id="micGainInput" type="range" min="50" max="200" step="5" value="100" />
+              </label>
+              <label class="field">
+                <span>잡음 컷 <b id="noiseGateValue">부드럽게</b></span>
+                <input id="noiseGateInput" type="range" min="0" max="100" step="5" value="25" />
+              </label>
+            </div>
+            <div class="modal-actions">
+              <button class="secondary" id="refreshDevicesButton" type="button">장치 새로고침</button>
+              <button class="secondary" id="testAudioButton" type="button">오디오 진단</button>
+            </div>
+          </section>
+
+          <section class="settings-pane" data-settings-pane="voice">
+            <h3>음성 처리</h3>
+            <div class="toggle-grid">
+              <label class="switch">
+                <input id="noiseSuppressionToggle" type="checkbox" />
+                <span>잡음 제거</span>
+              </label>
+              <label class="switch">
+                <input id="echoCancellationToggle" type="checkbox" />
+                <span>에코 제거</span>
+              </label>
+              <label class="switch">
+                <input id="autoGainToggle" type="checkbox" checked />
+                <span>자동 증폭</span>
+              </label>
+              <label class="switch">
+                <input id="lowLatencyToggle" type="checkbox" checked />
+                <span>저지연</span>
+              </label>
+              <label class="switch">
+                <input id="highQualityToggle" type="checkbox" checked />
+                <span>고음질</span>
+              </label>
+              <label class="switch" hidden>
+                <input id="loopbackEchoReductionToggle" type="checkbox" />
+                <span>헤드셋 반향 보정</span>
+              </label>
+            </div>
+            <p class="modal-hint">마이크 음소거 단축키: Ctrl+Shift+M</p>
+          </section>
+
+          <section class="settings-pane" data-settings-pane="diag">
+            <div class="settings-pane-head">
+              <h3>진단 · 품질</h3>
+              <span class="quality-summary" id="qualitySummary">대기</span>
+            </div>
+            <dl class="quality-grid">
               <div>
                 <dt>송신</dt>
                 <dd id="statSend">0 kbps</dd>
@@ -429,87 +508,23 @@
                 <dd id="statHealth">-</dd>
               </div>
             </dl>
-          <button class="diagnostics-copy" id="copyDiagnosticsButton" type="button">진단 복사</button>
-        </details>
-
-        <details class="client-log-panel" id="clientLogPanel">
-          <summary>진단 로그</summary>
-          <div class="client-log-actions">
-            <button class="secondary" id="copyLogButton" type="button">로그 복사</button>
-            <button class="secondary" id="clearLogButton" type="button">로그 지우기</button>
-          </div>
-          <pre id="clientLogOutput">로그 없음</pre>
-        </details>
-      </section>
-    </main>
-
-    <div class="modal-backdrop" id="settingsModal" hidden>
-      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
-        <header class="modal-head">
-          <h2 id="settingsTitle">설정</h2>
-          <button class="ghost small" id="settingsCloseButton" type="button">닫기</button>
-        </header>
-        <div class="modal-body">
-          <section class="modal-section">
-            <h3>오디오 장치</h3>
-            <div class="settings-grid">
-              <label class="field">
-                <span>입력 장치</span>
-                <select id="inputDeviceSelect"></select>
-              </label>
-              <label class="field">
-                <span>출력 장치</span>
-                <select id="outputDeviceSelect"></select>
-              </label>
-              <label class="field" id="systemInputField" hidden>
-                <span>컴퓨터 입력</span>
-                <select id="systemInputDeviceSelect"></select>
-              </label>
-              <label class="field">
-                <span>마이크 증폭 <b id="micGainValue">100%</b></span>
-                <input id="micGainInput" type="range" min="50" max="200" step="5" value="100" />
-              </label>
-              <label class="field">
-                <span>잡음 컷 <b id="noiseGateValue">부드럽게</b></span>
-                <input id="noiseGateInput" type="range" min="0" max="100" step="5" value="25" />
-              </label>
-            </div>
             <div class="modal-actions">
-              <button class="secondary" id="refreshDevicesButton" type="button">장치 새로고침</button>
-              <button class="secondary" id="testAudioButton" type="button">오디오 진단</button>
+              <button class="secondary diagnostics-copy" id="copyDiagnosticsButton" type="button">진단 복사</button>
             </div>
           </section>
-          <section class="modal-section">
-            <h3>음성 처리</h3>
-            <div class="toggle-grid">
-              <label class="switch">
-                <input id="noiseSuppressionToggle" type="checkbox" />
-                <span>잡음 제거</span>
-              </label>
-              <label class="switch">
-                <input id="echoCancellationToggle" type="checkbox" />
-                <span>에코 제거</span>
-              </label>
-              <label class="switch">
-                <input id="autoGainToggle" type="checkbox" checked />
-                <span>자동 증폭</span>
-              </label>
-              <label class="switch">
-                <input id="lowLatencyToggle" type="checkbox" checked />
-                <span>저지연</span>
-              </label>
-              <label class="switch">
-                <input id="highQualityToggle" type="checkbox" checked />
-                <span>고음질</span>
-              </label>
-              <label class="switch" hidden>
-                <input id="loopbackEchoReductionToggle" type="checkbox" />
-                <span>헤드셋 반향 보정</span>
-              </label>
+
+          <section class="settings-pane" data-settings-pane="log" id="clientLogPanel">
+            <div class="settings-pane-head">
+              <h3>진단 로그</h3>
+              <div class="client-log-actions">
+                <button class="secondary" id="copyLogButton" type="button">로그 복사</button>
+                <button class="secondary" id="clearLogButton" type="button">로그 지우기</button>
+              </div>
             </div>
-            <p class="modal-hint">마이크 음소거 단축키: Ctrl+Shift+M</p>
+            <pre id="clientLogOutput">로그 없음</pre>
           </section>
-          <section class="modal-section" id="accountSection">
+
+          <section class="settings-pane" data-settings-pane="account" id="accountSection">
             <h3>계정</h3>
             <div class="account-summary">
               <span class="account-avatar" id="accountAvatar" aria-hidden="true"></span>
@@ -517,51 +532,85 @@
                 <b id="accountName">-</b>
                 <em id="accountCode">#----</em>
               </div>
+              <button class="secondary" id="openProfileButton" type="button">프로필 편집</button>
               <button class="secondary" id="logoutButton" type="button">로그아웃</button>
             </div>
             <label class="switch admin-ui-toggle-row" id="adminUiToggleRow" hidden>
               <input id="adminUiToggle" type="checkbox" checked />
               <span>관리자 전용 UI 표시 (상단 관리자 버튼)</span>
             </label>
+            <p class="modal-hint">닉네임 · 프로필 이미지 · 배경 · 비밀번호는 프로필 창에서 변경합니다.</p>
+          </section>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-backdrop" id="profileModal" hidden>
+      <div class="modal profile-modal" role="dialog" aria-modal="true" aria-labelledby="profileTitle">
+        <header class="modal-head">
+          <h2 id="profileTitle">내 프로필</h2>
+          <button class="ghost small" id="profileCloseButton" type="button">닫기</button>
+        </header>
+        <div class="modal-body">
+          <div class="profile-card profile-card-edit" id="profileEditCard">
+            <div class="profile-card-banner" id="profileEditBanner"></div>
+            <div class="profile-card-main">
+              <span class="account-avatar large profile-card-avatar" id="profileEditAvatar" aria-hidden="true"></span>
+              <div class="profile-card-id">
+                <b id="profileEditName">-</b>
+                <em id="profileEditCode">#----</em>
+              </div>
+            </div>
+          </div>
+          <div class="profile-image-row">
+            <div class="field">
+              <span>프로필 이미지</span>
+              <div class="file-picker">
+                <label class="file-cta" for="accountAvatarInput">파일 선택</label>
+                <span class="file-name">선택된 파일 없음</span>
+                <input id="accountAvatarInput" type="file" accept="image/*" class="file-input" />
+              </div>
+            </div>
+            <div class="field">
+              <span>배경 이미지</span>
+              <div class="file-picker">
+                <label class="file-cta" for="profileBannerInput">파일 선택</label>
+                <span class="file-name">선택된 파일 없음</span>
+                <input id="profileBannerInput" type="file" accept="image/*" class="file-input" />
+                <button class="secondary small" id="profileBannerClear" type="button">배경 제거</button>
+              </div>
+            </div>
+          </div>
+          <div class="settings-grid">
+            <label class="field">
+              <span>닉네임</span>
+              <input id="accountDisplayNameInput" autocomplete="off" maxlength="24" />
+            </label>
+            <label class="field">
+              <span>이메일 (선택)</span>
+              <input id="accountEmailInput" type="email" autocomplete="off" maxlength="120" />
+            </label>
+          </div>
+          <div class="modal-actions">
+            <button class="primary" id="saveProfileButton" type="button">프로필 저장</button>
+          </div>
+          <details class="account-password">
+            <summary>비밀번호 변경</summary>
             <div class="settings-grid">
               <label class="field">
-                <span>닉네임</span>
-                <input id="accountDisplayNameInput" autocomplete="off" maxlength="24" />
+                <span>현재 비밀번호</span>
+                <input id="currentPasswordInput" type="password" autocomplete="current-password" />
               </label>
               <label class="field">
-                <span>이메일 (선택)</span>
-                <input id="accountEmailInput" type="email" autocomplete="off" maxlength="120" />
+                <span>새 비밀번호</span>
+                <input id="newPasswordInput" type="password" autocomplete="new-password" />
               </label>
-              <div class="field">
-                <span>프로필 이미지</span>
-                <div class="file-picker">
-                  <label class="file-cta" for="accountAvatarInput">파일 선택</label>
-                  <span class="file-name">선택된 파일 없음</span>
-                  <input id="accountAvatarInput" type="file" accept="image/*" class="file-input" />
-                </div>
-              </div>
             </div>
             <div class="modal-actions">
-              <button class="primary" id="saveProfileButton" type="button">프로필 저장</button>
+              <button class="secondary" id="changePasswordButton" type="button">변경</button>
             </div>
-            <details class="account-password">
-              <summary>비밀번호 변경</summary>
-              <div class="settings-grid">
-                <label class="field">
-                  <span>현재 비밀번호</span>
-                  <input id="currentPasswordInput" type="password" autocomplete="current-password" />
-                </label>
-                <label class="field">
-                  <span>새 비밀번호</span>
-                  <input id="newPasswordInput" type="password" autocomplete="new-password" />
-                </label>
-              </div>
-              <div class="modal-actions">
-                <button class="secondary" id="changePasswordButton" type="button">변경</button>
-              </div>
-            </details>
-            <p class="account-message" id="accountMessage" aria-live="polite"></p>
-          </section>
+          </details>
+          <p class="account-message" id="accountMessage" aria-live="polite"></p>
         </div>
       </div>
     </div>
@@ -737,7 +786,7 @@
           <button class="ghost small" id="cropCancel" type="button">취소</button>
         </header>
         <div class="modal-body">
-          <p class="modal-hint">드래그로 위치, 슬라이더로 확대해서 정사각형 영역을 맞추세요.</p>
+          <p class="modal-hint" id="cropHint">드래그로 위치, 슬라이더로 확대해서 정사각형 영역을 맞추세요.</p>
           <div class="crop-stage">
             <canvas id="cropCanvas" width="256" height="256"></canvas>
           </div>

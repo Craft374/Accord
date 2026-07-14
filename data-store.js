@@ -29,6 +29,7 @@ const CODE_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"; // base36
 const INVITE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 혼동 문자 제외
 const MAX_CONN_LOG = 40; // 유저별 접속 로그 보관 개수
 const AVATAR_MAX_LEN = 400000; // 프로필 이미지 data URL 최대 길이(약 300KB)
+const BANNER_MAX_LEN = 900000; // 프로필 배경 이미지 data URL 최대 길이(약 670KB)
 const ROOM_TYPES = ["voice", "chat", "memo", "draw", "log"];
 const DEFAULT_ROOM_LIMIT = 8; // 통화방 기본 정원
 const ROOM_LIMIT_MAX = 99;
@@ -151,6 +152,15 @@ function cleanAvatar(value) {
   return v;
 }
 
+// 프로필 배경(배너)은 가로로 긴 이미지라 아바타보다 여유를 둔다.
+function cleanBanner(value) {
+  const v = String(value || "");
+  if (!v) return "";
+  if (!/^data:image\/(png|jpeg|jpg|gif|webp);base64,/.test(v)) return "";
+  if (v.length > BANNER_MAX_LEN) return "";
+  return v;
+}
+
 // ---- 유저 조회/생성 ----
 function findByUsername(username) {
   const u = normalizeUsername(username);
@@ -166,7 +176,7 @@ function findById(id) {
   return db.users.find((x) => x.id === id) || null;
 }
 
-function createUser({ username, password, displayName, email }) {
+function createUser({ username, password, displayName, email, avatar }) {
   const uname = normalizeUsername(username);
   const unameError = validateUsername(uname);
   if (unameError) return { error: unameError };
@@ -182,7 +192,8 @@ function createUser({ username, password, displayName, email }) {
     passwordHash: hashPassword(password),
     email: String(email || "").trim().slice(0, 120),
     emailVerified: false,
-    avatar: "",
+    avatar: cleanAvatar(avatar),
+    banner: "",
     isAdmin: false,
     createdAt: Date.now(),
     lastLoginAt: 0,
@@ -216,11 +227,12 @@ function changePassword(userId, oldPassword, newPassword) {
   return { user };
 }
 
-function updateProfile(userId, { displayName, avatar, email } = {}) {
+function updateProfile(userId, { displayName, avatar, banner, email } = {}) {
   const user = findById(userId);
   if (!user) return { error: "계정을 찾을 수 없습니다." };
   if (displayName !== undefined) user.displayName = cleanDisplayName(displayName, user.username);
   if (avatar !== undefined) user.avatar = cleanAvatar(avatar);
+  if (banner !== undefined) user.banner = cleanBanner(banner);
   if (email !== undefined) user.email = String(email || "").trim().slice(0, 120);
   persistUsers();
   return { user };
@@ -281,6 +293,7 @@ function seedAdmin({ username, password, displayName }) {
     email: "",
     emailVerified: false,
     avatar: "",
+    banner: "",
     isAdmin: true,
     createdAt: Date.now(),
     lastLoginAt: 0,
@@ -327,6 +340,7 @@ function sanitizeUser(user) {
     email: user.email,
     emailVerified: user.emailVerified,
     avatar: user.avatar,
+    banner: user.banner || "",
     isAdmin: Boolean(user.isAdmin),
     createdAt: user.createdAt,
   };

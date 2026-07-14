@@ -11,6 +11,7 @@ const ROOM_TYPE_META = {
 
 const state = {
   config: { iceServers: [], maxRoomLimit: 8, version: "0.2.42", secure: false, protocol: "https" },
+  settingsTab: "audio",
   socket: null,
   clientId: "",
   rooms: [],
@@ -267,6 +268,8 @@ const dom = {
   channelIconInput: document.querySelector("#channelIconInput"),
   cropModal: document.querySelector("#cropModal"),
   cropCanvas: document.querySelector("#cropCanvas"),
+  cropTitle: document.querySelector("#cropTitle"),
+  cropHint: document.querySelector("#cropHint"),
   cropCancel: document.querySelector("#cropCancel"),
   cropApply: document.querySelector("#cropApply"),
   cropZoom: document.querySelector("#cropZoom"),
@@ -376,6 +379,16 @@ const dom = {
   profileChipAvatar: document.querySelector("#profileChipAvatar"),
   profileChipName: document.querySelector("#profileChipName"),
   profileChipCode: document.querySelector("#profileChipCode"),
+  settingsTabs: document.querySelector("#settingsTabs"),
+  profileModal: document.querySelector("#profileModal"),
+  profileCloseButton: document.querySelector("#profileCloseButton"),
+  openProfileButton: document.querySelector("#openProfileButton"),
+  profileEditBanner: document.querySelector("#profileEditBanner"),
+  profileEditAvatar: document.querySelector("#profileEditAvatar"),
+  profileEditName: document.querySelector("#profileEditName"),
+  profileEditCode: document.querySelector("#profileEditCode"),
+  profileBannerInput: document.querySelector("#profileBannerInput"),
+  profileBannerClear: document.querySelector("#profileBannerClear"),
   accountSection: document.querySelector("#accountSection"),
   accountAvatar: document.querySelector("#accountAvatar"),
   accountName: document.querySelector("#accountName"),
@@ -448,6 +461,10 @@ function bindEvents() {
   dom.settingsCloseButton?.addEventListener("click", () => toggleSettingsModal(false));
   dom.settingsModal?.addEventListener("click", (event) => {
     if (event.target === dom.settingsModal) toggleSettingsModal(false);
+  });
+  dom.settingsTabs?.addEventListener("click", (event) => {
+    const tab = event.target?.closest?.("[data-settings-tab]");
+    if (tab) setSettingsTab(tab.dataset.settingsTab);
   });
   document.addEventListener("keydown", handleGlobalHotkeys);
   dom.refreshDevicesButton.addEventListener("click", () => refreshDevices());
@@ -756,7 +773,15 @@ function bindAuthEvents() {
     dom.registerAvatar.value = "";
   });
 
-  dom.profileChipButton?.addEventListener("click", () => toggleSettingsModal(true));
+  dom.profileChipButton?.addEventListener("click", () => toggleProfileModal(true));
+  dom.openProfileButton?.addEventListener("click", () => {
+    toggleSettingsModal(false);
+    toggleProfileModal(true);
+  });
+  dom.profileCloseButton?.addEventListener("click", () => toggleProfileModal(false));
+  dom.profileModal?.addEventListener("click", (event) => {
+    if (event.target === dom.profileModal) toggleProfileModal(false);
+  });
   dom.saveProfileButton?.addEventListener("click", saveProfile);
   dom.changePasswordButton?.addEventListener("click", changePassword);
   dom.logoutButton?.addEventListener("click", logout);
@@ -765,10 +790,31 @@ function bindAuthEvents() {
     if (!file) return;
     openCropModal(file, (dataUrl) => {
       state.auth.pendingProfileAvatar = dataUrl;
-      setAvatar(dom.accountAvatar, { avatar: dataUrl, displayName: dom.accountDisplayNameInput.value });
+      const preview = { avatar: dataUrl, displayName: dom.accountDisplayNameInput.value };
+      setAvatar(dom.accountAvatar, preview);
+      setAvatar(dom.profileEditAvatar, preview);
       setAccountMessage("저장을 누르면 프로필 이미지가 적용됩니다.", true);
     });
     dom.accountAvatarInput.value = "";
+  });
+  dom.profileBannerInput?.addEventListener("change", () => {
+    const file = dom.profileBannerInput.files?.[0];
+    if (!file) return;
+    openCropModal(
+      file,
+      (dataUrl) => {
+        state.auth.pendingProfileBanner = dataUrl;
+        setBanner(dom.profileEditBanner, { banner: dataUrl, code: state.auth.user?.code });
+        setAccountMessage("저장을 누르면 배경 이미지가 적용됩니다.", true);
+      },
+      { w: BANNER_CROP.w, h: BANNER_CROP.h, title: "배경 이미지 자르기", hint: "드래그로 위치, 슬라이더로 확대해서 가로로 긴 영역을 맞추세요." },
+    );
+    dom.profileBannerInput.value = "";
+  });
+  dom.profileBannerClear?.addEventListener("click", () => {
+    state.auth.pendingProfileBanner = "";
+    setBanner(dom.profileEditBanner, { banner: "", code: state.auth.user?.code });
+    setAccountMessage("저장을 누르면 배경이 제거됩니다.", true);
   });
 
   dom.adminPanelButton?.addEventListener("click", () => toggleAdminModal(true));
@@ -858,6 +904,7 @@ function onAuthOk(message) {
   if (message.action === "update-profile") {
     state.auth.user = message.user;
     state.auth.pendingProfileAvatar = undefined;
+    state.auth.pendingProfileBanner = undefined;
     applyAuthedUser(message.user);
     setAccountMessage("프로필이 저장되었습니다.", true);
     return;
@@ -901,6 +948,11 @@ function applyAuthedUser(user) {
   if (dom.accountDisplayNameInput) dom.accountDisplayNameInput.value = user.displayName || "";
   if (dom.accountEmailInput) dom.accountEmailInput.value = user.email || "";
   setAvatar(dom.accountAvatar, user);
+  // 프로필 창 미리보기(ID 카드)
+  if (dom.profileEditName) dom.profileEditName.textContent = user.displayName || "-";
+  if (dom.profileEditCode) dom.profileEditCode.textContent = `#${user.code || "----"}`;
+  setAvatar(dom.profileEditAvatar, user);
+  setBanner(dom.profileEditBanner, user);
   // 관리자 UI
   applyAdminVisibility();
   renderParticipants();
@@ -963,6 +1015,7 @@ function saveProfile() {
     email: dom.accountEmailInput.value.trim(),
   };
   if (state.auth.pendingProfileAvatar !== undefined) payload.avatar = state.auth.pendingProfileAvatar;
+  if (state.auth.pendingProfileBanner !== undefined) payload.banner = state.auth.pendingProfileBanner;
   setAccountMessage("저장 중...", true);
   sendSocket(payload);
 }
@@ -988,6 +1041,7 @@ function logout() {
   if (dom.profileChipButton) dom.profileChipButton.hidden = true;
   if (dom.adminPanelButton) dom.adminPanelButton.hidden = true;
   toggleSettingsModal(false);
+  toggleProfileModal(false);
   toggleAdminModal(false);
   if (state.currentRoom) leaveRoom("로그아웃했습니다.");
   // 채널/멤버 화면을 비워 다음 로그인 전까지 이전 계정 정보가 남지 않게 한다.
@@ -1208,6 +1262,27 @@ function setAvatar(el, user) {
   }
 }
 
+// 프로필 배경(배너). 이미지가 없으면 유저 코드 기반 그라데이션으로 채운다.
+function setBanner(el, user) {
+  if (!el) return;
+  const banner = user?.banner || "";
+  if (banner) {
+    el.style.backgroundImage = `url("${banner}")`;
+    el.classList.remove("empty");
+  } else {
+    el.style.backgroundImage = "";
+    el.classList.add("empty");
+  }
+  el.style.setProperty("--banner-hue", String(bannerHue(user)));
+}
+
+function bannerHue(user) {
+  const seed = String(user?.code || user?.id || user?.displayName || "0");
+  let sum = 0;
+  for (let i = 0; i < seed.length; i += 1) sum = (sum * 31 + seed.charCodeAt(i)) % 360;
+  return sum;
+}
+
 function formatTimestamp(ms) {
   if (!ms) return "-";
   try {
@@ -1231,8 +1306,9 @@ function fileToDataUrl(file, maxBytes) {
 }
 
 // ===== 이미지 크롭(정사각형) — 프로필/채널 아이콘 공용 =====
-const cropState = { img: null, scale: 1, fitScale: 1, offX: 0, offY: 0, dragging: false, lastX: 0, lastY: 0, onDone: null };
+const cropState = { img: null, scale: 1, fitScale: 1, offX: 0, offY: 0, dragging: false, lastX: 0, lastY: 0, onDone: null, w: 256, h: 256, wide: false };
 const CROP_SIZE = 256;
+const BANNER_CROP = { w: 960, h: 320 }; // 프로필 배경(3:1)
 
 function bindCropEvents() {
   const c = dom.cropCanvas;
@@ -1246,9 +1322,10 @@ function bindCropEvents() {
   c.addEventListener("pointermove", (e) => {
     if (!cropState.dragging) return;
     const rect = c.getBoundingClientRect();
-    const sx = CROP_SIZE / rect.width;
+    const sx = cropState.w / rect.width;
+    const sy = cropState.h / rect.height;
     cropState.offX += (e.clientX - cropState.lastX) * sx;
-    cropState.offY += (e.clientY - cropState.lastY) * sx;
+    cropState.offY += (e.clientY - cropState.lastY) * sy;
     cropState.lastX = e.clientX;
     cropState.lastY = e.clientY;
     clampCrop();
@@ -1264,8 +1341,8 @@ function bindCropEvents() {
     cropState.scale = cropState.fitScale * zoom;
     // 중심 기준으로 확대되도록 오프셋 보정
     const k = cropState.scale / prev;
-    cropState.offX = CROP_SIZE / 2 - (CROP_SIZE / 2 - cropState.offX) * k;
-    cropState.offY = CROP_SIZE / 2 - (CROP_SIZE / 2 - cropState.offY) * k;
+    cropState.offX = cropState.w / 2 - (cropState.w / 2 - cropState.offX) * k;
+    cropState.offY = cropState.h / 2 - (cropState.h / 2 - cropState.offY) * k;
     clampCrop();
     renderCrop();
   });
@@ -1280,18 +1357,32 @@ function bindCropEvents() {
   });
 }
 
-function openCropModal(file, onDone) {
+// opts: { w, h, title, hint } — 기본은 정사각 아바타, 배경은 BANNER_CROP 사용.
+function openCropModal(file, onDone, opts = {}) {
   if (!file || !dom.cropModal) return;
+  const w = Math.max(1, Number(opts.w) || CROP_SIZE);
+  const h = Math.max(1, Number(opts.h) || CROP_SIZE);
   const reader = new FileReader();
   reader.onload = () => {
     const img = new Image();
     img.onload = () => {
       cropState.img = img;
-      cropState.fitScale = CROP_SIZE / Math.min(img.width, img.height);
+      cropState.w = w;
+      cropState.h = h;
+      cropState.wide = w !== h;
+      // 영역을 꽉 채우는(cover) 배율을 기본값으로 잡는다.
+      cropState.fitScale = Math.max(w / img.width, h / img.height);
       cropState.scale = cropState.fitScale;
-      cropState.offX = (CROP_SIZE - img.width * cropState.scale) / 2;
-      cropState.offY = (CROP_SIZE - img.height * cropState.scale) / 2;
+      cropState.offX = (w - img.width * cropState.scale) / 2;
+      cropState.offY = (h - img.height * cropState.scale) / 2;
       cropState.onDone = onDone;
+      if (dom.cropCanvas) {
+        dom.cropCanvas.width = w;
+        dom.cropCanvas.height = h;
+        dom.cropCanvas.classList.toggle("wide", cropState.wide);
+      }
+      if (dom.cropTitle) dom.cropTitle.textContent = opts.title || "이미지 자르기";
+      if (dom.cropHint) dom.cropHint.textContent = opts.hint || "드래그로 위치, 슬라이더로 확대해서 정사각형 영역을 맞추세요.";
       if (dom.cropZoom) dom.cropZoom.value = "100";
       if (dom.cropZoomValue) dom.cropZoomValue.textContent = "1.0x";
       dom.cropModal.hidden = false;
@@ -1308,14 +1399,14 @@ function clampCrop() {
   if (!cropState.img) return;
   const w = cropState.img.width * cropState.scale;
   const h = cropState.img.height * cropState.scale;
-  cropState.offX = Math.min(0, Math.max(CROP_SIZE - w, cropState.offX));
-  cropState.offY = Math.min(0, Math.max(CROP_SIZE - h, cropState.offY));
+  cropState.offX = Math.min(0, Math.max(cropState.w - w, cropState.offX));
+  cropState.offY = Math.min(0, Math.max(cropState.h - h, cropState.offY));
 }
 
 function renderCrop() {
   const ctx = dom.cropCanvas?.getContext("2d");
   if (!ctx || !cropState.img) return;
-  ctx.clearRect(0, 0, CROP_SIZE, CROP_SIZE);
+  ctx.clearRect(0, 0, cropState.w, cropState.h);
   ctx.drawImage(
     cropState.img,
     cropState.offX,
@@ -4267,10 +4358,42 @@ function wait(ms) {
 function toggleSettingsModal(open) {
   if (!dom.settingsModal) return;
   dom.settingsModal.hidden = !open;
-  if (open) refreshDevices().catch(() => {});
+  if (open) {
+    setSettingsTab(state.settingsTab || "audio");
+    refreshDevices().catch(() => {});
+    renderClientLogs();
+  }
+}
+
+function setSettingsTab(tab) {
+  const name = String(tab || "audio");
+  state.settingsTab = name;
+  for (const btn of document.querySelectorAll("[data-settings-tab]")) {
+    btn.classList.toggle("active", btn.dataset.settingsTab === name);
+  }
+  for (const pane of document.querySelectorAll("[data-settings-pane]")) {
+    pane.classList.toggle("active", pane.dataset.settingsPane === name);
+  }
+  if (name === "log") renderClientLogs();
+}
+
+function toggleProfileModal(open) {
+  if (!dom.profileModal) return;
+  dom.profileModal.hidden = !open;
+  if (open) {
+    // 이전에 취소한 임시 이미지를 지우고 저장된 프로필로 되돌린다.
+    state.auth.pendingProfileAvatar = undefined;
+    state.auth.pendingProfileBanner = undefined;
+    if (state.auth.user) applyAuthedUser(state.auth.user);
+    setAccountMessage("");
+  }
 }
 
 function handleGlobalHotkeys(event) {
+  if (event.key === "Escape" && dom.profileModal && !dom.profileModal.hidden) {
+    toggleProfileModal(false);
+    return;
+  }
   if (event.key === "Escape" && dom.settingsModal && !dom.settingsModal.hidden) {
     toggleSettingsModal(false);
     return;

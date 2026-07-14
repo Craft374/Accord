@@ -405,6 +405,7 @@ function handleAuthMessage(client, message) {
         password: message.password,
         displayName: message.displayName,
         email: message.email,
+        avatar: message.avatar,
       });
       if (result.error) {
         send(client, { type: "auth-error", action: "register", message: result.error });
@@ -461,6 +462,7 @@ function handleAuthMessage(client, message) {
       const result = store.updateProfile(client.userId, {
         displayName: message.displayName,
         avatar: message.avatar,
+        banner: message.banner,
         email: message.email,
       });
       if (result.error) {
@@ -1094,8 +1096,8 @@ function expandChannel(summary) {
     members: summary.memberIds.map((id) => {
       const u = store.findById(id);
       const base = u
-        ? { id: u.id, displayName: u.displayName || u.username || `유저#${u.code}`, code: u.code, avatar: u.avatar, isAdmin: Boolean(u.isAdmin) }
-        : { id, displayName: "(삭제된 계정)", code: "----", avatar: "", isAdmin: false };
+        ? { id: u.id, displayName: u.displayName || u.username || `유저#${u.code}`, code: u.code, avatar: u.avatar, banner: u.banner || "", isAdmin: Boolean(u.isAdmin) }
+        : { id, displayName: "(삭제된 계정)", code: "----", avatar: "", banner: "", isAdmin: false };
       base.isManager = managerSet.has(id);
       base.isCreator = id === summary.ownerId;
       return base;
@@ -1890,7 +1892,7 @@ const DM_TEXT_MAX = 4000;
 // DM 상대에게 보여줄 공개 정보(email 등 민감정보 제외).
 function dmUserView(user) {
   if (!user) return null;
-  return { id: user.id, displayName: user.displayName || user.username || `유저#${user.code}`, code: user.code, avatar: user.avatar || "" };
+  return { id: user.id, displayName: user.displayName || user.username || `유저#${user.code}`, code: user.code, avatar: user.avatar || "", banner: user.banner || "" };
 }
 
 // 특정 userId 로 로그인한 모든 접속에 전달(같은 계정 여러 탭 대응).
@@ -1907,7 +1909,7 @@ function dmThreadsFor(userId) {
     return {
       id: t.id,
       userId: otherId,
-      partner: other ? dmUserView(other) : { id: otherId, displayName: "(삭제된 계정)", code: "----", avatar: "" },
+      partner: other ? dmUserView(other) : { id: otherId, displayName: "(삭제된 계정)", code: "----", avatar: "", banner: "" },
       lastAt: t.lastAt || 0,
       lastText: t.lastText || "",
       lastFrom: t.lastFrom || "",
