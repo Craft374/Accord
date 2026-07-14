@@ -3714,7 +3714,7 @@ audio,
 }
 .preview-stop:hover { background: var(--blurple-strong); }
 
-.perms-modal { width: min(720px, 94vw); max-height: 88vh; display: flex; flex-direction: column; }
+.perms-modal { width: min(880px, 95vw); max-height: 88vh; display: flex; flex-direction: column; }
 .perms-tabs {
   display: flex;
   gap: 4px;
@@ -3747,33 +3747,200 @@ audio,
 }
 .small { padding: 6px 12px; font-size: 13px; }
 
-.perms-roles-grid { display: grid; grid-template-columns: 200px 1fr; gap: 12px; }
-.perms-role-list { display: flex; flex-direction: column; gap: 4px; max-height: 46vh; overflow-y: auto; }
-.perms-role-item {
+.role-dot { width: 12px; height: 12px; border-radius: 50%; flex: none; }
+.role-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.role-count { font-size: 11px; color: var(--muted); background: var(--bg-input); padding: 1px 6px; border-radius: 10px; }
+.perms-subtitle { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; margin: 12px 0 6px; }
+
+/* --- 역할 탭: 마스터(목록) · 디테일(편집) --- */
+.rolemgr { display: grid; grid-template-columns: 220px 1fr; gap: 14px; align-items: stretch; }
+.rolemgr-side {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: var(--bg-surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.rolemgr-side-head {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase;
+}
+.rolemgr-list { display: flex; flex-direction: column; gap: 4px; flex: 1; max-height: 44vh; overflow-y: auto; }
+.rolemgr-item {
   display: flex; align-items: center; gap: 8px;
   padding: 8px 10px;
-  background: var(--bg-surface);
+  background: transparent;
   border: 1px solid transparent;
   border-radius: var(--radius-xs);
   color: var(--text);
   cursor: pointer;
   text-align: left;
 }
-.perms-role-item:hover { background: var(--bg-elevated); }
-.perms-role-item.active { border-color: var(--blurple); background: var(--bg-elevated); }
-.role-dot { width: 12px; height: 12px; border-radius: 50%; flex: none; }
-.role-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.role-count { font-size: 11px; color: var(--muted); background: var(--bg-input); padding: 1px 6px; border-radius: 10px; }
+.rolemgr-item:hover { background: var(--bg-elevated); }
+.rolemgr-item.active { background: var(--bg-elevated); border-color: var(--blurple); color: var(--heading); font-weight: 600; }
+.rolemgr-empty { padding: 12px 4px; font-size: 12px; color: var(--muted); }
+.rolemgr-add { display: flex; gap: 6px; }
+.rolemgr-add .perms-input { padding: 7px 9px; font-size: 13px; min-width: 0; }
+.rolemgr-add button { flex: none; width: 36px; min-height: 0; padding: 0; font-size: 16px; display: grid; place-items: center; }
 
-.perms-role-detail { background: var(--bg-surface); border-radius: var(--radius-sm); padding: 12px; }
-.perms-role-edit { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
-.perms-role-edit .field { flex: 1; min-width: 120px; }
-.perms-role-edit input[type="color"] { width: 44px; height: 38px; padding: 2px; background: var(--bg-input); border: 1px solid var(--line-strong); border-radius: var(--radius-xs); cursor: pointer; }
-.perms-subtitle { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; margin: 12px 0 6px; }
-.perms-member-list { display: flex; flex-direction: column; gap: 2px; max-height: 30vh; overflow-y: auto; }
-.perms-member-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: var(--radius-xs); cursor: pointer; }
-.perms-member-row:hover { background: var(--bg-elevated); }
-.perms-member-row em { color: var(--muted); font-style: normal; font-size: 12px; }
+.rolemgr-detail {
+  padding: 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  min-width: 0;
+}
+.rolemgr-detail-empty {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  min-height: 280px;
+  text-align: center;
+  color: var(--muted);
+}
+.rolemgr-detail-empty .rme-icon { font-size: 34px; }
+.rolemgr-detail-empty b { color: var(--heading); font-size: 15px; }
+.rolemgr-detail-empty p { margin: 0; font-size: 13px; line-height: 1.6; }
+
+.rd { display: flex; flex-direction: column; gap: 14px; }
+.rd-head { display: flex; align-items: center; gap: 8px; }
+.rd-color {
+  flex: none;
+  display: grid; place-items: center;
+  width: 40px; height: 38px;
+  background: var(--bg-input);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+}
+.rd-color input[type="color"] { width: 28px; height: 24px; padding: 0; border: none; background: none; cursor: pointer; }
+.rd-name { flex: 1; min-width: 0; }
+.rd-delete {
+  flex: none;
+  min-height: 0;
+  padding: 9px 14px;
+  background: transparent;
+  border: 1px solid rgba(218, 55, 60, 0.5);
+  border-radius: var(--radius-xs);
+  color: #f0a0a2;
+  font-size: 13px;
+  cursor: pointer;
+}
+.rd-delete:hover { background: var(--danger); border-color: var(--danger); color: #fff; }
+
+.rd-section { display: flex; flex-direction: column; gap: 6px; }
+.rd-sec-title {
+  display: flex; align-items: center; gap: 6px;
+  margin: 0 0 2px;
+  font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase;
+}
+
+/* 권한 카드: 제목 + 설명 + 오른쪽 스위치 */
+.perm-card {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.perm-card:hover { border-color: var(--line-strong); }
+.perm-card.dim { opacity: 0.62; }
+.perm-card-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.perm-card-text b { display: flex; align-items: center; gap: 6px; font-size: 13.5px; font-weight: 600; color: var(--heading); }
+.perm-card-text span { font-size: 12px; color: var(--muted); line-height: 1.4; }
+.perm-badge { padding: 1px 6px; border-radius: 8px; background: var(--bg-elevated); color: var(--muted); font-size: 10px; font-weight: 700; }
+
+/* 권한 토글(설정창 .switch 와 같은 모양, 라벨 중첩 없이 input 단독으로 쓴다) */
+input.perm-switch {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  position: relative;
+  width: 38px;
+  height: 22px;
+  min-height: 22px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: #4e5058;
+  cursor: pointer;
+}
+input.perm-switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: #fff;
+  transition: transform 120ms ease;
+}
+input.perm-switch:checked { background: var(--green); }
+input.perm-switch:checked::after { transform: translateX(16px); }
+
+.rd-members { display: flex; flex-direction: column; gap: 4px; max-height: 26vh; overflow-y: auto; }
+.rd-member {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 8px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.rd-member:hover { border-color: var(--line-strong); }
+.rd-member.on { border-color: rgba(88, 101, 242, 0.6); }
+.rd-member-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; color: var(--text); }
+.rd-member-name em { color: var(--muted); font-style: normal; font-size: 11.5px; }
+
+/* --- 멤버 탭: 개별 권한 --- */
+.mp-list { display: flex; flex-direction: column; gap: 6px; }
+.mp-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  padding: 10px 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.mp-who { display: flex; flex-direction: column; gap: 5px; min-width: 150px; }
+.mp-name { font-size: 14px; font-weight: 600; color: var(--heading); }
+.mp-name em { color: var(--muted); font-style: normal; font-weight: 400; font-size: 11.5px; }
+.mp-roles { display: flex; flex-wrap: wrap; gap: 4px; }
+.mp-chip {
+  --chip: #5865f2;
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 11px;
+  color: var(--text);
+}
+.mp-chip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--chip); }
+.mp-chip.owner { background: rgba(240, 178, 50, 0.15); border-color: rgba(240, 178, 50, 0.5); color: #f0c34e; }
+.mp-chip.none { color: var(--muted); }
+.mp-chip.owner::before, .mp-chip.none::before { display: none; }
+
+.mp-caps { display: flex; flex-wrap: wrap; gap: 6px; }
+.mp-pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  min-height: 0;
+  padding: 6px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.mp-pill:hover:not(:disabled) { filter: brightness(1.2); }
+.mp-pill.on { background: var(--blurple); border-color: var(--blurple); color: #fff; }
+.mp-pill.via { background: rgba(35, 165, 89, 0.16); border-color: var(--green); color: #7bd99e; }
+.mp-pill.owner { background: rgba(240, 178, 50, 0.14); border-color: rgba(240, 178, 50, 0.45); color: #f0c34e; cursor: default; }
+.mp-pill.gate-off { opacity: 0.5; }
+.mp-pill-tag { padding: 0 5px; border-radius: 8px; background: rgba(35, 165, 89, 0.28); font-size: 10px; font-weight: 700; }
 
 .perms-room-select { display: flex; align-items: center; gap: 10px; }
 .perms-room-select > span { font-size: 13px; color: var(--muted); }
@@ -3844,53 +4011,19 @@ audio,
 .perms-caps { font-size: 12px; color: var(--muted); }
 .perms-preview-result .primary { margin-top: 8px; }
 
-/* 역할 상세: 토글 행(이모지 관리 권한 등) */
-.perms-toggle-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 10px 0 4px;
-  font-size: 13px;
-  color: var(--text);
-  cursor: pointer;
-}
-.perms-toggle-row input { accent-color: var(--blurple); }
-.perms-toggle-row .perms-note { color: var(--muted); font-style: normal; font-size: 11px; }
-.perms-cap-box { margin-top: 10px; }
-.perms-cap-box .perms-toggle-row { margin: 4px 0; }
+/* 멤버 탭: 채널 기본 제한 박스 */
 .perms-channel-box {
-  margin-bottom: 14px;
-  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  background: var(--bg-input);
+  background: var(--bg-surface);
 }
-.perms-channel-box .perms-subtitle { margin-top: 0; }
-.perms-channel-box .modal-hint { margin: 6px 0 0; }
-/* 유저별 권한 표 */
-.perms-userperm-box { margin-top: 16px; }
-.perms-userperm-table { display: flex; flex-direction: column; gap: 2px; max-height: 34vh; overflow-y: auto; }
-.perms-userperm-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 40px 40px 40px 40px;
-  align-items: center;
-  gap: 4px;
-  padding: 5px 8px;
-  border-radius: var(--radius-xs);
-}
-.perms-userperm-row:not(.perms-userperm-head):hover { background: var(--bg-elevated); }
-.perms-userperm-head {
-  position: sticky;
-  top: 0;
-  background: var(--bg-base);
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 700;
-}
-.perms-userperm-head span:not(.upn) { text-align: center; }
-.perms-userperm-row .upn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--text); }
-.perms-userperm-row .upn em { color: var(--muted); font-style: normal; font-size: 11px; }
-.perms-userperm-row .upc { display: flex; justify-content: center; align-items: center; cursor: pointer; }
+.perms-channel-box .rd-sec-title { margin: 0; }
+.perms-channel-box .modal-hint { margin: -4px 0 2px; }
+.perms-channel-box .perm-card { background: var(--bg-input); }
 
 /* ===== 채팅 이미지: 래퍼 + ⋯ 버튼 ===== */
 .chat-image-wrap {
@@ -3975,10 +4108,22 @@ audio,
 .chat-msg-text p { margin: 0; }
 .chat-emoji {
   display: inline-block;
-  width: 1.4em;
-  height: 1.4em;
-  vertical-align: -0.3em;
+  width: 1.6em;
+  height: 1.6em;
+  vertical-align: -0.4em;
   object-fit: contain;
+}
+/* 이모지만 보낸 메시지: 디스코드처럼 크게(점보) 표시 */
+.chat-msg-text.jumbo,
+.chat-input-preview.jumbo {
+  font-size: 32px;
+  line-height: 1.2;
+}
+.chat-msg-text.jumbo .chat-emoji,
+.chat-input-preview.jumbo .chat-emoji {
+  width: 1.5em;
+  height: 1.5em;
+  vertical-align: -0.25em;
 }
 
 /* ===== 입력창 마크다운 미리보기 ===== */
@@ -4022,7 +4167,7 @@ audio,
 .chat-input-preview .chat-code code { padding: 0; background: none; }
 .chat-input-preview a { color: #00a8fc; text-decoration: none; }
 .chat-input-preview strong { color: var(--heading); font-weight: 700; }
-.chat-input-preview .chat-emoji { width: 1.4em; height: 1.4em; vertical-align: -0.3em; }
+.chat-input-preview .chat-emoji { width: 1.6em; height: 1.6em; vertical-align: -0.4em; }
 
 /* ===== 이미지 크게 보기 + 크롭 모달 ===== */
 .img-viewer-backdrop {

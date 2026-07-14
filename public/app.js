@@ -6501,6 +6501,7 @@ function ensurePermsModal() {
       </header>
       <div class="perms-tabs">
         <button class="perms-tab" data-perms-tab="roles">역할</button>
+        <button class="perms-tab" data-perms-tab="members">멤버</button>
         <button class="perms-tab" data-perms-tab="rooms">방별 권한</button>
         <button class="perms-tab" data-perms-tab="preview">미리보기</button>
       </div>
@@ -6509,6 +6510,21 @@ function ensurePermsModal() {
   document.body.append(permsModalEl);
   permsModalEl.addEventListener("click", onPermsModalClick);
   permsModalEl.addEventListener("change", onPermsModalChange);
+  // 새 역할 이름에서 Enter 로 바로 생성.
+  permsModalEl.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || !e.target?.closest?.("[data-role-new]")) return;
+    e.preventDefault();
+    createRoleFromInput();
+  });
+}
+
+function createRoleFromInput() {
+  const channel = permsChannel();
+  if (!channel) return;
+  const input = permsModalEl.querySelector("[data-role-new]");
+  const name = (input?.value || "").trim();
+  sendSocket({ type: "channel:create-role", channelId: channel.id, name: name || "새 역할" });
+  if (input) input.value = "";
 }
 
 function renderPermsModal() {
@@ -6521,153 +6537,238 @@ function renderPermsModal() {
   const body = permsModalEl.querySelector(".perms-body");
   body.innerHTML = "";
   if (permsState.tab === "roles") body.append(buildRolesPane(channel));
+  else if (permsState.tab === "members") body.append(buildMembersPane(channel));
   else if (permsState.tab === "rooms") body.append(buildRoomPermsPane(channel));
   else body.append(buildPreviewPane(channel));
 }
 
-// --- 역할 관리 탭 ---
+// 권한 항목 설명(역할 탭·멤버 탭 공용).
+const CAP_META = {
+  addEmoji: { icon: "➕", name: "커스텀 이모지 추가", short: "이모지 추가", desc: "채널에 새 이모지를 업로드할 수 있어요." },
+  removeEmoji: { icon: "🗑", name: "커스텀 이모지 삭제", short: "이모지 삭제", desc: "채널에 등록된 이모지를 지울 수 있어요." },
+  useEmoji: { icon: "😀", name: "커스텀 이모지 사용", short: "이모지 사용", desc: "채팅에 커스텀 이모지를 넣을 수 있어요.", gate: "emojiUseRestricted" },
+  attachFile: { icon: "📎", name: "파일·이미지 첨부", short: "파일 첨부", desc: "채팅에 파일·이미지를 올릴 수 있어요.", gate: "attachRestricted" },
+};
+const CAP_KEYS = ["addEmoji", "removeEmoji", "useEmoji", "attachFile"];
+
+// 스위치형 권한 카드(제목 + 설명 + 오른쪽 토글). data 속성은 호출부에서 지정한다.
+function buildPermCard({ title, desc, checked, badge, dim, dataset }) {
+  const card = document.createElement("label");
+  card.className = "perm-card" + (dim ? " dim" : "");
+  const textBox = document.createElement("div");
+  textBox.className = "perm-card-text";
+  const t = document.createElement("b");
+  t.textContent = title;
+  textBox.append(t);
+  if (badge) {
+    const bd = document.createElement("span");
+    bd.className = "perm-badge";
+    bd.textContent = badge;
+    t.append(bd);
+  }
+  if (desc) textBox.append(el("span", "", desc));
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.className = "perm-switch";
+  input.checked = !!checked;
+  for (const [k, v] of Object.entries(dataset || {})) input.dataset[k] = v;
+  card.append(textBox, input);
+  return card;
+}
+
+// --- 역할 관리 탭: 왼쪽 역할 목록 + 오른쪽 상세(디스코드식 마스터·디테일) ---
 function buildRolesPane(channel) {
   const wrap = document.createElement("div");
   wrap.className = "perms-pane";
   const roles = channel.roles || [];
 
-  // 채널 단위 사용 제한(기본: 전원 허용). 켜면 아래 역할의 "사용/첨부" 권한 보유자만 가능.
-  const chBox = document.createElement("div");
-  chBox.className = "perms-channel-box";
-  chBox.innerHTML = `
-    <p class="perms-subtitle">채널 기본 제한</p>
-    <label class="perms-toggle-row"><input type="checkbox" data-channel-perm="emojiUseRestricted" ${channel.emojiUseRestricted ? "checked" : ""} />
-      <span>커스텀 이모지 사용을 역할로 제한</span></label>
-    <label class="perms-toggle-row"><input type="checkbox" data-channel-perm="attachRestricted" ${channel.attachRestricted ? "checked" : ""} />
-      <span>파일·이미지 첨부를 역할로 제한</span></label>
-    <p class="modal-hint">끄면 모든 멤버가 사용/첨부할 수 있어요. 켜면 위 권한을 가진 역할 보유자·대표만 가능해요.</p>`;
-  wrap.append(chBox);
-
-  const top = document.createElement("div");
-  top.className = "perms-row-add";
-  top.innerHTML = `<input class="perms-input" data-role-new placeholder="새 역할 이름" maxlength="24" />
-    <button class="primary small" data-role-create="1">역할 추가</button>`;
-  wrap.append(top);
-
-  if (!roles.length) {
-    const empty = document.createElement("p");
-    empty.className = "modal-hint";
-    empty.textContent = "아직 역할이 없습니다. 역할을 만들어 여러 멤버를 한 번에 관리하세요.";
-    wrap.append(empty);
-  }
-
   const selId = permsState.selectedRoleId && roles.some((r) => r.id === permsState.selectedRoleId)
     ? permsState.selectedRoleId : (roles[0]?.id || "");
 
   const grid = document.createElement("div");
-  grid.className = "perms-roles-grid";
+  grid.className = "rolemgr";
+
+  // 왼쪽: 역할 목록 + 만들기
+  const side = document.createElement("aside");
+  side.className = "rolemgr-side";
+  const sideHead = document.createElement("div");
+  sideHead.className = "rolemgr-side-head";
+  sideHead.innerHTML = `<span>역할</span><span class="role-count">${roles.length}</span>`;
+  side.append(sideHead);
 
   const list = document.createElement("div");
-  list.className = "perms-role-list";
+  list.className = "rolemgr-list";
   for (const role of roles) {
     const btn = document.createElement("button");
-    btn.className = "perms-role-item" + (role.id === selId ? " active" : "");
+    btn.className = "rolemgr-item" + (role.id === selId ? " active" : "");
     btn.dataset.roleSelect = role.id;
     btn.innerHTML = `<span class="role-dot" style="background:${role.color || "#5865f2"}"></span>
       <span class="role-name">${escapeHtml(role.name)}</span>
       <span class="role-count">${(role.memberIds || []).length}</span>`;
     list.append(btn);
   }
-  grid.append(list);
+  if (!roles.length) list.append(el("p", "rolemgr-empty", "아직 역할이 없어요."));
+  side.append(list);
 
-  const detail = document.createElement("div");
-  detail.className = "perms-role-detail";
+  const add = document.createElement("div");
+  add.className = "rolemgr-add";
+  add.innerHTML = `<input class="perms-input" data-role-new placeholder="새 역할 이름" maxlength="24" />
+    <button class="primary small" data-role-create="1" title="역할 만들기">＋</button>`;
+  side.append(add);
+  grid.append(side);
+
+  // 오른쪽: 선택한 역할 상세
+  const detail = document.createElement("section");
+  detail.className = "rolemgr-detail";
   const role = roles.find((r) => r.id === selId);
   if (role) detail.append(buildRoleDetail(channel, role));
-  else detail.innerHTML = `<p class="modal-hint">역할을 선택하면 이름·색·멤버를 편집할 수 있습니다.</p>`;
+  else {
+    const empty = document.createElement("div");
+    empty.className = "rolemgr-detail-empty";
+    empty.innerHTML = `<span class="rme-icon">🏷️</span>
+      <b>역할로 여러 명을 한 번에 관리해요</b>
+      <p>왼쪽 아래에서 역할을 만들면 이름·색·권한·멤버를 여기서 편집할 수 있어요.<br />
+      개인 한 명에게만 권한을 주려면 위쪽 <b>멤버</b> 탭을 쓰세요.</p>`;
+    detail.append(empty);
+  }
   grid.append(detail);
   wrap.append(grid);
-
-  wrap.append(buildUserPermsSection(channel));
   return wrap;
-}
-
-// 역할과 별개로 유저 개별에게 이모지·첨부 권한을 열어주는 표.
-function buildUserPermsSection(channel) {
-  const box = document.createElement("div");
-  box.className = "perms-userperm-box";
-  box.append(el("p", "perms-subtitle", "유저별 권한 (역할과 별개로 개별 허용)"));
-  const table = document.createElement("div");
-  table.className = "perms-userperm-table";
-  const head = document.createElement("div");
-  head.className = "perms-userperm-row perms-userperm-head";
-  head.innerHTML = `<span class="upn">멤버</span><span title="커스텀 이모지 추가">추가</span><span title="커스텀 이모지 삭제">삭제</span><span title="커스텀 이모지 사용">사용</span><span title="파일·이미지 첨부">첨부</span>`;
-  table.append(head);
-  const caps = ["addEmoji", "removeEmoji", "useEmoji", "attachFile"];
-  for (const m of channel.members || []) {
-    const up = channel.userPerms?.[m.id] || {};
-    const row = document.createElement("div");
-    row.className = "perms-userperm-row";
-    const name = document.createElement("span");
-    name.className = "upn";
-    name.innerHTML = `${escapeHtml(m.displayName || ("유저#" + m.code))} <em>#${escapeHtml(m.code)}</em>`;
-    row.append(name);
-    for (const cap of caps) {
-      const cell = document.createElement("label");
-      cell.className = "upc";
-      const chk = document.createElement("input");
-      chk.type = "checkbox";
-      chk.checked = !!up[cap];
-      chk.dataset.userPerm = cap;
-      chk.dataset.userId = m.id;
-      cell.append(chk);
-      row.append(cell);
-    }
-    table.append(row);
-  }
-  box.append(table);
-  return box;
 }
 
 function buildRoleDetail(channel, role) {
   const box = document.createElement("div");
+  box.className = "rd";
+
+  // 헤더: 색상 · 이름 · 삭제
   const head = document.createElement("div");
-  head.className = "perms-role-edit";
+  head.className = "rd-head";
   head.innerHTML = `
-    <label class="field"><span>역할 이름</span>
-      <input class="perms-input" data-role-name="${role.id}" value="${escapeHtml(role.name)}" maxlength="24" /></label>
-    <label class="field"><span>색상</span>
+    <label class="rd-color" title="역할 색상">
       <input type="color" data-role-color="${role.id}" value="${role.color || "#5865f2"}" /></label>
-    <button class="danger small" data-role-delete="${role.id}">역할 삭제</button>`;
+    <input class="perms-input rd-name" data-role-name="${role.id}" value="${escapeHtml(role.name)}" maxlength="24" placeholder="역할 이름" />
+    <button class="rd-delete" data-role-delete="${role.id}" title="역할 삭제">삭제</button>`;
   box.append(head);
 
-  // 역할 능력 토글(이모지 추가·삭제·사용, 파일 첨부)
-  const capBox = document.createElement("div");
-  capBox.className = "perms-cap-box";
-  capBox.innerHTML = `
-    <p class="perms-subtitle">이 역할의 권한</p>
-    <label class="perms-toggle-row"><input type="checkbox" data-role-cap="addEmoji" data-role-id="${role.id}" ${roleCap(role, "addEmoji") ? "checked" : ""} />
-      <span>커스텀 이모지 추가(업로드)</span></label>
-    <label class="perms-toggle-row"><input type="checkbox" data-role-cap="removeEmoji" data-role-id="${role.id}" ${roleCap(role, "removeEmoji") ? "checked" : ""} />
-      <span>커스텀 이모지 삭제</span></label>
-    <label class="perms-toggle-row"><input type="checkbox" data-role-cap="useEmoji" data-role-id="${role.id}" ${role.useEmoji ? "checked" : ""} />
-      <span>커스텀 이모지 사용 <em class="perms-note">(사용 제한 시)</em></span></label>
-    <label class="perms-toggle-row"><input type="checkbox" data-role-cap="attachFile" data-role-id="${role.id}" ${role.attachFile ? "checked" : ""} />
-      <span>파일·이미지 첨부 <em class="perms-note">(첨부 제한 시)</em></span></label>`;
-  box.append(capBox);
+  // 권한 카드
+  const sec = document.createElement("div");
+  sec.className = "rd-section";
+  sec.append(el("p", "rd-sec-title", "권한"));
+  for (const cap of CAP_KEYS) {
+    const meta = CAP_META[cap];
+    const gateOff = meta.gate && !channel[meta.gate];
+    sec.append(buildPermCard({
+      title: `${meta.icon} ${meta.name}`,
+      desc: gateOff ? "지금은 채널 제한이 꺼져 있어 모든 멤버가 할 수 있어요." : meta.desc,
+      checked: roleCap(role, cap),
+      badge: gateOff ? "제한 꺼짐" : "",
+      dim: gateOff,
+      dataset: { roleCap: cap, roleId: role.id },
+    }));
+  }
+  box.append(sec);
 
-  const membersTitle = document.createElement("p");
-  membersTitle.className = "perms-subtitle";
-  membersTitle.textContent = "이 역할을 가진 멤버";
-  box.append(membersTitle);
-
-  const memberBox = document.createElement("div");
-  memberBox.className = "perms-member-list";
-  for (const m of channel.members || []) {
+  // 멤버 배정
+  const members = channel.members || [];
+  const msec = document.createElement("div");
+  msec.className = "rd-section";
+  const mt = el("p", "rd-sec-title", "멤버");
+  mt.append(el("span", "role-count", String((role.memberIds || []).length)));
+  msec.append(mt);
+  const mlist = document.createElement("div");
+  mlist.className = "rd-members";
+  for (const m of members) {
     const has = (role.memberIds || []).includes(m.id);
     const row = document.createElement("label");
-    row.className = "perms-member-row";
-    row.innerHTML = `<input type="checkbox" data-role-member="${role.id}" data-user-id="${m.id}" ${has ? "checked" : ""} />
-      <span>${escapeHtml(m.displayName || ("유저#" + m.code))} <em>#${escapeHtml(m.code)}</em></span>`;
-    memberBox.append(row);
+    row.className = "rd-member" + (has ? " on" : "");
+    row.innerHTML = `<span class="rd-member-name">${escapeHtml(m.displayName || ("유저#" + m.code))} <em>#${escapeHtml(m.code)}</em></span>
+      <input class="perm-switch" type="checkbox" data-role-member="${role.id}" data-user-id="${m.id}" ${has ? "checked" : ""} />`;
+    mlist.append(row);
   }
-  box.append(memberBox);
+  if (!members.length) mlist.append(el("p", "modal-hint", "채널 멤버가 없어요."));
+  msec.append(mlist);
+  box.append(msec);
   return box;
+}
+
+// --- 멤버 탭: 채널 기본 제한 + 멤버 한 명에게만 주는 개별 권한 ---
+function buildMembersPane(channel) {
+  const wrap = document.createElement("div");
+  wrap.className = "perms-pane";
+
+  const gateBox = document.createElement("div");
+  gateBox.className = "perms-channel-box";
+  gateBox.append(el("p", "rd-sec-title", "채널 기본 제한"));
+  gateBox.append(el("p", "modal-hint", "끄면 모든 멤버가 자유롭게 사용할 수 있어요. 켜면 아래에서 권한을 받은 사람과 대표만 가능해요."));
+  gateBox.append(buildPermCard({
+    title: "😀 커스텀 이모지 사용 제한",
+    desc: channel.emojiUseRestricted ? "권한을 받은 사람만 커스텀 이모지를 쓸 수 있어요." : "지금은 모두가 커스텀 이모지를 쓸 수 있어요.",
+    checked: !!channel.emojiUseRestricted,
+    dataset: { channelPerm: "emojiUseRestricted" },
+  }));
+  gateBox.append(buildPermCard({
+    title: "📎 파일·이미지 첨부 제한",
+    desc: channel.attachRestricted ? "권한을 받은 사람만 파일을 올릴 수 있어요." : "지금은 모두가 파일을 올릴 수 있어요.",
+    checked: !!channel.attachRestricted,
+    dataset: { channelPerm: "attachRestricted" },
+  }));
+  wrap.append(gateBox);
+
+  const title = el("p", "rd-sec-title", "멤버별 개별 권한");
+  wrap.append(title);
+  wrap.append(el("p", "modal-hint", "역할과 별개로 이 사람에게만 권한을 열어줍니다. 초록색 ‘역할’ 표시는 이미 역할로 허용된 권한이에요."));
+
+  const list = document.createElement("div");
+  list.className = "mp-list";
+  for (const m of channel.members || []) {
+    const isOwner = isChannelOwnerId(channel, m.id);
+    const up = channel.userPerms?.[m.id] || {};
+    const myRoles = (channel.roles || []).filter((r) => (r.memberIds || []).includes(m.id));
+
+    const row = document.createElement("div");
+    row.className = "mp-row";
+    const who = document.createElement("div");
+    who.className = "mp-who";
+    who.innerHTML = `<span class="mp-name">${escapeHtml(m.displayName || ("유저#" + m.code))} <em>#${escapeHtml(m.code)}</em></span>`;
+    const chips = document.createElement("div");
+    chips.className = "mp-roles";
+    if (isOwner) chips.append(el("span", "mp-chip owner", "대표"));
+    for (const r of myRoles) {
+      const c = el("span", "mp-chip", r.name);
+      c.style.setProperty("--chip", r.color || "#5865f2");
+      chips.append(c);
+    }
+    if (!isOwner && !myRoles.length) chips.append(el("span", "mp-chip none", "역할 없음"));
+    who.append(chips);
+    row.append(who);
+
+    const caps = document.createElement("div");
+    caps.className = "mp-caps";
+    for (const cap of CAP_KEYS) {
+      const meta = CAP_META[cap];
+      const viaRole = myRoles.some((r) => roleCap(r, cap));
+      const mine = !!up[cap];
+      const gateOff = meta.gate && !channel[meta.gate];
+      const b = document.createElement("button");
+      b.className = "mp-pill" + (isOwner ? " owner" : mine ? " on" : viaRole ? " via" : "") + (gateOff ? " gate-off" : "");
+      b.dataset.userPermPill = cap;
+      b.dataset.userId = m.id;
+      b.dataset.value = mine ? "0" : "1";
+      b.disabled = isOwner;
+      b.textContent = `${meta.icon} ${meta.short}`;
+      b.title = isOwner ? "대표는 항상 모든 권한을 가집니다."
+        : gateOff ? `채널 제한이 꺼져 있어 지금은 모두 가능합니다. (${meta.name})`
+        : viaRole && !mine ? `역할로 이미 허용됨 — 클릭하면 이 멤버에게 개별 허용도 추가합니다. (${meta.name})`
+        : mine ? `개별 허용됨 — 클릭하면 해제합니다. (${meta.name})`
+        : `클릭하면 이 멤버에게만 허용합니다. (${meta.name})`;
+      if (viaRole && !mine && !isOwner) b.append(el("span", "mp-pill-tag", "역할"));
+      caps.append(b);
+    }
+    row.append(caps);
+    list.append(row);
+  }
+  wrap.append(list);
+  return wrap;
 }
 
 // --- 방별 권한 탭 ---
@@ -6916,11 +7017,12 @@ function onPermsModalClick(event) {
   const cid = channel.id;
 
   // 역할 추가
-  if (t.closest?.("[data-role-create]")) {
-    const input = permsModalEl.querySelector("[data-role-new]");
-    const name = (input?.value || "").trim();
-    sendSocket({ type: "channel:create-role", channelId: cid, name: name || "새 역할" });
-    if (input) input.value = "";
+  if (t.closest?.("[data-role-create]")) { createRoleFromInput(); return; }
+  // 멤버 탭: 개별 권한 알약 토글
+  const pill = t.closest?.("[data-user-perm-pill]");
+  if (pill) {
+    sendSocket({ type: "channel:set-user-perm", channelId: cid, userId: pill.dataset.userId,
+      cap: pill.dataset.userPermPill, value: pill.dataset.value === "1" });
     return;
   }
   const roleSel = t.closest?.("[data-role-select]");
@@ -6977,8 +7079,6 @@ function onPermsModalChange(event) {
   if (cap) { sendSocket({ type: "channel:update-role", channelId: cid, roleId: cap.dataset.roleId, [cap.dataset.roleCap]: cap.checked }); return; }
   const chPerm = t.closest?.("[data-channel-perm]");
   if (chPerm) { sendSocket({ type: "channel:set-perms", channelId: cid, [chPerm.dataset.channelPerm]: chPerm.checked }); return; }
-  const uPerm = t.closest?.("[data-user-perm]");
-  if (uPerm) { sendSocket({ type: "channel:set-user-perm", channelId: cid, userId: uPerm.dataset.userId, cap: uPerm.dataset.userPerm, value: uPerm.checked }); return; }
   const rs = t.closest?.("[data-room-select]");
   if (rs) { permsState.roomId = rs.value; renderPermsModal(); return; }
   const memberChk = t.closest?.("[data-role-member]");
@@ -7362,6 +7462,8 @@ function renderChatMessageBody(msg) {
   if (msg.text) {
     const text = document.createElement("div");
     text.className = "chat-msg-text markdown-inline";
+    // 이모지만 보낸 메시지는 크게(점보) 표시한다.
+    if (chatEmojiOnly(msg.text)) text.classList.add("jumbo");
     // 사용자가 입력한 텍스트를 이스케이프한 뒤 일부 마크다운(코드블록/인라인코드/굵게 등)만 허용
     text.innerHTML = renderChatText(msg.text);
     if (msg.editedAt) {
@@ -8035,6 +8137,24 @@ function replaceCustomEmoji(html, map) {
   });
 }
 
+// 이모지만 있는 메시지인지(디스코드식 "점보 이모지" 판정). 텍스트가 섞이면 false.
+// 커스텀 이모지(:name:)와 유니코드 이모지를 모두 세고, 너무 많으면(27개 초과) 크게 키우지 않는다.
+const UNICODE_EMOJI_RE = /(?:\p{Extended_Pictographic}|\p{Regional_Indicator})(?:️|︎|‍|⃣|\p{Emoji_Modifier}|\p{Extended_Pictographic}|\p{Regional_Indicator})*/gu;
+function chatEmojiOnly(src, emojiMap) {
+  const str = String(src || "");
+  if (!str.trim() || str.includes("```")) return false;
+  const map = emojiMap || activeChatEmojiMap();
+  let count = 0;
+  let rest = str.replace(/:([a-zA-Z0-9_+-]{1,32}):/g, (whole, name) => {
+    if (!map[name]) return whole;
+    count += 1;
+    return "";
+  });
+  rest = rest.replace(UNICODE_EMOJI_RE, () => { count += 1; return ""; });
+  if (!count || count > 27) return false;
+  return rest.trim() === "";
+}
+
 // 현재 보고 있는 채팅방이 속한 채널의 커스텀 이모지 맵 { name: url }.
 function activeChatEmojiMap() {
   const ch = state.channels.find((c) => c.id === state.activeChat?.channelId);
@@ -8222,6 +8342,7 @@ function updateChatInputPreview() {
     return;
   }
   box.innerHTML = renderChatText(raw, map);
+  box.classList.toggle("jumbo", chatEmojiOnly(raw, map));
   box.hidden = false;
 }
 
