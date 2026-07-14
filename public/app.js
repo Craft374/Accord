@@ -185,6 +185,8 @@ const dom = {
   chatAttachButton: document.querySelector("#chatAttachButton"),
   chatFileInput: document.querySelector("#chatFileInput"),
   chatInput: document.querySelector("#chatInput"),
+  chatInputPreview: document.querySelector("#chatInputPreview"),
+  chatEmojiButton: document.querySelector("#chatEmojiButton"),
   chatSendButton: document.querySelector("#chatSendButton"),
   chatComposerHint: document.querySelector("#chatComposerHint"),
   chatDropOverlay: document.querySelector("#chatDropOverlay"),
@@ -1372,6 +1374,8 @@ async function handleSocketMessage(message) {
     }
     renderChannels();
     renderPermsModal(); // 권한 모달이 열려 있으면 최신 데이터로 갱신
+    refreshEmojiPickerIfOpen(); // 이모지 목록이 바뀌었으면 피커 갱신
+    updateChatInputPreview();   // 이모지 변경 시 입력 미리보기도 갱신
     verifyActiveChat();
     verifyActiveMemo();
     verifyActiveDraw();
@@ -6007,6 +6011,14 @@ function isChannelCreator(channel) {
   return Boolean(state.auth.user?.isAdmin) || channel.ownerId === state.auth.user?.id;
 }
 
+// 이모지 추가/삭제 권한: 대표·관리자 또는 manageEmoji 역할 보유자.
+function canManageEmoji(channel) {
+  if (!channel) return false;
+  if (isChannelOwner(channel)) return true;
+  const uid = state.auth.user?.id;
+  return (channel.roles || []).some((r) => r.manageEmoji && (r.memberIds || []).includes(uid));
+}
+
 // ===== 권한 시스템(클라이언트 해석) =====
 // 서버 data-store 의 resolveRoomPerms 와 동일한 규칙을 클라이언트에서도 계산한다
 // (방 숨김·입력 비활성화·미리보기용). 실제 강제는 서버가 담당한다.
@@ -6529,6 +6541,13 @@ function buildRoleDetail(channel, role) {
     <button class="danger small" data-role-delete="${role.id}">역할 삭제</button>`;
   box.append(head);
 
+  // 이모지 관리 권한 토글
+  const emojiPerm = document.createElement("label");
+  emojiPerm.className = "perms-toggle-row";
+  emojiPerm.innerHTML = `<input type="checkbox" data-role-emoji="${role.id}" ${role.manageEmoji ? "checked" : ""} />
+    <span>커스텀 이모지 추가·삭제 허용</span>`;
+  box.append(emojiPerm);
+
   const membersTitle = document.createElement("p");
   membersTitle.className = "perms-subtitle";
   membersTitle.textContent = "이 역할을 가진 멤버";
@@ -6851,6 +6870,8 @@ function onPermsModalChange(event) {
   if (rn) { sendSocket({ type: "channel:update-role", channelId: cid, roleId: rn.dataset.roleName, name: rn.value }); return; }
   const rc = t.closest?.("[data-role-color]");
   if (rc) { sendSocket({ type: "channel:update-role", channelId: cid, roleId: rc.dataset.roleColor, color: rc.value }); return; }
+  const re = t.closest?.("[data-role-emoji]");
+  if (re) { sendSocket({ type: "channel:update-role", channelId: cid, roleId: re.dataset.roleEmoji, manageEmoji: re.checked }); return; }
   const rs = t.closest?.("[data-room-select]");
   if (rs) { permsState.roomId = rs.value; renderPermsModal(); return; }
   const memberChk = t.closest?.("[data-role-member]");
@@ -7110,6 +7131,8 @@ function openChatRoom(roomId) {
   renderChatAttachments();
   setChatHint("");
   if (dom.chatInput) { dom.chatInput.value = ""; autoResizeChatInput(); }
+  clearChatInputPreview();
+  closeEmojiPicker();
   applyChatReadOnly(found);
   sendSocket({ type: "chat:open", roomId });
   renderRooms();
@@ -7126,6 +7149,8 @@ function applyChatReadOnly(found) {
   }
   if (dom.chatSendButton) dom.chatSendButton.disabled = !writable;
   if (dom.chatAttachButton) dom.chatAttachButton.disabled = !writable;
+  if (dom.chatEmojiButton) dom.chatEmojiButton.disabled = !writable;
+  if (!writable) closeEmojiPicker();
 }
 
 function closeChatView() {
@@ -7134,6 +7159,8 @@ function closeChatView() {
   state.activeChat = null;
   state.chatPendingFiles = [];
   clearChatTypers();
+  closeEmojiPicker();
+  clearChatInputPreview();
   document.body.classList.remove("chat-open");
   renderRooms();
 }
@@ -7250,6 +7277,11 @@ function renderChatMessageBody(msg) {
     actions.append(trash);
   }
   wrap.append(actions);
+  // 우클릭도 ⋯ 메뉴와 동일하게 동작(이미지 위 우클릭은 이미지 메뉴가 stopPropagation 으로 가로챈다).
+  wrap.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    openChatMsgMenu(msg, null, { x: e.clientX, y: e.clientY });
+  });
   return wrap;
 }
 
@@ -7266,7 +7298,7 @@ function deleteChatMessage(msgId, immediate) {
   sendSocket({ type: "chat:delete", roomId: state.activeChat.roomId, msgId });
 }
 
-function openChatMsgMenu(msg, anchor) {
+function openChatMsgMenu(msg, anchor, pos) {
   const items = [];
   if (msg.text) {
     items.push({ label: "복사", action: () => copyTextToClipboard(msg.text) });
@@ -7275,11 +7307,16 @@ function openChatMsgMenu(msg, anchor) {
     items.push({ label: "삭제", danger: true, action: () => deleteChatMessage(msg.id, false) });
   }
   if (!items.length) return;
-  const r = anchor.getBoundingClientRect();
-  openChatContextMenu(items, { x: r.left, y: r.bottom + 4 });
+  let at = pos;
+  if (!at && anchor) { const r = anchor.getBoundingClientRect(); at = { x: r.left, y: r.bottom + 4 }; }
+  openChatContextMenu(items, at || { x: 0, y: 0 });
 }
 
-// 공용 컨텍스트 메뉴(메시지 ⋯ / 이미지 우클릭 공용)
+// 공용 컨텍스트 메뉴(메시지 ⋯ / 이미지 우클릭·⋯ 공용)
+// 이전에는 close 리스너를 { once:true } 로 걸어, 메뉴가 열린 상태에서 다시 우클릭하면
+// 남아있던 contextmenu 리스너가 "새로 연" 메뉴를 곧바로 닫아 첫 1회만 보이는 버그가 있었다.
+// → 열 때 등록한 리스너를 close 시 반드시 정리(chatCtxCleanup)하도록 바꿔 재우클릭도 정상 동작.
+let chatCtxCleanup = null;
 function openChatContextMenu(items, pos) {
   closeChatContextMenu();
   const menu = document.createElement("div");
@@ -7301,14 +7338,23 @@ function openChatContextMenu(items, pos) {
   const top = Math.max(8, Math.min(pos.y, window.innerHeight - mh - 8));
   menu.style.left = `${left}px`;
   menu.style.top = `${top}px`;
+  const close = () => closeChatContextMenu();
   setTimeout(() => {
-    document.addEventListener("click", closeChatContextMenu, { once: true });
-    document.addEventListener("contextmenu", closeChatContextMenu, { once: true });
-    window.addEventListener("scroll", closeChatContextMenu, { once: true, capture: true });
+    document.addEventListener("click", close);
+    document.addEventListener("contextmenu", close);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    chatCtxCleanup = () => {
+      document.removeEventListener("click", close);
+      document.removeEventListener("contextmenu", close);
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+    };
   }, 0);
 }
 
 function closeChatContextMenu() {
+  if (chatCtxCleanup) { chatCtxCleanup(); chatCtxCleanup = null; }
   document.getElementById("chatContextMenu")?.remove();
 }
 
@@ -7356,6 +7402,16 @@ async function copyChatImage(src) {
   }
 }
 
+// 이미지 컨텍스트 메뉴(⋯ 버튼·우클릭 공용): 저장 / 복사 / 크게 보기 / 새 탭
+function openChatImageMenu(url, file, pos) {
+  openChatContextMenu([
+    { label: "이미지 저장", action: () => saveChatImage(url, file.name) },
+    { label: "이미지 복사", action: () => copyChatImage(url) },
+    { label: "크게 보기", action: () => openImageViewer({ src: url, title: file.name || "이미지" }) },
+    { label: "새 탭에서 열기", action: () => window.open(url, "_blank", "noopener") },
+  ], pos);
+}
+
 function imageBlobToPng(blob) {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(blob);
@@ -7373,55 +7429,349 @@ function imageBlobToPng(blob) {
   });
 }
 
-// 채팅 메시지 텍스트: 이스케이프 후 코드블록/인라인 서식만 허용(XSS 안전)
-function renderChatText(src) {
+// ===== 이미지 크게 보기 + 크롭 (첨부 미리보기 확대·크롭, 커스텀 이모지 업로드 공용) =====
+let imageViewerEl = null;
+function onImageViewerKey(e) { if (e.key === "Escape") { e.stopPropagation(); closeImageViewer(); } }
+function closeImageViewer() {
+  if (imageViewerEl) {
+    if (imageViewerEl._cleanup) imageViewerEl._cleanup();
+    imageViewerEl.remove();
+    imageViewerEl = null;
+  }
+  document.removeEventListener("keydown", onImageViewerKey, true);
+}
+
+// opts: { src, title, crop(bool), aspect(number|null), maxOut(px), applyLabel,
+//         outputType, quality, onApply(blob) }
+function openImageViewer(opts) {
+  closeImageViewer();
+  const o = opts || {};
+  const backdrop = document.createElement("div");
+  backdrop.className = "img-viewer-backdrop";
+  backdrop.addEventListener("click", (e) => { if (e.target === backdrop) closeImageViewer(); });
+
+  const panel = document.createElement("div");
+  panel.className = "img-viewer" + (o.crop ? " cropping" : "");
+  backdrop.append(panel);
+
+  const head = document.createElement("div");
+  head.className = "img-viewer-head";
+  const titleEl = document.createElement("span");
+  titleEl.className = "img-viewer-title";
+  titleEl.textContent = o.title || (o.crop ? "이미지 자르기" : "이미지 보기");
+  const closeBtn = document.createElement("button");
+  closeBtn.type = "button";
+  closeBtn.className = "img-viewer-close";
+  closeBtn.textContent = "✕";
+  closeBtn.title = "닫기";
+  closeBtn.addEventListener("click", closeImageViewer);
+  head.append(titleEl, closeBtn);
+  panel.append(head);
+
+  const stage = document.createElement("div");
+  stage.className = "img-viewer-stage";
+  const img = document.createElement("img");
+  img.className = "img-viewer-img";
+  img.alt = o.title || "이미지";
+  img.draggable = false;
+  stage.append(img);
+  let cropBox = null;
+  if (o.crop) {
+    cropBox = document.createElement("div");
+    cropBox.className = "img-crop-box";
+    for (const pos of ["nw", "ne", "sw", "se"]) {
+      const h = document.createElement("span");
+      h.className = "img-crop-handle " + pos;
+      h.dataset.handle = pos;
+      cropBox.append(h);
+    }
+    stage.append(cropBox);
+  }
+  panel.append(stage);
+
+  const foot = document.createElement("div");
+  foot.className = "img-viewer-foot";
+  if (o.crop) {
+    const hint = document.createElement("span");
+    hint.className = "img-viewer-hint";
+    hint.textContent = o.aspect ? "영역을 끌어 조절하세요 (정사각형)." : "모서리를 끌어 자를 영역을 조절하세요.";
+    const spacer = document.createElement("span");
+    spacer.style.flex = "1";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "ghost small";
+    cancel.textContent = "취소";
+    cancel.addEventListener("click", closeImageViewer);
+    const apply = document.createElement("button");
+    apply.type = "button";
+    apply.className = "primary small";
+    apply.textContent = o.applyLabel || "적용";
+    apply.addEventListener("click", () => doCropApply());
+    foot.append(hint, spacer, cancel, apply);
+  } else {
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "ghost small";
+    open.textContent = "새 탭에서 열기";
+    open.addEventListener("click", () => window.open(o.src, "_blank", "noopener"));
+    foot.append(open);
+  }
+  panel.append(foot);
+
+  document.body.append(backdrop);
+  imageViewerEl = backdrop;
+  document.addEventListener("keydown", onImageViewerKey, true);
+
+  // 크롭 상태: crop 은 stage 좌표(표시 픽셀) 기준. layout 은 contain 렌더된 이미지 박스.
+  const crop = { x: 0, y: 0, w: 0, h: 0 };
+  let layout = { left: 0, top: 0, w: 0, h: 0, scale: 1 };
+
+  function computeLayout() {
+    const sw = stage.clientWidth || 1, sh = stage.clientHeight || 1;
+    const nw = img.naturalWidth || 1, nh = img.naturalHeight || 1;
+    const scale = Math.min(sw / nw, sh / nh);
+    const w = nw * scale, h = nh * scale;
+    return { left: (sw - w) / 2, top: (sh - h) / 2, w, h, scale };
+  }
+  function clampCrop() {
+    crop.w = Math.max(24, Math.min(crop.w, layout.w));
+    crop.h = Math.max(24, Math.min(crop.h, layout.h));
+    crop.x = Math.max(layout.left, Math.min(crop.x, layout.left + layout.w - crop.w));
+    crop.y = Math.max(layout.top, Math.min(crop.y, layout.top + layout.h - crop.h));
+  }
+  function drawCrop() {
+    clampCrop();
+    cropBox.style.left = crop.x + "px";
+    cropBox.style.top = crop.y + "px";
+    cropBox.style.width = crop.w + "px";
+    cropBox.style.height = crop.h + "px";
+  }
+  function initCrop() {
+    let cw, ch;
+    if (o.aspect) {
+      if (layout.w / layout.h > o.aspect) { ch = layout.h * 0.9; cw = ch * o.aspect; }
+      else { cw = layout.w * 0.9; ch = cw / o.aspect; }
+    } else { cw = layout.w * 0.9; ch = layout.h * 0.9; }
+    crop.w = cw; crop.h = ch;
+    crop.x = layout.left + (layout.w - cw) / 2;
+    crop.y = layout.top + (layout.h - ch) / 2;
+    drawCrop();
+  }
+  function resizeCrop(handle, start, dx, dy) {
+    let x = start.x, y = start.y, w = start.w, h = start.h;
+    const right = start.x + start.w, bottom = start.y + start.h;
+    if (handle.includes("e")) w = start.w + dx;
+    if (handle.includes("s")) h = start.h + dy;
+    if (handle.includes("w")) { x = start.x + dx; w = start.w - dx; }
+    if (handle.includes("n")) { y = start.y + dy; h = start.h - dy; }
+    if (o.aspect) {
+      h = w / o.aspect;
+      if (handle.includes("n")) y = bottom - h;
+    }
+    if (w >= 24 && h >= 24) { crop.x = x; crop.y = y; crop.w = w; crop.h = h; drawCrop(); }
+  }
+  function doCropApply() {
+    const sc = layout.scale || 1;
+    const sx = (crop.x - layout.left) / sc;
+    const sy = (crop.y - layout.top) / sc;
+    const sw = crop.w / sc, sh = crop.h / sc;
+    let outW = sw, outH = sh;
+    const maxOut = o.maxOut || 0;
+    if (maxOut && Math.max(outW, outH) > maxOut) {
+      const r = maxOut / Math.max(outW, outH);
+      outW *= r; outH *= r;
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(outW));
+    canvas.height = Math.max(1, Math.round(outH));
+    const ctx = canvas.getContext("2d");
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+    const type = o.outputType || "image/png";
+    canvas.toBlob((blob) => {
+      if (blob && o.onApply) o.onApply(blob);
+      closeImageViewer();
+    }, type, o.quality || 0.92);
+  }
+
+  if (o.crop) {
+    cropBox.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      const handle = e.target?.dataset?.handle || "";
+      const startX = e.clientX, startY = e.clientY;
+      const start = { ...crop };
+      const move = (ev) => {
+        const dx = ev.clientX - startX, dy = ev.clientY - startY;
+        if (handle) resizeCrop(handle, start, dx, dy);
+        else { crop.x = start.x + dx; crop.y = start.y + dy; drawCrop(); }
+      };
+      const up = () => {
+        document.removeEventListener("pointermove", move);
+        document.removeEventListener("pointerup", up);
+      };
+      document.addEventListener("pointermove", move);
+      document.addEventListener("pointerup", up);
+    });
+  }
+
+  img.onload = () => {
+    layout = computeLayout();
+    if (o.crop) initCrop();
+  };
+  img.src = o.src;
+
+  // 창 크기 변화 시 레이아웃/크롭 재계산.
+  const ro = new ResizeObserver(() => {
+    const prev = layout;
+    layout = computeLayout();
+    if (o.crop && prev.w) {
+      const r = layout.w / prev.w;
+      crop.x = layout.left + (crop.x - prev.left) * r;
+      crop.y = layout.top + (crop.y - prev.top) * r;
+      crop.w *= r; crop.h *= r;
+      drawCrop();
+    }
+  });
+  ro.observe(stage);
+  backdrop._cleanup = () => ro.disconnect();
+}
+
+// 채팅 메시지 텍스트: 이스케이프 후 코드블록/헤딩/인용/리스트/인라인 서식만 허용(XSS 안전).
+// 언어 태그(```cs 등)와 # 헤딩, > 인용, - / 1. 리스트, --- 구분선, :이모지: 를 지원한다.
+function renderChatText(src, emojiMap) {
+  const map = emojiMap || activeChatEmojiMap();
   const str = String(src || "");
-  const parts = [];
-  const fence = /```([\s\S]*?)```/g;
+  // 1) 코드펜스(``` 또는 ```lang)를 먼저 분리해 블록으로 보호한다.
+  const fence = /```([a-zA-Z0-9+#._-]*)\n([\s\S]*?)```|```([\s\S]*?)```/g;
+  const segments = []; // { code:bool, lang, value }
   let last = 0;
   let m;
   while ((m = fence.exec(str))) {
-    if (m.index > last) parts.push({ type: "text", value: str.slice(last, m.index) });
-    parts.push({ type: "code", value: m[1].replace(/^\n/, "").replace(/\n+$/, "") });
+    if (m.index > last) segments.push({ code: false, value: str.slice(last, m.index) });
+    if (m[2] !== undefined) segments.push({ code: true, lang: (m[1] || "").toLowerCase(), value: m[2].replace(/\n$/, "") });
+    else segments.push({ code: true, lang: "", value: (m[3] || "").replace(/^\n/, "").replace(/\n$/, "") });
     last = fence.lastIndex;
   }
-  if (last < str.length) parts.push({ type: "text", value: str.slice(last) });
-  if (!parts.length) return escapeHtmlText(str);
-  return parts.map((p) => {
-    if (p.type === "code") {
-      return `<pre class="chat-code"><code>${escapeHtmlText(p.value)}</code></pre>`;
+  if (last < str.length) segments.push({ code: false, value: str.slice(last) });
+  if (!segments.length) return "";
+
+  const out = [];
+  for (const seg of segments) {
+    if (seg.code) {
+      const langTag = seg.lang ? `<span class="chat-code-lang">${escapeHtmlText(seg.lang)}</span>` : "";
+      out.push(`<pre class="chat-code"${seg.lang ? ` data-lang="${escapeHtmlText(seg.lang)}"` : ""}>${langTag}<code>${escapeHtmlText(seg.value)}</code></pre>`);
+      continue;
     }
-    // 코드블록 경계의 개행만 정리, 내부 줄바꿈은 <br>로 유지
-    const escaped = escapeHtmlText(p.value.replace(/^\n+/, "").replace(/\n+$/, ""));
-    return escaped.split("\n").map((line) => inlineMarkdown(line)).join("<br>");
-  }).join("");
+    out.push(renderChatBlocks(seg.value.replace(/^\n+/, "").replace(/\n+$/, ""), map));
+  }
+  return out.join("");
+}
+
+// 코드펜스 사이의 일반 텍스트를 블록(헤딩/인용/리스트/문단) 단위로 렌더한다.
+function renderChatBlocks(text, map) {
+  if (!text) return "";
+  const lines = text.split("\n");
+  const html = [];
+  let list = null;      // "ul" | "ol" | null
+  let para = [];        // 연속된 일반 줄(문단) 버퍼
+  const flushList = () => { if (list) { html.push(`</${list}>`); list = null; } };
+  const flushPara = () => {
+    if (para.length) { html.push(`<p>${para.map((l) => inlineChat(l, map)).join("<br>")}</p>`); para = []; }
+  };
+  for (const line of lines) {
+    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    const quote = line.match(/^>\s?(.*)$/);
+    const hr = /^\s*([-*_])(\s*\1){2,}\s*$/.test(line);
+    const ul = line.match(/^\s*[-*+]\s+(.*)$/);
+    const ol = line.match(/^\s*\d+\.\s+(.*)$/);
+    if (heading) {
+      flushPara(); flushList();
+      const lv = heading[1].length;
+      html.push(`<h${lv} class="chat-h">${inlineChat(heading[2], map)}</h${lv}>`);
+    } else if (hr) {
+      flushPara(); flushList(); html.push('<hr class="chat-hr" />');
+    } else if (quote) {
+      flushPara(); flushList();
+      html.push(`<blockquote class="chat-quote">${inlineChat(quote[1], map)}</blockquote>`);
+    } else if (ul) {
+      flushPara();
+      if (list !== "ul") { flushList(); html.push('<ul class="chat-list">'); list = "ul"; }
+      html.push(`<li>${inlineChat(ul[1], map)}</li>`);
+    } else if (ol) {
+      flushPara();
+      if (list !== "ol") { flushList(); html.push('<ol class="chat-list">'); list = "ol"; }
+      html.push(`<li>${inlineChat(ol[1], map)}</li>`);
+    } else {
+      flushList();
+      para.push(line);
+    }
+  }
+  flushPara(); flushList();
+  return html.join("");
+}
+
+// 채팅용 인라인 서식(굵게/기울임/취소선/인라인코드/링크/커스텀 이모지).
+// inlineMarkdown 은 이미 이스케이프된 문자열을 받도록 설계돼 있어 먼저 escape 한다(XSS 안전).
+function inlineChat(str, map) {
+  let out = inlineMarkdown(escapeHtmlText(str));
+  out = replaceCustomEmoji(out, map);
+  return out;
+}
+
+// :name: 토큰을 커스텀 이모지 이미지로 치환(코드/링크 자리표시자는 건드리지 않음).
+function replaceCustomEmoji(html, map) {
+  if (!map) return html;
+  return html.replace(/:([a-zA-Z0-9_+-]{1,32}):/g, (whole, name) => {
+    const url = map[name];
+    if (!url) return whole;
+    return `<img class="chat-emoji" src="${escapeHtmlText(url)}" alt=":${escapeHtmlText(name)}:" title=":${escapeHtmlText(name)}:" draggable="false" />`;
+  });
+}
+
+// 현재 보고 있는 채팅방이 속한 채널의 커스텀 이모지 맵 { name: url }.
+function activeChatEmojiMap() {
+  const ch = state.channels.find((c) => c.id === state.activeChat?.channelId);
+  return emojiMapOf(ch);
+}
+function emojiMapOf(channel) {
+  const map = {};
+  for (const e of (channel?.emojis || [])) if (e && e.name && e.url) map[e.name] = e.url;
+  return map;
 }
 
 function renderChatFile(file) {
   const url = String(file.url || "");
   const isImage = file.kind === "image" || /^image\//.test(file.mime || "");
   if (isImage) {
-    const link = document.createElement("a");
-    link.className = "chat-image-link";
-    link.href = url;
-    link.target = "_blank";
-    link.rel = "noopener";
+    const box = document.createElement("div");
+    box.className = "chat-image-wrap";
     const img = document.createElement("img");
     img.className = "chat-image";
     img.loading = "lazy";
     img.alt = file.name || "이미지";
     img.src = url;
-    link.append(img);
-    // 우클릭 → 이미지 저장/복사 메뉴
-    link.addEventListener("contextmenu", (e) => {
-      e.preventDefault();
-      openChatContextMenu([
-        { label: "이미지 저장", action: () => saveChatImage(img.src, file.name) },
-        { label: "이미지 복사", action: () => copyChatImage(img.src) },
-        { label: "새 탭에서 열기", action: () => window.open(url, "_blank", "noopener") },
-      ], { x: e.clientX, y: e.clientY });
+    // 클릭 → 라이트박스로 크게 보기
+    img.addEventListener("click", (e) => { e.preventDefault(); openImageViewer({ src: url, title: file.name || "이미지" }); });
+    box.append(img);
+    // ⋯ 버튼(우클릭이 막힌 환경/터치에서도 저장·복사 가능)
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "chat-image-more";
+    more.textContent = "⋯";
+    more.title = "더보기";
+    more.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const r = more.getBoundingClientRect();
+      openChatImageMenu(url, file, { x: r.right - 4, y: r.bottom + 4 });
     });
-    return link;
+    box.append(more);
+    // 우클릭 → ⋯ 와 동일한 이미지 메뉴(메시지 우클릭보다 우선하도록 stopPropagation)
+    box.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openChatImageMenu(url, file, { x: e.clientX, y: e.clientY });
+    });
+    return box;
   }
   const a = document.createElement("a");
   a.className = "chat-file";
@@ -7531,6 +7881,7 @@ function sendChatMessage() {
   if (!text && !files.length) return;
   sendSocket({ type: "chat:send", roomId: state.activeChat.roomId, text, files });
   if (dom.chatInput) { dom.chatInput.value = ""; autoResizeChatInput(); }
+  clearChatInputPreview();
   for (const f of state.chatPendingFiles) if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
   state.chatPendingFiles = [];
   renderChatAttachments();
@@ -7541,11 +7892,34 @@ function sendChatMessage() {
 
 function onChatInput() {
   autoResizeChatInput();
+  updateChatInputPreview();
   const now = Date.now();
   if (state.activeChat && now - state.chatTypingSentAt > 2500) {
     state.chatTypingSentAt = now;
     sendSocket({ type: "chat:typing", roomId: state.activeChat.roomId });
   }
+}
+
+// 입력창 아래에 마크다운/이모지가 어떻게 보일지 실시간 미리보기.
+// 서식 문법이나 커스텀 이모지가 들어있을 때만 표시(평범한 한 줄은 방해되지 않게 숨김).
+const CHAT_MD_HINT = /(\*\*|__|~~|`|^#{1,6}\s|^>\s|^\s*[-*+]\s|^\s*\d+\.\s|\[[^\]]+\]\(https?:|:[a-zA-Z0-9_+-]{1,32}:)/m;
+function updateChatInputPreview() {
+  const box = dom.chatInputPreview;
+  if (!box) return;
+  const raw = dom.chatInput?.value || "";
+  const map = activeChatEmojiMap();
+  const hasEmoji = /:([a-zA-Z0-9_+-]{1,32}):/.test(raw) && Object.keys(map).length > 0;
+  if (!raw.trim() || (!CHAT_MD_HINT.test(raw) && !hasEmoji)) {
+    box.hidden = true;
+    box.innerHTML = "";
+    return;
+  }
+  box.innerHTML = renderChatText(raw, map);
+  box.hidden = false;
+}
+
+function clearChatInputPreview() {
+  if (dom.chatInputPreview) { dom.chatInputPreview.hidden = true; dom.chatInputPreview.innerHTML = ""; }
 }
 
 function autoResizeChatInput() {
@@ -7634,12 +8008,15 @@ function renderChatAttachments() {
     const chip = document.createElement("div");
     chip.className = "chat-attach-chip" + (f.uploading ? " uploading" : "");
     // 이미지는 썸네일 미리보기를 함께 표시
-    if (f.kind === "image" && f.previewUrl) {
+    if (f.kind === "image" && (f.previewUrl || f.url)) {
       chip.classList.add("has-thumb");
       const thumb = document.createElement("img");
       thumb.className = "chat-attach-thumb";
-      thumb.src = f.previewUrl;
+      thumb.src = f.previewUrl || f.url;
       thumb.alt = f.name || "이미지";
+      thumb.title = "클릭하면 크게 보고 자를 수 있어요";
+      // 클릭 → 크게 보기 + 크롭. 크롭 시 대기 파일을 잘린 이미지로 교체.
+      thumb.addEventListener("click", () => openAttachmentCropper(f));
       chip.append(thumb);
     }
     const label = document.createElement("span");
@@ -7664,8 +8041,251 @@ function renderChatAttachments() {
   }
 }
 
+// 첨부 미리보기 이미지 → 크게 보기 + 크롭. 업로드 중이면 크롭 없이 크게 보기만.
+function openAttachmentCropper(entry) {
+  const src = entry.previewUrl || entry.url;
+  if (!src) return;
+  if (entry.uploading) {
+    openImageViewer({ src, title: entry.name || "이미지" });
+    return;
+  }
+  const png = (entry.mime || "").includes("png");
+  openImageViewer({
+    src,
+    title: entry.name || "이미지",
+    crop: true,
+    maxOut: 2560, // 너무 큰 원본은 적당히 축소
+    applyLabel: "자르기 적용",
+    outputType: png ? "image/png" : "image/jpeg",
+    quality: 0.92,
+    onApply: (blob) => applyCroppedAttachment(entry, blob),
+  });
+}
+
+// 크롭 결과 blob 으로 대기 파일을 교체하고 다시 업로드한다.
+async function applyCroppedAttachment(entry, blob) {
+  if (!state.chatPendingFiles.includes(entry)) return;
+  const base = (entry.name || "image").replace(/\.[^./\\]+$/, "");
+  const ext = blob.type === "image/png" ? "png" : "jpg";
+  const file = new File([blob], `${base}.${ext}`, { type: blob.type });
+  if (entry.previewUrl) URL.revokeObjectURL(entry.previewUrl);
+  entry.previewUrl = URL.createObjectURL(blob);
+  entry.name = file.name;
+  entry.mime = blob.type;
+  entry.size = blob.size;
+  entry.uploading = true;
+  entry.progress = 0;
+  entry.url = "";
+  renderChatAttachments();
+  try {
+    const result = await uploadChatFile(file, (p) => { entry.progress = p; renderChatAttachments(); });
+    entry.url = result.url;
+    entry.size = Number.isFinite(result.size) ? result.size : entry.size;
+    entry.mime = result.mime || entry.mime;
+    entry.uploading = false;
+    renderChatAttachments();
+  } catch (error) {
+    entry.uploading = false;
+    renderChatAttachments();
+    setChatHint(error.message || "자른 이미지 업로드에 실패했습니다.");
+  }
+}
+
+// ===== 커스텀 이모지 피커 =====
+const UNICODE_EMOJIS = [
+  "😀", "😂", "🙂", "😍", "😎", "🤔", "😭", "😡", "👍", "👎",
+  "🙏", "👏", "🔥", "🎉", "💯", "❤️", "💜", "✅", "❌", "⭐",
+  "😅", "😉", "😊", "🥰", "😴", "🤯", "🥳", "😱", "💀", "👀",
+  "🚀", "☕", "🍺", "🍕", "🎮", "🎧", "💡", "📌", "⚡", "✨",
+];
+
+let emojiPickerEl = null;
+
+function activeChatChannel() {
+  return state.channels.find((c) => c.id === state.activeChat?.channelId) || null;
+}
+
+function closeEmojiPicker() {
+  if (emojiPickerEl) { emojiPickerEl.remove(); emojiPickerEl = null; }
+  document.removeEventListener("click", onEmojiPickerOutside, true);
+}
+function onEmojiPickerOutside(e) {
+  if (!emojiPickerEl) return;
+  if (emojiPickerEl.contains(e.target)) return;
+  if (dom.chatEmojiButton && (e.target === dom.chatEmojiButton || dom.chatEmojiButton.contains(e.target))) return;
+  closeEmojiPicker();
+}
+function toggleEmojiPicker() {
+  if (emojiPickerEl) { closeEmojiPicker(); return; }
+  if (!state.activeChat) return;
+  const composer = dom.chatEmojiButton?.closest(".chat-composer");
+  if (!composer) return;
+  emojiPickerEl = buildEmojiPicker();
+  composer.append(emojiPickerEl);
+  setTimeout(() => document.addEventListener("click", onEmojiPickerOutside, true), 0);
+}
+function refreshEmojiPickerIfOpen() {
+  if (!emojiPickerEl) return;
+  const composer = dom.chatEmojiButton?.closest(".chat-composer");
+  if (!composer) { closeEmojiPicker(); return; }
+  const next = buildEmojiPicker();
+  emojiPickerEl.replaceWith(next);
+  emojiPickerEl = next;
+}
+
+function buildEmojiPicker() {
+  const channel = activeChatChannel();
+  const list = channel?.emojis || [];
+  const manage = canManageEmoji(channel);
+  const panel = document.createElement("div");
+  panel.className = "emoji-picker";
+  panel.id = "emojiPicker";
+
+  const head = document.createElement("div");
+  head.className = "emoji-picker-head";
+  head.append(el("span", "", "이모지"));
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "emoji-picker-close";
+  close.textContent = "✕";
+  close.addEventListener("click", closeEmojiPicker);
+  head.append(close);
+  panel.append(head);
+
+  const body = document.createElement("div");
+  body.className = "emoji-picker-body";
+
+  body.append(el("p", "emoji-section-title", "커스텀 이모지"));
+  if (list.length) {
+    const grid = document.createElement("div");
+    grid.className = "emoji-grid";
+    for (const e of list) {
+      const cell = document.createElement("div");
+      cell.className = "emoji-cell";
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "emoji-btn";
+      b.title = `:${e.name}:`;
+      const im = document.createElement("img");
+      im.src = e.url;
+      im.alt = `:${e.name}:`;
+      im.className = "emoji-btn-img";
+      im.loading = "lazy";
+      b.append(im);
+      b.addEventListener("click", () => insertAtChatCursor(`:${e.name}: `));
+      cell.append(b);
+      if (manage) {
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "emoji-del";
+        del.textContent = "×";
+        del.title = "삭제";
+        del.addEventListener("click", (ev) => { ev.stopPropagation(); deleteEmoji(channel.id, e); });
+        cell.append(del);
+      }
+      grid.append(cell);
+    }
+    body.append(grid);
+  } else {
+    body.append(el("p", "emoji-empty", manage ? "아직 없어요. 아래 버튼으로 추가하세요." : "아직 커스텀 이모지가 없습니다."));
+  }
+
+  body.append(el("p", "emoji-section-title", "기본 이모지"));
+  const ugrid = document.createElement("div");
+  ugrid.className = "emoji-grid unicode";
+  for (const ch of UNICODE_EMOJIS) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "emoji-btn uni";
+    b.textContent = ch;
+    b.addEventListener("click", () => insertAtChatCursor(ch));
+    ugrid.append(b);
+  }
+  body.append(ugrid);
+  panel.append(body);
+
+  if (manage) {
+    const foot = document.createElement("div");
+    foot.className = "emoji-picker-foot";
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = "primary small";
+    add.textContent = "＋ 커스텀 이모지 추가";
+    add.addEventListener("click", startAddEmoji);
+    foot.append(add);
+    panel.append(foot);
+  }
+  return panel;
+}
+
+// 입력창 커서 위치에 텍스트 삽입.
+function insertAtChatCursor(text) {
+  const elx = dom.chatInput;
+  if (!elx) return;
+  if (elx.disabled) return;
+  const start = elx.selectionStart ?? elx.value.length;
+  const end = elx.selectionEnd ?? elx.value.length;
+  elx.value = elx.value.slice(0, start) + text + elx.value.slice(end);
+  const caret = start + text.length;
+  elx.selectionStart = elx.selectionEnd = caret;
+  elx.focus();
+  autoResizeChatInput();
+  updateChatInputPreview();
+}
+
+// 커스텀 이모지 추가: 이미지 선택 → 정사각 크롭(자동 128px 축소) → 이름 지정 → 업로드.
+function startAddEmoji() {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = "image/*";
+  input.addEventListener("change", () => {
+    const file = input.files?.[0];
+    if (file) beginEmojiCrop(file);
+  });
+  input.click();
+}
+function beginEmojiCrop(file) {
+  const src = URL.createObjectURL(file);
+  openImageViewer({
+    src,
+    title: "이모지 자르기 (정사각형)",
+    crop: true,
+    aspect: 1,
+    maxOut: 128, // 큰 이미지는 자동으로 128px 이하로 축소
+    applyLabel: "다음",
+    outputType: "image/png",
+    onApply: (blob) => { URL.revokeObjectURL(src); promptEmojiNameAndUpload(blob, file.name); },
+  });
+}
+function promptEmojiNameAndUpload(blob, originalName) {
+  const suggested = (originalName || "emoji").replace(/\.[^.]+$/, "").toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 32);
+  const raw = window.prompt("이모지 이름 (영문/숫자/밑줄, 2~32자). 채팅에서 :이름: 으로 사용해요.", suggested || "");
+  if (raw === null) return;
+  const name = raw.trim().replace(/^:+|:+$/g, "").toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 32);
+  if (name.length < 2) { setChatHint("이모지 이름은 영문/숫자/밑줄 2자 이상이어야 합니다."); return; }
+  uploadEmojiBlob(blob, name);
+}
+async function uploadEmojiBlob(blob, name) {
+  const channel = activeChatChannel();
+  if (!channel) return;
+  const file = new File([blob], `${name}.png`, { type: "image/png" });
+  setChatHint("이모지 업로드 중…");
+  try {
+    const result = await uploadChatFile(file);
+    sendSocket({ type: "channel:add-emoji", channelId: channel.id, name, url: result.url });
+    setChatHint("");
+  } catch (error) {
+    setChatHint(error.message || "이모지 업로드에 실패했습니다.");
+  }
+}
+function deleteEmoji(channelId, emoji) {
+  if (!window.confirm(`이모지 :${emoji.name}: 를 삭제할까요?`)) return;
+  sendSocket({ type: "channel:remove-emoji", channelId, emojiId: emoji.id });
+}
+
 function bindChatEvents() {
   dom.chatSendButton?.addEventListener("click", sendChatMessage);
+  dom.chatEmojiButton?.addEventListener("click", (e) => { e.stopPropagation(); toggleEmojiPicker(); });
   dom.chatInput?.addEventListener("input", onChatInput);
   dom.chatInput?.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {

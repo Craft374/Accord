@@ -380,7 +380,8 @@ function createChannel(ownerId, name) {
     icon: "", // 채널 아이콘 이미지(data URL)
     inviteCode: makeInviteCode(),
     members: [ownerId],
-    roles: [], // 권한 역할 목록 [{ id, name, color, memberIds:[] }]
+    roles: [], // 권한 역할 목록 [{ id, name, color, memberIds:[], manageEmoji }]
+    emojis: [], // 커스텀 이모지 [{ id, name, url, by, at }]
     rooms: [
       { id: newId(), name: "일반", type: "voice", limit: DEFAULT_ROOM_LIMIT },
       { id: newId(), name: "공지", type: "chat" },
@@ -561,13 +562,14 @@ function createRole(channelId, name) {
   return { channel, role };
 }
 
-function updateRole(channelId, roleId, { name, color } = {}) {
+function updateRole(channelId, roleId, { name, color, manageEmoji } = {}) {
   const channel = getChannel(channelId);
   if (!channel) return { error: "채널을 찾을 수 없습니다." };
   const role = rolesOf(channel).find((r) => r.id === roleId);
   if (!role) return { error: "역할을 찾을 수 없습니다." };
   if (name !== undefined) role.name = cleanRoleName(name);
   if (color !== undefined) role.color = cleanColor(color, role.color);
+  if (manageEmoji !== undefined) role.manageEmoji = Boolean(manageEmoji);
   persistChannels();
   return { channel, role };
 }
@@ -691,6 +693,53 @@ function canUseRoom(channelId, roomId, userId, isAdmin = false) {
   return p.access && p.use;
 }
 
+// ===== 커스텀 이모지 =====
+const EMOJI_MAX_PER_CHANNEL = 100;
+
+function emojisOf(channel) {
+  if (!Array.isArray(channel.emojis)) channel.emojis = [];
+  return channel.emojis;
+}
+
+// 이모지 관리(추가/삭제) 권한: 관리자·대표(창설자/공동대표) 또는 manageEmoji 역할 보유자.
+function canManageEmoji(channelId, userId, isAdmin = false) {
+  const channel = getChannel(channelId);
+  if (!channel) return false;
+  if (isChannelOwner(channelId, userId, isAdmin)) return true;
+  return rolesOf(channel).some((r) => r.manageEmoji && (r.memberIds || []).includes(userId));
+}
+
+// 이모지 이름 정리: 소문자 영문/숫자/밑줄 2~32자. 앞뒤 콜론은 제거.
+function cleanEmojiName(value) {
+  return String(value || "").trim().replace(/^:+|:+$/g, "").toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 32);
+}
+
+function addEmoji(channelId, name, url) {
+  const channel = getChannel(channelId);
+  if (!channel) return { error: "채널을 찾을 수 없습니다." };
+  const list = emojisOf(channel);
+  if (list.length >= EMOJI_MAX_PER_CHANNEL) return { error: `이모지는 최대 ${EMOJI_MAX_PER_CHANNEL}개까지 만들 수 있습니다.` };
+  const clean = cleanEmojiName(name);
+  if (clean.length < 2) return { error: "이모지 이름은 영문/숫자/밑줄 2자 이상이어야 합니다." };
+  if (list.some((e) => e.name === clean)) return { error: "이미 같은 이름의 이모지가 있습니다." };
+  const safeUrl = String(url || "");
+  if (!/^\/uploads\/[A-Za-z0-9._-]+$/.test(safeUrl)) return { error: "이모지 이미지가 올바르지 않습니다." };
+  const emoji = { id: newId(), name: clean, url: safeUrl, by: "", at: Date.now() };
+  list.push(emoji);
+  persistChannels();
+  return { channel, emoji };
+}
+
+function removeEmoji(channelId, emojiId) {
+  const channel = getChannel(channelId);
+  if (!channel) return { error: "채널을 찾을 수 없습니다." };
+  const before = emojisOf(channel).length;
+  channel.emojis = emojisOf(channel).filter((e) => e.id !== emojiId);
+  if (channel.emojis.length === before) return { error: "이모지를 찾을 수 없습니다." };
+  persistChannels();
+  return { channel };
+}
+
 function setRoomLimit(channelId, roomId, limit) {
   const channel = getChannel(channelId);
   if (!channel) return { error: "채널을 찾을 수 없습니다." };
@@ -742,7 +791,8 @@ function channelSummary(channel) {
     icon: channel.icon || "",
     inviteCode: channel.inviteCode,
     memberIds: channel.members.slice(),
-    roles: rolesOf(channel).map((r) => ({ id: r.id, name: r.name, color: r.color, memberIds: (r.memberIds || []).slice() })),
+    roles: rolesOf(channel).map((r) => ({ id: r.id, name: r.name, color: r.color, memberIds: (r.memberIds || []).slice(), manageEmoji: Boolean(r.manageEmoji) })),
+    emojis: emojisOf(channel).map((e) => ({ id: e.id, name: e.name, url: e.url })),
     rooms: channel.rooms.map((r) => ({
       id: r.id,
       name: r.name,
@@ -1104,6 +1154,10 @@ module.exports = {
   resolveRoomPerms,
   canAccessRoom,
   canUseRoom,
+  // 커스텀 이모지
+  canManageEmoji,
+  addEmoji,
+  removeEmoji,
   renameChannel,
   deleteChannel,
   findRoom,

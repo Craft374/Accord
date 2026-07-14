@@ -660,6 +660,7 @@ body.chat-shift .chat-act.trash {
 }
 
 .chat-composer {
+  position: relative;
   flex-shrink: 0;
   padding: 6px 16px 14px;
 }
@@ -771,6 +772,26 @@ body.chat-shift .chat-act.trash {
 }
 .chat-send-button:hover {
   background: var(--blurple-strong);
+}
+.chat-emoji-button {
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  align-self: center;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--bg-surface);
+  color: var(--muted);
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+.chat-emoji-button:hover {
+  background: var(--bg-elevated);
 }
 .chat-composer-hint {
   margin: 6px 2px 0;
@@ -3722,3 +3743,345 @@ audio,
 .perms-preview-line.no-access { opacity: 0.5; }
 .perms-caps { font-size: 12px; color: var(--muted); }
 .perms-preview-result .primary { margin-top: 8px; }
+
+/* 역할 상세: 토글 행(이모지 관리 권한 등) */
+.perms-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 4px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+.perms-toggle-row input { accent-color: var(--blurple); }
+
+/* ===== 채팅 이미지: 래퍼 + ⋯ 버튼 ===== */
+.chat-image-wrap {
+  position: relative;
+  display: inline-block;
+  max-width: 360px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.chat-image-more {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 28px;
+  height: 24px;
+  min-height: 0;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  display: grid;
+  place-items: center;
+}
+.chat-image-wrap:hover .chat-image-more { opacity: 1; }
+
+/* ===== 채팅 심화 마크다운 ===== */
+.chat-msg-text .chat-code {
+  position: relative;
+}
+.chat-code-lang {
+  display: inline-block;
+  margin-bottom: 4px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--bg-surface);
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  text-transform: lowercase;
+}
+.chat-code-lang + code { display: block; }
+.chat-msg-text .chat-h {
+  margin: 6px 0 2px;
+  color: var(--heading);
+  line-height: 1.3;
+  font-weight: 700;
+}
+.chat-msg-text h1.chat-h { font-size: 1.4em; }
+.chat-msg-text h2.chat-h { font-size: 1.25em; }
+.chat-msg-text h3.chat-h { font-size: 1.12em; }
+.chat-msg-text h4.chat-h,
+.chat-msg-text h5.chat-h,
+.chat-msg-text h6.chat-h { font-size: 1em; }
+.chat-msg-text .chat-quote {
+  margin: 3px 0;
+  padding: 2px 10px;
+  border-left: 3px solid var(--line-strong);
+  color: var(--text);
+}
+.chat-msg-text .chat-list {
+  margin: 2px 0;
+  padding-left: 22px;
+}
+.chat-msg-text .chat-list li { margin: 1px 0; }
+.chat-msg-text .chat-hr {
+  margin: 8px 0;
+  border: none;
+  border-top: 1px solid var(--line-strong);
+}
+.chat-msg-text p { margin: 0; }
+.chat-emoji {
+  display: inline-block;
+  width: 1.4em;
+  height: 1.4em;
+  vertical-align: -0.3em;
+  object-fit: contain;
+}
+
+/* ===== 입력창 마크다운 미리보기 ===== */
+.chat-input-preview {
+  margin-bottom: 8px;
+  padding: 8px 12px;
+  max-height: 200px;
+  overflow-y: auto;
+  background: var(--bg-surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.45;
+}
+.chat-input-preview::before {
+  content: "미리보기";
+  display: block;
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.chat-input-preview .chat-code {
+  margin: 4px 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  border: 1px solid var(--line);
+  overflow-x: auto;
+  white-space: pre;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+}
+.chat-input-preview code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--bg-elevated);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.86em;
+}
+.chat-input-preview .chat-code code { padding: 0; background: none; }
+.chat-input-preview a { color: #00a8fc; text-decoration: none; }
+.chat-input-preview strong { color: var(--heading); font-weight: 700; }
+.chat-input-preview .chat-emoji { width: 1.4em; height: 1.4em; vertical-align: -0.3em; }
+
+/* ===== 이미지 크게 보기 + 크롭 모달 ===== */
+.img-viewer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.72);
+}
+.img-viewer {
+  display: flex;
+  flex-direction: column;
+  width: min(92vw, 900px);
+  max-height: 90vh;
+  background: var(--bg-base);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+.img-viewer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.img-viewer-title {
+  color: var(--heading);
+  font-size: 14px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.img-viewer-close {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  min-height: 0;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  cursor: pointer;
+}
+.img-viewer-close:hover { background: var(--bg-elevated); color: var(--text); }
+.img-viewer-stage {
+  position: relative;
+  flex: 1;
+  min-height: 240px;
+  overflow: hidden;
+  background:
+    repeating-conic-gradient(#2a2c30 0% 25%, #303338 0% 50%) 50% / 22px 22px;
+  touch-action: none;
+}
+.img-viewer-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.img-viewer.cropping .img-viewer-img { pointer-events: none; }
+.img-crop-box {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.5);
+  cursor: move;
+}
+.img-crop-handle {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.4);
+  border-radius: 50%;
+}
+.img-crop-handle.nw { top: -8px; left: -8px; cursor: nwse-resize; }
+.img-crop-handle.ne { top: -8px; right: -8px; cursor: nesw-resize; }
+.img-crop-handle.sw { bottom: -8px; left: -8px; cursor: nesw-resize; }
+.img-crop-handle.se { bottom: -8px; right: -8px; cursor: nwse-resize; }
+.img-viewer-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+}
+.img-viewer-hint { color: var(--muted); font-size: 12px; }
+
+/* ===== 이모지 피커 ===== */
+.emoji-picker {
+  position: absolute;
+  right: 12px;
+  bottom: calc(100% - 6px);
+  z-index: 30;
+  width: 300px;
+  max-height: 380px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elevated);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+.emoji-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--heading);
+  font-size: 13px;
+  font-weight: 600;
+}
+.emoji-picker-close {
+  width: 24px;
+  height: 24px;
+  min-height: 0;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.emoji-picker-close:hover { background: var(--bg-surface); color: var(--text); }
+.emoji-picker-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 10px;
+}
+.emoji-section-title {
+  margin: 6px 2px 4px;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.emoji-empty {
+  margin: 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 4px;
+}
+.emoji-grid.unicode { grid-template-columns: repeat(8, 1fr); }
+.emoji-cell { position: relative; }
+.emoji-btn {
+  width: 100%;
+  aspect-ratio: 1;
+  min-height: 0;
+  padding: 2px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+.emoji-btn:hover { background: var(--bg-surface); }
+.emoji-btn.uni { font-size: 20px; line-height: 1; }
+.emoji-btn-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.emoji-del {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--danger);
+  color: #fff;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  display: grid;
+  place-items: center;
+}
+.emoji-cell:hover .emoji-del { opacity: 1; }
+.emoji-picker-foot {
+  padding: 8px 10px;
+  border-top: 1px solid var(--line);
+}
+.emoji-picker-foot .primary { width: 100%; }

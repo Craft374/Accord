@@ -12,7 +12,7 @@ loadServerEnvFiles();
 store.init();
 seedAdminAccount();
 
-const VERSION = "2.0.1";
+const VERSION = "2.1.0";
 const PORT = Number(process.env.PORT || 25565);
 const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_HOST = cleanHost(process.env.PUBLIC_HOST || "");
@@ -952,7 +952,7 @@ function handleChannelMessage(client, message) {
       });
     case "channel:update-role":
       return ownerAction(client, message.channelId, () => {
-        const r = store.updateRole(message.channelId, message.roleId, { name: message.name, color: message.color });
+        const r = store.updateRole(message.channelId, message.roleId, { name: message.name, color: message.color, manageEmoji: message.manageEmoji });
         if (r.error) return channelError(client, r.error);
         notifyChannelMembers(message.channelId);
         return true;
@@ -988,6 +988,21 @@ function handleChannelMessage(client, message) {
         const r = store.clearRoomPerm(message.channelId, message.roomId, message.kind, message.targetId);
         if (r.error) return channelError(client, r.error);
         refreshRoomAccess(message.channelId);
+        notifyChannelMembers(message.channelId);
+        return true;
+      });
+    case "channel:add-emoji":
+      return emojiAction(client, message.channelId, () => {
+        const r = store.addEmoji(message.channelId, message.name, message.url);
+        if (r.error) return channelError(client, r.error);
+        logServer(`emoji add name=:${r.emoji.name}: channel=${message.channelId}`, client);
+        notifyChannelMembers(message.channelId);
+        return true;
+      });
+    case "channel:remove-emoji":
+      return emojiAction(client, message.channelId, () => {
+        const r = store.removeEmoji(message.channelId, message.emojiId);
+        if (r.error) return channelError(client, r.error);
         notifyChannelMembers(message.channelId);
         return true;
       });
@@ -1027,6 +1042,14 @@ function ownerAction(client, channelId, fn) {
 function creatorAction(client, channelId, fn) {
   if (!store.isChannelCreator(channelId, client.userId, client.isAdmin)) {
     return channelError(client, "채널 창설자(또는 관리자)만 할 수 있습니다.");
+  }
+  return fn();
+}
+
+// 이모지 추가/삭제: 대표·관리자 또는 이모지 관리 역할 보유자만.
+function emojiAction(client, channelId, fn) {
+  if (!store.canManageEmoji(channelId, client.userId, client.isAdmin)) {
+    return channelError(client, "이모지를 추가할 권한이 없습니다.");
   }
   return fn();
 }
