@@ -535,6 +535,11 @@ function bindEvents() {
       handleCallModeration(mod.dataset.modAction, mod.dataset.modPeerId);
       return;
     }
+    const profile = event.target?.closest?.("[data-profile-user]");
+    if (profile) {
+      openProfileCard(profile.dataset.profileUser, profile, { id: profile.dataset.profileUser, displayName: profile.textContent, code: "----" });
+      return;
+    }
     const button = event.target?.closest?.("[data-screen-peer-id]");
     if (!button) return;
     state.selectedScreenPeerId = button.dataset.screenPeerId || "";
@@ -6494,6 +6499,7 @@ function renderMemberList() {
     const isOnline = online.has(member.id);
     const row = document.createElement("div");
     row.className = "member-row" + (isOnline ? "" : " offline");
+    row.dataset.profileUser = member.id;
 
     const avatar = document.createElement("span");
     avatar.className = "account-avatar small";
@@ -6546,6 +6552,164 @@ function makeBadge(text) {
   badge.className = "owner-badge";
   badge.textContent = text;
   return badge;
+}
+
+// ===== 프로필 카드(ID 카드) 팝오버 =====
+// 멤버 목록 · 통화 참가자 · 채팅 · DM 어디서든 유저를 누르면 뜨는 작은 카드.
+const profileCard = { el: null, userId: "", cache: new Map(), cleanup: null };
+
+function rememberUserProfile(user) {
+  if (!user?.id) return;
+  const prev = profileCard.cache.get(user.id) || {};
+  profileCard.cache.set(user.id, { ...prev, ...user });
+}
+
+// 유저 정보는 여러 곳(현재 채널 → 다른 채널 → DM → 캐시)에 흩어져 있어 순서대로 찾는다.
+function lookupUserProfile(userId, fallback = null) {
+  if (!userId) return fallback;
+  if (state.auth.user?.id === userId) return state.auth.user;
+  const here = currentChannel()?.members?.find((m) => m.id === userId);
+  if (here) return here;
+  for (const ch of state.channels) {
+    const m = (ch.members || []).find((x) => x.id === userId);
+    if (m) return m;
+  }
+  const thread = state.dm.threads.find((t) => t.userId === userId);
+  if (thread?.partner) return thread.partner;
+  if (state.dm.partner?.id === userId) return state.dm.partner;
+  return profileCard.cache.get(userId) || fallback;
+}
+
+function openProfileCard(userId, anchor, fallback = null) {
+  const user = lookupUserProfile(userId, fallback);
+  if (!user || !anchor) return;
+  const sameTarget = profileCard.el && profileCard.userId === user.id;
+  closeProfileCard();
+  if (sameTarget) return; // 같은 대상을 다시 누르면 토글로 닫힌다.
+  rememberUserProfile(user);
+
+  const pop = document.createElement("div");
+  pop.className = "profile-popover";
+  pop.id = "profileCardPop";
+
+  const card = document.createElement("div");
+  card.className = "profile-card";
+  const banner = document.createElement("div");
+  banner.className = "profile-card-banner";
+  setBanner(banner, user);
+  const main = document.createElement("div");
+  main.className = "profile-card-main";
+  const avatar = document.createElement("span");
+  avatar.className = "account-avatar large profile-card-avatar";
+  setAvatar(avatar, user);
+  const idBox = document.createElement("div");
+  idBox.className = "profile-card-id";
+  const name = document.createElement("b");
+  name.textContent = user.displayName || `유저#${user.code || "----"}`;
+  const code = document.createElement("em");
+  code.textContent = `#${user.code || "----"}`;
+  idBox.append(name, code);
+  main.append(avatar, idBox);
+  card.append(banner, main);
+
+  const badges = buildProfileCardBadges(user);
+  if (badges) card.append(badges);
+
+  const actions = document.createElement("div");
+  actions.className = "profile-card-actions";
+  const isSelf = state.auth.user?.id === user.id;
+  const primary = document.createElement("button");
+  primary.type = "button";
+  primary.className = "secondary";
+  if (isSelf) {
+    primary.textContent = "프로필 편집";
+    primary.addEventListener("click", () => {
+      closeProfileCard();
+      toggleProfileModal(true);
+    });
+  } else {
+    primary.textContent = "DM 보내기";
+    primary.addEventListener("click", () => {
+      closeProfileCard();
+      openDmMode();
+      openDmConversation(user.id);
+    });
+  }
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.className = "secondary";
+  copy.textContent = "코드 복사";
+  copy.addEventListener("click", () => {
+    copyTextWithFallback(`#${user.code || "----"}`);
+    copy.textContent = "복사됨";
+    window.setTimeout(() => { copy.textContent = "코드 복사"; }, 1200);
+  });
+  actions.append(primary, copy);
+  card.append(actions);
+
+  pop.append(card);
+  document.body.append(pop);
+  positionProfileCard(pop, anchor);
+  profileCard.el = pop;
+  profileCard.userId = user.id;
+
+  const onDocPointerDown = (event) => {
+    if (!pop.contains(event.target)) closeProfileCard();
+  };
+  const onKey = (event) => { if (event.key === "Escape") closeProfileCard(); };
+  const onDismiss = () => closeProfileCard();
+  // 카드를 연 클릭이 그대로 바깥 클릭으로 잡히지 않도록 다음 틱에 등록한다.
+  window.setTimeout(() => document.addEventListener("pointerdown", onDocPointerDown), 0);
+  document.addEventListener("keydown", onKey);
+  window.addEventListener("resize", onDismiss);
+  window.addEventListener("scroll", onDismiss, true);
+  profileCard.cleanup = () => {
+    document.removeEventListener("pointerdown", onDocPointerDown);
+    document.removeEventListener("keydown", onKey);
+    window.removeEventListener("resize", onDismiss);
+    window.removeEventListener("scroll", onDismiss, true);
+  };
+}
+
+function closeProfileCard() {
+  profileCard.cleanup?.();
+  profileCard.cleanup = null;
+  profileCard.el?.remove();
+  profileCard.el = null;
+  profileCard.userId = "";
+}
+
+function buildProfileCardBadges(user) {
+  const wrap = document.createElement("div");
+  wrap.className = "profile-card-badges";
+  const channel = currentChannel();
+  const member = channel?.members?.find((m) => m.id === user.id);
+  if (user.isAdmin) wrap.append(makeBadge("관리자"));
+  if (member?.isCreator) wrap.append(makeBadge("창설자"));
+  else if (member?.isManager) wrap.append(makeBadge("대표"));
+  const online = (state.online || []).includes(user.id);
+  const dot = document.createElement("span");
+  dot.className = "profile-card-presence" + (online ? " online" : "");
+  dot.textContent = online ? "접속 중" : "오프라인";
+  wrap.append(dot);
+  return wrap;
+}
+
+function positionProfileCard(pop, anchor) {
+  const rect = anchor.getBoundingClientRect();
+  const width = pop.offsetWidth;
+  const height = pop.offsetHeight;
+  const gap = 10;
+  const margin = 8;
+  let left;
+  if (window.innerWidth - rect.right >= width + gap) left = rect.right + gap;
+  else if (rect.left >= width + gap) left = rect.left - width - gap;
+  else left = Math.max(margin, Math.min(window.innerWidth - width - margin, rect.left));
+  let top = rect.top;
+  if (top + height > window.innerHeight - margin) top = window.innerHeight - height - margin;
+  if (top < margin) top = margin;
+  pop.style.left = `${Math.round(left)}px`;
+  pop.style.top = `${Math.round(top)}px`;
 }
 
 // ===== 권한 미리보기 · 역할/권한 관리 모달 =====
@@ -7295,10 +7459,15 @@ function bindChannelEvents() {
       return;
     }
     const kick = event.target?.closest?.("[data-kick-user-id]");
-    if (!kick) return;
-    if (window.confirm("이 멤버를 채널에서 내보낼까요?")) {
-      sendSocket({ type: "channel:kick", channelId: channel.id, userId: kick.dataset.kickUserId });
+    if (kick) {
+      if (window.confirm("이 멤버를 채널에서 내보낼까요?")) {
+        sendSocket({ type: "channel:kick", channelId: channel.id, userId: kick.dataset.kickUserId });
+      }
+      return;
     }
+    // 관리 버튼이 아닌 곳을 누르면 프로필 카드를 띄운다.
+    const row = event.target?.closest?.("[data-profile-user]");
+    if (row) openProfileCard(row.dataset.profileUser, row);
   });
 
   dom.channelMenuButton?.addEventListener("click", openChannelMenu);
@@ -7552,14 +7721,16 @@ function renderChatMessages() {
       const group = document.createElement("div");
       group.className = "chat-group";
       const avatar = document.createElement("span");
-      avatar.className = "chat-avatar account-avatar small";
+      avatar.className = "chat-avatar account-avatar small profile-link";
+      avatar.dataset.profileUser = msg.userId || "";
       setAvatar(avatar, resolveChatUser(msg));
       currentBody = document.createElement("div");
       currentBody.className = "chat-group-body";
       const head = document.createElement("div");
       head.className = "chat-msg-head";
       const name = document.createElement("b");
-      name.className = "chat-msg-name";
+      name.className = "chat-msg-name profile-link";
+      name.dataset.profileUser = msg.userId || "";
       name.textContent = msg.name || "이름없음";
       const time = document.createElement("span");
       time.className = "chat-msg-time";
@@ -8885,6 +9056,13 @@ function deleteEmoji(channelId, emoji) {
 function bindChatEvents() {
   dom.chatSendButton?.addEventListener("click", sendChatMessage);
   dom.chatEmojiButton?.addEventListener("click", (e) => { e.stopPropagation(); toggleEmojiPicker(); });
+  dom.chatMessages?.addEventListener("click", (event) => {
+    const target = event.target?.closest?.("[data-profile-user]");
+    if (!target) return;
+    const msgEl = target.closest(".chat-group");
+    const name = msgEl?.querySelector(".chat-msg-name")?.textContent || "";
+    openProfileCard(target.dataset.profileUser, target, { id: target.dataset.profileUser, displayName: name, code: "----" });
+  });
   dom.chatInput?.addEventListener("input", onChatInput);
   dom.chatInput?.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
@@ -8936,9 +9114,18 @@ function bindDmEvents() {
   });
   dom.dmMessages?.addEventListener("click", (event) => {
     const del = event.target?.closest?.("[data-dm-delete]");
-    if (!del) return;
-    if (!confirm("이 메시지를 삭제할까요?")) return;
-    sendSocket({ type: "dm:delete", userId: state.dm.activeUserId, msgId: del.dataset.dmDelete });
+    if (del) {
+      if (!confirm("이 메시지를 삭제할까요?")) return;
+      sendSocket({ type: "dm:delete", userId: state.dm.activeUserId, msgId: del.dataset.dmDelete });
+      return;
+    }
+    const profile = event.target?.closest?.("[data-profile-user]");
+    if (profile) openProfileCard(profile.dataset.profileUser, profile);
+  });
+  // DM 대화 헤더(아바타 · 이름)를 누르면 상대 프로필 카드가 뜬다.
+  dom.dmConvHead?.addEventListener("click", () => {
+    const partner = state.dm.partner;
+    if (partner?.id) openProfileCard(partner.id, dom.dmConvHead, partner);
   });
   dom.dmSendButton?.addEventListener("click", sendDmText);
   dom.dmInput?.addEventListener("input", autoResizeDmInput);
@@ -9728,6 +9915,7 @@ function openDmConversation(userId) {
 function setDmHeader(partner) {
   if (!partner) return;
   state.dm.partner = partner;
+  rememberUserProfile(partner);
   if (dom.dmConvHead) dom.dmConvHead.hidden = false;
   if (dom.dmConvName) dom.dmConvName.textContent = partner.displayName || "유저";
   if (dom.dmConvCode) dom.dmConvCode.textContent = "#" + (partner.code || "----");
@@ -9818,6 +10006,8 @@ function renderDmMessages() {
       const head = document.createElement("div");
       head.className = "dm-msg-head";
       const nameEl = document.createElement("b");
+      nameEl.className = "profile-link";
+      nameEl.dataset.profileUser = msg.userId || "";
       nameEl.textContent = msg.name || "유저";
       const time = document.createElement("span");
       time.textContent = formatChatTime(msg.at);
@@ -11358,6 +11548,7 @@ function renderParticipants() {
     name: getUserName(),
     status: getLocalStateText(),
     self: true,
+    userId: state.auth.user?.id || "",
   });
   for (const peer of state.peers.values()) {
     appendParticipant({
@@ -11365,17 +11556,23 @@ function renderParticipants() {
       name: peer.name,
       status: peer.remoteStatus?.mic?.muted ? `${peer.state} · 마이크 꺼짐` : peer.state,
       peer,
+      userId: peer.userId || "",
     });
   }
   updateParticipantMeters();
 }
 
-function appendParticipant({ id, name, status, self = false, peer = null }) {
+function appendParticipant({ id, name, status, self = false, peer = null, userId = "" }) {
   const card = document.createElement("div");
   card.className = "participant-card";
   card.dataset.participantId = String(id);
   const title = document.createElement("strong");
   title.textContent = name;
+  if (userId) {
+    title.classList.add("profile-link");
+    title.dataset.profileUser = userId;
+    title.title = "프로필 보기";
+  }
   const label = document.createElement("span");
   label.textContent = status;
   const header = document.createElement("div");
