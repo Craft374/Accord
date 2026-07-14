@@ -971,6 +971,13 @@ function handleChannelMessage(client, message) {
         notifyChannelMembers(message.channelId);
         return true;
       });
+    case "channel:set-user-perm":
+      return ownerAction(client, message.channelId, () => {
+        const r = store.setUserPerm(message.channelId, message.userId, message.cap, Boolean(message.value));
+        if (r.error) return channelError(client, r.error);
+        notifyChannelMembers(message.channelId);
+        return true;
+      });
     case "channel:delete-role":
       return ownerAction(client, message.channelId, () => {
         const r = store.deleteRole(message.channelId, message.roleId);
@@ -1241,6 +1248,31 @@ function handleChatMessage(client, message) {
       }
       store.deleteMessage(ctx.room.id, message.msgId);
       broadcastChat(ctx.channel, { type: "chat:deleted", roomId: ctx.room.id, msgId: message.msgId });
+      return true;
+    }
+    case "chat:edit": {
+      const ctx = resolveChatRoom(client, message.roomId);
+      if (!ctx) return true;
+      if (!isRoomWritable(ctx, client)) {
+        send(client, { type: "chat-error", message: "읽기 전용 방입니다." });
+        return true;
+      }
+      const text = String(message.text || "").slice(0, CHAT_TEXT_MAX).replace(/\s+$/, "");
+      if (!text) {
+        send(client, { type: "chat-error", message: "빈 메시지로 수정할 수 없습니다." });
+        return true;
+      }
+      // 커스텀 이모지 사용 권한 재확인(사용 제한 채널에서 우회 방지)
+      if (!store.canUseEmoji(ctx.channel.id, client.userId, client.isAdmin)) {
+        const emojis = (store.getChannel(ctx.channel.id)?.emojis) || [];
+        if (emojis.some((e) => e && e.name && new RegExp(`:${e.name}:`).test(text))) {
+          send(client, { type: "chat-error", message: "커스텀 이모지를 사용할 권한이 없습니다." });
+          return true;
+        }
+      }
+      const r = store.editMessage(ctx.room.id, message.msgId, client.userId, text);
+      if (r.error) { send(client, { type: "chat-error", message: r.error }); return true; }
+      broadcastChat(ctx.channel, { type: "chat:edited", roomId: ctx.room.id, msgId: message.msgId, text: r.message.text, editedAt: r.message.editedAt });
       return true;
     }
     default:

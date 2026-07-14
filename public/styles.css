@@ -113,6 +113,22 @@ input[type="range"] {
   accent-color: var(--blurple);
 }
 
+/* 체크박스·라디오: 위 전역 input 규칙(width:100%·min-height:38px·배경·테두리)이 먹어
+   거대한 사각형으로 깨지므로 네이티브 크기로 되돌린다. */
+input[type="checkbox"],
+input[type="radio"] {
+  width: auto;
+  min-height: 0;
+  min-width: 0;
+  flex: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  accent-color: var(--blurple);
+  cursor: pointer;
+}
+
 select {
   appearance: none;
 }
@@ -508,6 +524,25 @@ body.chat-open .log-panel {
 .chat-msg-text a:hover { text-decoration: underline; }
 .chat-msg-text strong { color: var(--heading); font-weight: 700; }
 .chat-msg-text del { color: var(--muted); }
+.chat-msg-edited { color: var(--muted); font-size: 11px; user-select: none; }
+
+/* 메시지 인라인 편집기 */
+.chat-edit-box { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+.chat-edit-input {
+  width: 100%;
+  resize: none;
+  min-height: 36px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text);
+  font: inherit;
+  line-height: 1.4;
+}
+.chat-edit-input:focus { border-color: var(--blurple); }
+.chat-edit-actions { display: flex; align-items: center; gap: 8px; }
+.chat-edit-hint { color: var(--muted); font-size: 11px; margin-right: auto; }
 
 /* 메시지 hover 하이라이트 + 삭제 액션(디스코드식) */
 .chat-msg {
@@ -3832,6 +3867,30 @@ audio,
 }
 .perms-channel-box .perms-subtitle { margin-top: 0; }
 .perms-channel-box .modal-hint { margin: 6px 0 0; }
+/* 유저별 권한 표 */
+.perms-userperm-box { margin-top: 16px; }
+.perms-userperm-table { display: flex; flex-direction: column; gap: 2px; max-height: 34vh; overflow-y: auto; }
+.perms-userperm-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 40px 40px 40px 40px;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 8px;
+  border-radius: var(--radius-xs);
+}
+.perms-userperm-row:not(.perms-userperm-head):hover { background: var(--bg-elevated); }
+.perms-userperm-head {
+  position: sticky;
+  top: 0;
+  background: var(--bg-base);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+.perms-userperm-head span:not(.upn) { text-align: center; }
+.perms-userperm-row .upn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--text); }
+.perms-userperm-row .upn em { color: var(--muted); font-style: normal; font-size: 11px; }
+.perms-userperm-row .upc { display: flex; justify-content: center; align-items: center; cursor: pointer; }
 
 /* ===== 채팅 이미지: 래퍼 + ⋯ 버튼 ===== */
 .chat-image-wrap {

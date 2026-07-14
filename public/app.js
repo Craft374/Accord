@@ -1430,6 +1430,17 @@ async function handleSocketMessage(message) {
   if (message.type === "chat:deleted") {
     if (state.activeChat?.roomId === message.roomId) {
       state.chatMessages = state.chatMessages.filter((m) => m.id !== message.msgId);
+      if (chatEditingId === message.msgId) chatEditingId = "";
+      renderChatMessages();
+    }
+    return;
+  }
+
+  if (message.type === "chat:edited") {
+    if (state.activeChat?.roomId === message.roomId) {
+      const m = state.chatMessages.find((x) => x.id === message.msgId);
+      if (m) { m.text = message.text; m.editedAt = message.editedAt; }
+      if (chatEditingId === message.msgId) chatEditingId = "";
       renderChatMessages();
     }
     return;
@@ -6030,6 +6041,7 @@ function memberHasCap(channel, cap) {
   if (!channel) return false;
   if (isChannelOwner(channel)) return true;
   const uid = state.auth.user?.id;
+  if (channel.userPerms?.[uid]?.[cap]) return true; // 유저 개별 허용
   return (channel.roles || []).some((r) => roleCap(r, cap) && (r.memberIds || []).includes(uid));
 }
 // 이모지 추가(업로드) 권한.
@@ -6570,7 +6582,46 @@ function buildRolesPane(channel) {
   else detail.innerHTML = `<p class="modal-hint">역할을 선택하면 이름·색·멤버를 편집할 수 있습니다.</p>`;
   grid.append(detail);
   wrap.append(grid);
+
+  wrap.append(buildUserPermsSection(channel));
   return wrap;
+}
+
+// 역할과 별개로 유저 개별에게 이모지·첨부 권한을 열어주는 표.
+function buildUserPermsSection(channel) {
+  const box = document.createElement("div");
+  box.className = "perms-userperm-box";
+  box.append(el("p", "perms-subtitle", "유저별 권한 (역할과 별개로 개별 허용)"));
+  const table = document.createElement("div");
+  table.className = "perms-userperm-table";
+  const head = document.createElement("div");
+  head.className = "perms-userperm-row perms-userperm-head";
+  head.innerHTML = `<span class="upn">멤버</span><span title="커스텀 이모지 추가">추가</span><span title="커스텀 이모지 삭제">삭제</span><span title="커스텀 이모지 사용">사용</span><span title="파일·이미지 첨부">첨부</span>`;
+  table.append(head);
+  const caps = ["addEmoji", "removeEmoji", "useEmoji", "attachFile"];
+  for (const m of channel.members || []) {
+    const up = channel.userPerms?.[m.id] || {};
+    const row = document.createElement("div");
+    row.className = "perms-userperm-row";
+    const name = document.createElement("span");
+    name.className = "upn";
+    name.innerHTML = `${escapeHtml(m.displayName || ("유저#" + m.code))} <em>#${escapeHtml(m.code)}</em>`;
+    row.append(name);
+    for (const cap of caps) {
+      const cell = document.createElement("label");
+      cell.className = "upc";
+      const chk = document.createElement("input");
+      chk.type = "checkbox";
+      chk.checked = !!up[cap];
+      chk.dataset.userPerm = cap;
+      chk.dataset.userId = m.id;
+      cell.append(chk);
+      row.append(cell);
+    }
+    table.append(row);
+  }
+  box.append(table);
+  return box;
 }
 
 function buildRoleDetail(channel, role) {
@@ -6926,6 +6977,8 @@ function onPermsModalChange(event) {
   if (cap) { sendSocket({ type: "channel:update-role", channelId: cid, roleId: cap.dataset.roleId, [cap.dataset.roleCap]: cap.checked }); return; }
   const chPerm = t.closest?.("[data-channel-perm]");
   if (chPerm) { sendSocket({ type: "channel:set-perms", channelId: cid, [chPerm.dataset.channelPerm]: chPerm.checked }); return; }
+  const uPerm = t.closest?.("[data-user-perm]");
+  if (uPerm) { sendSocket({ type: "channel:set-user-perm", channelId: cid, userId: uPerm.dataset.userId, cap: uPerm.dataset.userPerm, value: uPerm.checked }); return; }
   const rs = t.closest?.("[data-room-select]");
   if (rs) { permsState.roomId = rs.value; renderPermsModal(); return; }
   const memberChk = t.closest?.("[data-role-member]");
@@ -7301,11 +7354,23 @@ function renderChatMessages() {
 function renderChatMessageBody(msg) {
   const wrap = document.createElement("div");
   wrap.className = "chat-msg";
+  // 편집 중이면 텍스트 대신 인라인 편집기를 보여준다.
+  if (chatEditingId === msg.id) {
+    wrap.append(buildChatEditor(msg));
+    return wrap;
+  }
   if (msg.text) {
     const text = document.createElement("div");
     text.className = "chat-msg-text markdown-inline";
     // 사용자가 입력한 텍스트를 이스케이프한 뒤 일부 마크다운(코드블록/인라인코드/굵게 등)만 허용
     text.innerHTML = renderChatText(msg.text);
+    if (msg.editedAt) {
+      const edited = document.createElement("span");
+      edited.className = "chat-msg-edited";
+      edited.textContent = " (수정됨)";
+      edited.title = "수정됨: " + formatChatTime(msg.editedAt);
+      text.append(edited);
+    }
     wrap.append(text);
   }
   if (Array.isArray(msg.files) && msg.files.length) {
@@ -7356,10 +7421,73 @@ function deleteChatMessage(msgId, immediate) {
   sendSocket({ type: "chat:delete", roomId: state.activeChat.roomId, msgId });
 }
 
+// ── 자기 메시지 수정(인라인 편집) ──
+let chatEditingId = "";
+
+function startEditChatMessage(msgId) {
+  chatEditingId = msgId;
+  renderChatMessages();
+  const ta = document.querySelector(`.chat-edit-box[data-edit-id="${CSS.escape(msgId)}"] textarea`);
+  if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); autoResizeEl(ta); }
+}
+
+function cancelEditChatMessage() {
+  if (!chatEditingId) return;
+  chatEditingId = "";
+  renderChatMessages();
+}
+
+function saveEditChatMessage(msgId, text) {
+  const trimmed = String(text || "").replace(/\s+$/, "");
+  const msg = state.chatMessages.find((m) => m.id === msgId);
+  if (!trimmed) { setChatHint("빈 메시지로 수정할 수 없습니다. (지우려면 삭제를 쓰세요)"); return; }
+  if (msg && trimmed === msg.text) { cancelEditChatMessage(); return; } // 변경 없음
+  sendSocket({ type: "chat:edit", roomId: state.activeChat.roomId, msgId, text: trimmed });
+  chatEditingId = "";
+  renderChatMessages();
+}
+
+function buildChatEditor(msg) {
+  const box = document.createElement("div");
+  box.className = "chat-edit-box";
+  box.dataset.editId = msg.id;
+  const ta = document.createElement("textarea");
+  ta.className = "chat-edit-input";
+  ta.value = msg.text || "";
+  ta.rows = 1;
+  ta.addEventListener("input", () => autoResizeEl(ta));
+  ta.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); saveEditChatMessage(msg.id, ta.value); }
+    else if (e.key === "Escape") { e.preventDefault(); cancelEditChatMessage(); }
+  });
+  const actions = document.createElement("div");
+  actions.className = "chat-edit-actions";
+  const hint = document.createElement("span");
+  hint.className = "chat-edit-hint";
+  hint.textContent = "Enter 저장 · Esc 취소";
+  const cancel = document.createElement("button");
+  cancel.type = "button"; cancel.className = "ghost small"; cancel.textContent = "취소";
+  cancel.addEventListener("click", cancelEditChatMessage);
+  const save = document.createElement("button");
+  save.type = "button"; save.className = "primary small"; save.textContent = "저장";
+  save.addEventListener("click", () => saveEditChatMessage(msg.id, ta.value));
+  actions.append(hint, cancel, save);
+  box.append(ta, actions);
+  return box;
+}
+
+function autoResizeEl(el) {
+  el.style.height = "auto";
+  el.style.height = Math.min(el.scrollHeight, 200) + "px";
+}
+
 function openChatMsgMenu(msg, anchor, pos) {
   const items = [];
   if (msg.text) {
     items.push({ label: "복사", action: () => copyTextToClipboard(msg.text) });
+  }
+  if (msg.text && msg.userId === state.auth.user?.id && state.activeChat?.writable) {
+    items.push({ label: "수정", action: () => startEditChatMessage(msg.id) });
   }
   if (canDeleteChatMessage(msg)) {
     items.push({ label: "삭제", danger: true, action: () => deleteChatMessage(msg.id, false) });
@@ -7417,12 +7545,20 @@ function closeChatContextMenu() {
 }
 
 async function copyTextToClipboard(text) {
+  // 일렉트론 앱은 비보안(http) 컨텍스트라 navigator.clipboard 가 없거나 거부됨 → execCommand 폴백.
   try {
-    await navigator.clipboard.writeText(text);
+    if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+    else copyTextWithFallback(text);
     setChatHint("복사했습니다.");
     setTimeout(() => setChatHint(""), 1500);
   } catch {
-    setChatHint("복사에 실패했습니다.");
+    try {
+      copyTextWithFallback(text);
+      setChatHint("복사했습니다.");
+      setTimeout(() => setChatHint(""), 1500);
+    } catch {
+      setChatHint("복사에 실패했습니다.");
+    }
   }
 }
 

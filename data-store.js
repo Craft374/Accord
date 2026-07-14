@@ -721,36 +721,58 @@ function emojisOf(channel) {
 const roleCanAdd = (r) => Boolean(r.addEmoji ?? r.manageEmoji);
 const roleCanRemove = (r) => Boolean(r.removeEmoji ?? r.manageEmoji);
 const roleHasMember = (r, userId) => (r.memberIds || []).includes(userId);
+// 유저별 개별 허용(역할과 별개). channel.userPerms[userId][cap] === true.
+const userPermGranted = (channel, userId, cap) => Boolean(channel.userPerms && channel.userPerms[userId] && channel.userPerms[userId][cap]);
 
-// 이모지 추가(업로드) 권한: 관리자·대표 또는 addEmoji 역할 보유자.
+// 이모지 추가(업로드) 권한: 관리자·대표 또는 addEmoji 역할 보유자·개별허용 유저.
 function canAddEmoji(channelId, userId, isAdmin = false) {
   const channel = getChannel(channelId);
   if (!channel) return false;
   if (isChannelOwner(channelId, userId, isAdmin)) return true;
+  if (userPermGranted(channel, userId, "addEmoji")) return true;
   return rolesOf(channel).some((r) => roleCanAdd(r) && roleHasMember(r, userId));
 }
-// 이모지 삭제 권한: 관리자·대표 또는 removeEmoji 역할 보유자.
+// 이모지 삭제 권한: 관리자·대표 또는 removeEmoji 역할 보유자·개별허용 유저.
 function canRemoveEmoji(channelId, userId, isAdmin = false) {
   const channel = getChannel(channelId);
   if (!channel) return false;
   if (isChannelOwner(channelId, userId, isAdmin)) return true;
+  if (userPermGranted(channel, userId, "removeEmoji")) return true;
   return rolesOf(channel).some((r) => roleCanRemove(r) && roleHasMember(r, userId));
 }
-// 이모지 사용 권한: 제한 안 걸려있으면 전원 허용, 걸려있으면 대표·useEmoji 역할 보유자만.
+// 이모지 사용 권한: 제한 안 걸려있으면 전원 허용, 걸려있으면 대표·useEmoji 역할·개별허용 유저만.
 function canUseEmoji(channelId, userId, isAdmin = false) {
   const channel = getChannel(channelId);
   if (!channel) return false;
   if (!channel.emojiUseRestricted) return true;
   if (isChannelOwner(channelId, userId, isAdmin)) return true;
+  if (userPermGranted(channel, userId, "useEmoji")) return true;
   return rolesOf(channel).some((r) => Boolean(r.useEmoji) && roleHasMember(r, userId));
 }
-// 파일(이미지 포함) 첨부 권한: 제한 안 걸려있으면 전원 허용, 걸려있으면 대표·attachFile 역할 보유자만.
+// 파일(이미지 포함) 첨부 권한: 제한 안 걸려있으면 전원 허용, 걸려있으면 대표·attachFile 역할·개별허용 유저만.
 function canAttach(channelId, userId, isAdmin = false) {
   const channel = getChannel(channelId);
   if (!channel) return false;
   if (!channel.attachRestricted) return true;
   if (isChannelOwner(channelId, userId, isAdmin)) return true;
+  if (userPermGranted(channel, userId, "attachFile")) return true;
   return rolesOf(channel).some((r) => Boolean(r.attachFile) && roleHasMember(r, userId));
+}
+
+const USER_PERM_CAPS = ["addEmoji", "removeEmoji", "useEmoji", "attachFile"];
+// 유저 개별 권한 오버라이드 설정(대표자 전용). value=true면 허용, false면 제거.
+function setUserPerm(channelId, userId, cap, value) {
+  const channel = getChannel(channelId);
+  if (!channel) return { error: "채널을 찾을 수 없습니다." };
+  if (!USER_PERM_CAPS.includes(cap)) return { error: "알 수 없는 권한입니다." };
+  if (!channel.members.includes(userId)) return { error: "채널 멤버만 설정할 수 있습니다." };
+  if (!channel.userPerms) channel.userPerms = {};
+  if (!channel.userPerms[userId]) channel.userPerms[userId] = {};
+  if (value) channel.userPerms[userId][cap] = true;
+  else delete channel.userPerms[userId][cap];
+  if (Object.keys(channel.userPerms[userId]).length === 0) delete channel.userPerms[userId];
+  persistChannels();
+  return { channel };
 }
 // 하위호환: 이모지 추가/삭제 둘 중 하나라도 가능한지(구 호출부용).
 function canManageEmoji(channelId, userId, isAdmin = false) {
@@ -847,6 +869,7 @@ function channelSummary(channel) {
     })),
     emojiUseRestricted: Boolean(channel.emojiUseRestricted),
     attachRestricted: Boolean(channel.attachRestricted),
+    userPerms: Object.fromEntries(Object.entries(channel.userPerms || {}).map(([k, v]) => [k, { ...v }])),
     emojis: emojisOf(channel).map((e) => ({ id: e.id, name: e.name, url: e.url })),
     rooms: channel.rooms.map((r) => ({
       id: r.id,
@@ -897,6 +920,20 @@ function deleteRoomMessages(roomId) {
   } catch {
     /* 파일 없으면 무시 */
   }
+}
+
+// 본인 메시지의 텍스트를 수정한다. { message } 또는 { error }.
+function editMessage(roomId, msgId, userId, text) {
+  if (!isSafeRoomId(roomId)) return { error: "잘못된 방입니다." };
+  const list = readJson(messagesFile(roomId), []);
+  if (!Array.isArray(list)) return { error: "메시지를 찾을 수 없습니다." };
+  const msg = list.find((m) => m.id === msgId);
+  if (!msg) return { error: "메시지를 찾을 수 없습니다." };
+  if (msg.userId !== userId) return { error: "본인 메시지만 수정할 수 있습니다." };
+  msg.text = text;
+  msg.editedAt = Date.now();
+  writeJsonAtomic(messagesFile(roomId), list);
+  return { message: msg };
 }
 
 // 메시지 하나를 삭제한다. 삭제된 메시지를 돌려주고, 없으면 null.
@@ -1208,6 +1245,7 @@ module.exports = {
   setRoomPerm,
   clearRoomPerm,
   setChannelPerms,
+  setUserPerm,
   resolveRoomPerms,
   canAccessRoom,
   canUseRoom,
@@ -1226,6 +1264,7 @@ module.exports = {
   // 채팅 · 업로드
   getMessages,
   addMessage,
+  editMessage,
   deleteMessage,
   deleteRoomMessages,
   saveUpload,
