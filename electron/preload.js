@@ -62,6 +62,7 @@ contextBridge.exposeInMainWorld("voiceDesktop", {
     ipcRenderer.on("program-audio-stopped", handler);
     return () => ipcRenderer.removeListener("program-audio-stopped", handler);
   },
+  copyImage: (dataUrl) => ipcRenderer.invoke("copy-image", dataUrl),
   loadServer: (url) => ipcRenderer.invoke("load-voice-url", url),
   backToLauncher: () => ipcRenderer.invoke("back-to-launcher"),
   setScreenShareActive: (active) => ipcRenderer.invoke("set-screen-share-active", Boolean(active)),

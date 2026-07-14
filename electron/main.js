@@ -1,4 +1,4 @@
-const { app, BrowserWindow, desktopCapturer, ipcMain, session, Menu, Tray, nativeImage, MessageChannelMain, powerSaveBlocker, screen: electronScreen, net } = require("electron");
+const { app, BrowserWindow, desktopCapturer, ipcMain, session, Menu, Tray, nativeImage, clipboard, MessageChannelMain, powerSaveBlocker, screen: electronScreen, net } = require("electron");
 const { spawn, execFile } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -228,6 +228,19 @@ function setupDisplayMedia() {
 }
 
 function setupNavigation() {
+  // 이미지 클립보드 복사: 브라우저 clipboard API는 비보안(http) 컨텍스트에서 막히므로
+  // 일렉트론 네이티브 clipboard로 처리한다(맥/윈도 앱에서 그림판·채팅 이미지 복사 실패 해결).
+  ipcMain.handle("copy-image", (event, dataUrl) => {
+    try {
+      const image = nativeImage.createFromDataURL(String(dataUrl || ""));
+      if (image.isEmpty()) return { ok: false, error: "빈 이미지" };
+      clipboard.writeImage(image);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err?.message || "복사 실패" };
+    }
+  });
+
   ipcMain.handle("get-system-audio-source", async () => {
     const sources = await desktopCapturer.getSources({
       types: ["screen"],

@@ -1320,7 +1320,8 @@ body.draw-open .log-panel {
   background: var(--bg-elevated);
 }
 .draw-layer-vis,
-.draw-layer-lock {
+.draw-layer-lock,
+.draw-layer-rename {
   border: none;
   background: none;
   cursor: pointer;
@@ -1330,6 +1331,8 @@ body.draw-open .log-panel {
   padding: 2px;
   flex-shrink: 0;
 }
+.draw-layer-rename { font-size: 11px; opacity: 0.7; }
+.draw-layer-rename:hover { opacity: 1; }
 .draw-layer-name {
   flex: 1;
   min-width: 0;
@@ -3817,6 +3820,18 @@ audio,
   cursor: pointer;
 }
 .perms-toggle-row input { accent-color: var(--blurple); }
+.perms-toggle-row .perms-note { color: var(--muted); font-style: normal; font-size: 11px; }
+.perms-cap-box { margin-top: 10px; }
+.perms-cap-box .perms-toggle-row { margin: 4px 0; }
+.perms-channel-box {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+}
+.perms-channel-box .perms-subtitle { margin-top: 0; }
+.perms-channel-box .modal-hint { margin: 6px 0 0; }
 
 /* ===== 채팅 이미지: 래퍼 + ⋯ 버튼 ===== */
 .chat-image-wrap {
@@ -3864,6 +3879,12 @@ audio,
   text-transform: lowercase;
 }
 .chat-code-lang + code { display: block; }
+/* 코드 구문 강조(디스코드/원다크식, 앱은 다크 고정) */
+.chat-code .hl-keyword { color: #c678dd; }
+.chat-code .hl-string { color: #98c379; }
+.chat-code .hl-number { color: #d19a66; }
+.chat-code .hl-comment { color: #7f848e; font-style: italic; }
+.chat-code .hl-fn { color: #61afef; }
 .chat-msg-text .chat-h {
   margin: 6px 0 2px;
   color: var(--heading);
@@ -3953,6 +3974,42 @@ audio,
   place-items: center;
   padding: 24px;
   background: rgba(0, 0, 0, 0.72);
+}
+/* 커스텀 이모지 이름 입력 모달(일렉트론 prompt 미지원 대체) */
+.emoji-name-backdrop { z-index: 260; }
+.emoji-name-modal {
+  width: min(92vw, 360px);
+  padding: 20px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-base);
+  border: 1px solid var(--line-strong);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+}
+.emoji-name-modal h3 { margin: 0 0 6px; color: var(--heading); font-size: 16px; }
+.emoji-name-modal .modal-hint { margin: 0 0 12px; color: var(--muted); font-size: 12px; }
+.emoji-name-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-weight: 700;
+}
+.emoji-name-input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text);
+  font-size: 14px;
+}
+.emoji-name-err { margin: 8px 0 0; color: var(--danger); font-size: 12px; }
+.emoji-name-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
 }
 .img-viewer {
   display: flex;

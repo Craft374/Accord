@@ -6020,13 +6020,36 @@ function isChannelCreator(channel) {
   return Boolean(state.auth.user?.isAdmin) || channel.ownerId === state.auth.user?.id;
 }
 
-// 이모지 추가/삭제 권한: 대표·관리자 또는 manageEmoji 역할 보유자.
-function canManageEmoji(channel) {
+// 역할 능력 해석(레거시 manageEmoji=추가·삭제 겸용 폴백). 서버 data-store 와 동일 규칙.
+const roleCap = (r, cap) => {
+  if (cap === "addEmoji") return Boolean(r.addEmoji ?? r.manageEmoji);
+  if (cap === "removeEmoji") return Boolean(r.removeEmoji ?? r.manageEmoji);
+  return Boolean(r[cap]);
+};
+function memberHasCap(channel, cap) {
   if (!channel) return false;
   if (isChannelOwner(channel)) return true;
   const uid = state.auth.user?.id;
-  return (channel.roles || []).some((r) => r.manageEmoji && (r.memberIds || []).includes(uid));
+  return (channel.roles || []).some((r) => roleCap(r, cap) && (r.memberIds || []).includes(uid));
 }
+// 이모지 추가(업로드) 권한.
+function canAddEmoji(channel) { return memberHasCap(channel, "addEmoji"); }
+// 이모지 삭제 권한.
+function canRemoveEmoji(channel) { return memberHasCap(channel, "removeEmoji"); }
+// 이모지 사용 권한: 제한 안 걸렸으면 전원 허용.
+function canUseEmojiCh(channel) {
+  if (!channel) return false;
+  if (!channel.emojiUseRestricted) return true;
+  return memberHasCap(channel, "useEmoji");
+}
+// 파일 첨부 권한: 제한 안 걸렸으면 전원 허용.
+function canAttachCh(channel) {
+  if (!channel) return false;
+  if (!channel.attachRestricted) return true;
+  return memberHasCap(channel, "attachFile");
+}
+// 하위호환: 이모지 관리(추가 또는 삭제) 가능 여부.
+function canManageEmoji(channel) { return canAddEmoji(channel) || canRemoveEmoji(channel); }
 
 // ===== 권한 시스템(클라이언트 해석) =====
 // 서버 data-store 의 resolveRoomPerms 와 동일한 규칙을 클라이언트에서도 계산한다
@@ -6496,6 +6519,18 @@ function buildRolesPane(channel) {
   wrap.className = "perms-pane";
   const roles = channel.roles || [];
 
+  // 채널 단위 사용 제한(기본: 전원 허용). 켜면 아래 역할의 "사용/첨부" 권한 보유자만 가능.
+  const chBox = document.createElement("div");
+  chBox.className = "perms-channel-box";
+  chBox.innerHTML = `
+    <p class="perms-subtitle">채널 기본 제한</p>
+    <label class="perms-toggle-row"><input type="checkbox" data-channel-perm="emojiUseRestricted" ${channel.emojiUseRestricted ? "checked" : ""} />
+      <span>커스텀 이모지 사용을 역할로 제한</span></label>
+    <label class="perms-toggle-row"><input type="checkbox" data-channel-perm="attachRestricted" ${channel.attachRestricted ? "checked" : ""} />
+      <span>파일·이미지 첨부를 역할로 제한</span></label>
+    <p class="modal-hint">끄면 모든 멤버가 사용/첨부할 수 있어요. 켜면 위 권한을 가진 역할 보유자·대표만 가능해요.</p>`;
+  wrap.append(chBox);
+
   const top = document.createElement("div");
   top.className = "perms-row-add";
   top.innerHTML = `<input class="perms-input" data-role-new placeholder="새 역할 이름" maxlength="24" />
@@ -6550,12 +6585,20 @@ function buildRoleDetail(channel, role) {
     <button class="danger small" data-role-delete="${role.id}">역할 삭제</button>`;
   box.append(head);
 
-  // 이모지 관리 권한 토글
-  const emojiPerm = document.createElement("label");
-  emojiPerm.className = "perms-toggle-row";
-  emojiPerm.innerHTML = `<input type="checkbox" data-role-emoji="${role.id}" ${role.manageEmoji ? "checked" : ""} />
-    <span>커스텀 이모지 추가·삭제 허용</span>`;
-  box.append(emojiPerm);
+  // 역할 능력 토글(이모지 추가·삭제·사용, 파일 첨부)
+  const capBox = document.createElement("div");
+  capBox.className = "perms-cap-box";
+  capBox.innerHTML = `
+    <p class="perms-subtitle">이 역할의 권한</p>
+    <label class="perms-toggle-row"><input type="checkbox" data-role-cap="addEmoji" data-role-id="${role.id}" ${roleCap(role, "addEmoji") ? "checked" : ""} />
+      <span>커스텀 이모지 추가(업로드)</span></label>
+    <label class="perms-toggle-row"><input type="checkbox" data-role-cap="removeEmoji" data-role-id="${role.id}" ${roleCap(role, "removeEmoji") ? "checked" : ""} />
+      <span>커스텀 이모지 삭제</span></label>
+    <label class="perms-toggle-row"><input type="checkbox" data-role-cap="useEmoji" data-role-id="${role.id}" ${role.useEmoji ? "checked" : ""} />
+      <span>커스텀 이모지 사용 <em class="perms-note">(사용 제한 시)</em></span></label>
+    <label class="perms-toggle-row"><input type="checkbox" data-role-cap="attachFile" data-role-id="${role.id}" ${role.attachFile ? "checked" : ""} />
+      <span>파일·이미지 첨부 <em class="perms-note">(첨부 제한 시)</em></span></label>`;
+  box.append(capBox);
 
   const membersTitle = document.createElement("p");
   membersTitle.className = "perms-subtitle";
@@ -6879,8 +6922,10 @@ function onPermsModalChange(event) {
   if (rn) { sendSocket({ type: "channel:update-role", channelId: cid, roleId: rn.dataset.roleName, name: rn.value }); return; }
   const rc = t.closest?.("[data-role-color]");
   if (rc) { sendSocket({ type: "channel:update-role", channelId: cid, roleId: rc.dataset.roleColor, color: rc.value }); return; }
-  const re = t.closest?.("[data-role-emoji]");
-  if (re) { sendSocket({ type: "channel:update-role", channelId: cid, roleId: re.dataset.roleEmoji, manageEmoji: re.checked }); return; }
+  const cap = t.closest?.("[data-role-cap]");
+  if (cap) { sendSocket({ type: "channel:update-role", channelId: cid, roleId: cap.dataset.roleId, [cap.dataset.roleCap]: cap.checked }); return; }
+  const chPerm = t.closest?.("[data-channel-perm]");
+  if (chPerm) { sendSocket({ type: "channel:set-perms", channelId: cid, [chPerm.dataset.channelPerm]: chPerm.checked }); return; }
   const rs = t.closest?.("[data-room-select]");
   if (rs) { permsState.roomId = rs.value; renderPermsModal(); return; }
   const memberChk = t.closest?.("[data-role-member]");
@@ -7156,8 +7201,12 @@ function applyChatReadOnly(found) {
     dom.chatInput.disabled = !writable;
     dom.chatInput.placeholder = writable ? "메시지를 입력하세요" : "읽기 전용 방입니다 (대표자만 작성)";
   }
+  const canAttach = writable && canAttachCh(found.channel);
   if (dom.chatSendButton) dom.chatSendButton.disabled = !writable;
-  if (dom.chatAttachButton) dom.chatAttachButton.disabled = !writable;
+  if (dom.chatAttachButton) {
+    dom.chatAttachButton.disabled = !canAttach;
+    dom.chatAttachButton.title = canAttach ? "파일 첨부" : "파일 첨부 권한이 없어요";
+  }
   if (dom.chatEmojiButton) dom.chatEmojiButton.disabled = !writable;
   if (!writable) closeEmojiPicker();
 }
@@ -7402,13 +7451,28 @@ async function copyChatImage(src) {
     const res = await fetch(src);
     let blob = await res.blob();
     if (blob.type !== "image/png") blob = await imageBlobToPng(blob);
-    await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+    // 일렉트론 앱: 비보안 컨텍스트라 navigator.clipboard가 막히므로 네이티브 브리지 사용
+    if (window.voiceDesktop?.copyImage) {
+      const dataUrl = await blobToDataUrl(blob);
+      const r = await window.voiceDesktop.copyImage(dataUrl);
+      if (!r?.ok) throw new Error(r?.error || "copy failed");
+    } else {
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+    }
     setChatHint("이미지를 복사했습니다.");
     setTimeout(() => setChatHint(""), 1500);
   } catch {
     setChatHint("이미지 복사에 실패했습니다.");
     setTimeout(() => setChatHint(""), 1500);
   }
+}
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result));
+    r.onerror = () => reject(new Error("read failed"));
+    r.readAsDataURL(blob);
+  });
 }
 
 // 이미지 컨텍스트 메뉴(⋯ 버튼·우클릭 공용): 저장 / 복사 / 크게 보기 / 새 탭
@@ -7645,6 +7709,104 @@ function openImageViewer(opts) {
   backdrop._cleanup = () => ro.disconnect();
 }
 
+// ── 경량 코드 구문 강조(외부 의존성 없음, 디스코드/원다크식) ──
+// 원본 코드를 토큰 스캔해 각 토큰을 escape 후 <span class="hl-*">로 감싼다(XSS 안전: 태그는 우리가 넣는 span 뿐).
+const HL_CFG = (() => {
+  const kw = (s) => new Set(s.split(/\s+/));
+  const cLike = { line: ["//"], block: ["/*", "*/"], hash: false };
+  const hashLine = { line: ["#"], block: null, hash: true };
+  const K = {
+    js: "await async break case catch class const continue debugger default delete do else export extends finally for function if import in instanceof let new return static super switch this throw try typeof var void while with yield null true false undefined of get set as from",
+    py: "and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield None True False self match case",
+    c: "auto break case char const continue default do double else enum extern float for goto if inline int long register return short signed sizeof static struct switch typedef union unsigned void volatile while bool true false nullptr class public private protected virtual namespace template new delete using this string vector auto override final",
+    cs: "abstract as base bool break byte case catch char checked class const continue decimal default delegate do double else enum event explicit extern false finally fixed float for foreach goto if implicit in int interface internal is lock long namespace new null object operator out override params private protected public readonly ref return sbyte sealed short sizeof static string struct switch this throw true try typeof uint ulong unchecked unsafe ushort using var virtual void volatile while async await yield get set",
+    java: "abstract assert boolean break byte case catch char class const continue default do double else enum extends final finally float for goto if implements import instanceof int interface long native new package private protected public return short static strictfp super switch synchronized this throw throws transient try void volatile while true false null var record",
+    go: "break case chan const continue default defer else fallthrough for func go goto if import interface map package range return select struct switch type var nil true false iota string int bool error make len append",
+    rust: "as async await break const continue crate dyn else enum extern false fn for if impl in let loop match mod move mut pub ref return self Self static struct super trait true type unsafe use where while",
+    php: "abstract and array as break case catch class clone const continue declare default do echo else elseif empty enddeclare endfor endforeach endif endswitch endwhile enum extends final finally fn for foreach function global goto if implements include instanceof insteadof interface isset list match namespace new or print private protected public readonly require return static switch throw trait try unset use var while yield true false null self this",
+    ruby: "def end if elsif else unless while until for in do begin rescue ensure raise return yield class module self nil true false and or not then case when break next redo retry super attr_accessor require puts",
+    sql: "select from where insert update delete into values create table drop alter join left right inner outer on group by order having limit distinct as and or not null primary key foreign references default index union all set",
+  };
+  const map = {
+    javascript: { ...cLike, keywords: kw(K.js) }, js: null,
+    typescript: { ...cLike, keywords: kw(K.js + " interface type enum namespace declare implements readonly public private protected abstract keyof infer never unknown any") }, ts: null,
+    jsx: null, tsx: null, json: { ...cLike, keywords: kw("true false null") },
+    python: { ...hashLine, keywords: kw(K.py) }, py: null,
+    c: { ...cLike, keywords: kw(K.c) }, "c++": { ...cLike, keywords: kw(K.c) }, cpp: null, h: null, hpp: null,
+    "c#": { ...cLike, keywords: kw(K.cs) }, cs: null, csharp: null,
+    java: { ...cLike, keywords: kw(K.java) }, kotlin: { ...cLike, keywords: kw(K.java + " fun val when object companion data sealed suspend") }, kt: null,
+    swift: { ...cLike, keywords: kw("func let var if else guard switch case for while return class struct enum protocol extension import true false nil self init deinit weak lazy") },
+    go: { ...cLike, keywords: kw(K.go) }, golang: null,
+    rust: { ...cLike, keywords: kw(K.rust) }, rs: null,
+    php: { line: ["//", "#"], block: ["/*", "*/"], keywords: kw(K.php) },
+    ruby: { ...hashLine, keywords: kw(K.ruby) }, rb: null,
+    bash: { ...hashLine, keywords: kw("if then else elif fi for while do done case esac in function return echo export local read exit cd source") }, sh: null, shell: null, zsh: null,
+    sql: { line: ["--"], block: ["/*", "*/"], keywords: kw(K.sql), ci: true },
+    yaml: { ...hashLine, keywords: kw("true false null yes no") }, yml: null, toml: { ...hashLine, keywords: kw("true false") },
+    css: { line: [], block: ["/*", "*/"], keywords: kw("") },
+    html: { line: [], block: ["<!--", "-->"], keywords: kw("") }, xml: null,
+  };
+  // 별칭(null) 해소
+  const alias = { js: "javascript", ts: "typescript", tsx: "typescript", jsx: "javascript", py: "python", cpp: "c++", h: "c", hpp: "c++", cs: "c#", csharp: "c#", kt: "kotlin", golang: "go", rs: "rust", rb: "ruby", sh: "bash", shell: "bash", zsh: "bash", yml: "yaml", xml: "html" };
+  for (const [k, v] of Object.entries(alias)) map[k] = map[v];
+  return map;
+})();
+const HL_DEFAULT = { line: ["//", "#"], block: ["/*", "*/"], hash: true, keywords: new Set() };
+
+function highlightCode(code, lang) {
+  const cfg = HL_CFG[(lang || "").toLowerCase()] || HL_DEFAULT;
+  const src = String(code || "");
+  const n = src.length;
+  let i = 0;
+  let out = "";
+  const wrap = (cls, text) => `<span class="hl-${cls}">${escapeHtmlText(text)}</span>`;
+  const idStart = (c) => /[A-Za-z_$]/.test(c);
+  const idPart = (c) => /[A-Za-z0-9_$]/.test(c);
+  while (i < n) {
+    const c = src[i];
+    // 줄 주석
+    const lc = cfg.line.find((tok) => src.startsWith(tok, i));
+    if (lc) { let j = src.indexOf("\n", i); if (j < 0) j = n; out += wrap("comment", src.slice(i, j)); i = j; continue; }
+    // 블록 주석
+    if (cfg.block && src.startsWith(cfg.block[0], i)) {
+      let j = src.indexOf(cfg.block[1], i + cfg.block[0].length);
+      j = j < 0 ? n : j + cfg.block[1].length;
+      out += wrap("comment", src.slice(i, j)); i = j; continue;
+    }
+    // 문자열
+    if (c === '"' || c === "'" || c === "`") {
+      let j = i + 1;
+      while (j < n) {
+        if (src[j] === "\\") { j += 2; continue; }
+        if (src[j] === c) { j++; break; }
+        if (src[j] === "\n" && c !== "`") break;
+        j++;
+      }
+      out += wrap("string", src.slice(i, j)); i = j; continue;
+    }
+    // 숫자
+    if (/[0-9]/.test(c) || (c === "." && /[0-9]/.test(src[i + 1] || ""))) {
+      let j = i; while (j < n && /[0-9a-fA-FxXbBoO._]/.test(src[j])) j++;
+      out += wrap("number", src.slice(i, j)); i = j; continue;
+    }
+    // 식별자/키워드
+    if (idStart(c)) {
+      let j = i; while (j < n && idPart(src[j])) j++;
+      const word = src.slice(i, j);
+      const key = cfg.ci ? word.toLowerCase() : word;
+      if (cfg.keywords.has(key)) out += wrap("keyword", word);
+      else {
+        // 뒤에 '(' 가 오면 함수 호출로 취급
+        let k = j; while (k < n && (src[k] === " " || src[k] === "\t")) k++;
+        out += src[k] === "(" ? wrap("fn", word) : escapeHtmlText(word);
+      }
+      i = j; continue;
+    }
+    out += escapeHtmlText(c); i++;
+  }
+  return out;
+}
+
 // 채팅 메시지 텍스트: 이스케이프 후 코드블록/헤딩/인용/리스트/인라인 서식만 허용(XSS 안전).
 // 언어 태그(```cs 등)와 # 헤딩, > 인용, - / 1. 리스트, --- 구분선, :이모지: 를 지원한다.
 function renderChatText(src, emojiMap) {
@@ -7668,7 +7830,7 @@ function renderChatText(src, emojiMap) {
   for (const seg of segments) {
     if (seg.code) {
       const langTag = seg.lang ? `<span class="chat-code-lang">${escapeHtmlText(seg.lang)}</span>` : "";
-      out.push(`<pre class="chat-code"${seg.lang ? ` data-lang="${escapeHtmlText(seg.lang)}"` : ""}>${langTag}<code>${escapeHtmlText(seg.value)}</code></pre>`);
+      out.push(`<pre class="chat-code"${seg.lang ? ` data-lang="${escapeHtmlText(seg.lang)}"` : ""}>${langTag}<code>${highlightCode(seg.value, seg.lang)}</code></pre>`);
       continue;
     }
     out.push(renderChatBlocks(seg.value.replace(/^\n+/, "").replace(/\n+$/, ""), map));
@@ -7945,6 +8107,8 @@ function setChatHint(text) {
 // ── 파일 첨부/업로드 ──
 async function handleChatFiles(fileList) {
   if (!state.activeChat) return;
+  const ch = activeChatChannel();
+  if (!canAttachCh(ch)) { setChatHint("파일을 첨부할 권한이 없어요."); return; }
   for (const file of [...fileList]) {
     if (state.chatPendingFiles.length >= CHAT_MAX_FILES) {
       setChatHint(`한 번에 최대 ${CHAT_MAX_FILES}개까지 첨부할 수 있습니다.`);
@@ -8145,7 +8309,9 @@ function refreshEmojiPickerIfOpen() {
 function buildEmojiPicker() {
   const channel = activeChatChannel();
   const list = channel?.emojis || [];
-  const manage = canManageEmoji(channel);
+  const canAdd = canAddEmoji(channel);
+  const canRemove = canRemoveEmoji(channel);
+  const canUse = canUseEmojiCh(channel);
   const panel = document.createElement("div");
   panel.className = "emoji-picker";
   panel.id = "emojiPicker";
@@ -8181,9 +8347,10 @@ function buildEmojiPicker() {
       im.className = "emoji-btn-img";
       im.loading = "lazy";
       b.append(im);
-      b.addEventListener("click", () => insertAtChatCursor(`:${e.name}: `));
+      if (canUse) b.addEventListener("click", () => insertAtChatCursor(`:${e.name}: `));
+      else { b.disabled = true; b.title = "커스텀 이모지 사용 권한이 없어요"; }
       cell.append(b);
-      if (manage) {
+      if (canRemove) {
         const del = document.createElement("button");
         del.type = "button";
         del.className = "emoji-del";
@@ -8195,8 +8362,9 @@ function buildEmojiPicker() {
       grid.append(cell);
     }
     body.append(grid);
+    if (!canUse) body.append(el("p", "emoji-empty", "이 채널은 커스텀 이모지 사용이 역할로 제한돼 있어요."));
   } else {
-    body.append(el("p", "emoji-empty", manage ? "아직 없어요. 아래 버튼으로 추가하세요." : "아직 커스텀 이모지가 없습니다."));
+    body.append(el("p", "emoji-empty", canAdd ? "아직 없어요. 아래 버튼으로 추가하세요." : "아직 커스텀 이모지가 없습니다."));
   }
 
   body.append(el("p", "emoji-section-title", "기본 이모지"));
@@ -8213,7 +8381,7 @@ function buildEmojiPicker() {
   body.append(ugrid);
   panel.append(body);
 
-  if (manage) {
+  if (canAdd) {
     const foot = document.createElement("div");
     foot.className = "emoji-picker-foot";
     const add = document.createElement("button");
@@ -8268,11 +8436,53 @@ function beginEmojiCrop(file) {
 }
 function promptEmojiNameAndUpload(blob, originalName) {
   const suggested = (originalName || "emoji").replace(/\.[^.]+$/, "").toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 32);
-  const raw = window.prompt("이모지 이름 (영문/숫자/밑줄, 2~32자). 채팅에서 :이름: 으로 사용해요.", suggested || "");
-  if (raw === null) return;
-  const name = raw.trim().replace(/^:+|:+$/g, "").toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 32);
-  if (name.length < 2) { setChatHint("이모지 이름은 영문/숫자/밑줄 2자 이상이어야 합니다."); return; }
-  uploadEmojiBlob(blob, name);
+  // window.prompt 는 일렉트론에서 지원되지 않아(null 반환) 크롭 후 멈춰버린다 → 인앱 모달로 이름을 받는다.
+  openEmojiNameModal(suggested, (name) => uploadEmojiBlob(blob, name));
+}
+
+const sanitizeEmojiName = (raw) =>
+  String(raw || "").trim().replace(/^:+|:+$/g, "").toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 32);
+
+let emojiNameModalEl = null;
+function closeEmojiNameModal() {
+  if (emojiNameModalEl) { emojiNameModalEl.remove(); emojiNameModalEl = null; }
+  document.removeEventListener("keydown", onEmojiNameModalKey, true);
+}
+function onEmojiNameModalKey(e) { if (e.key === "Escape") { e.stopPropagation(); closeEmojiNameModal(); } }
+function openEmojiNameModal(suggested, onConfirm) {
+  closeEmojiNameModal();
+  const backdrop = document.createElement("div");
+  backdrop.className = "img-viewer-backdrop emoji-name-backdrop";
+  backdrop.addEventListener("click", (e) => { if (e.target === backdrop) closeEmojiNameModal(); });
+  const panel = document.createElement("div");
+  panel.className = "emoji-name-modal";
+  panel.innerHTML = `
+    <h3>이모지 이름</h3>
+    <p class="modal-hint">영문·숫자·밑줄 2~32자. 채팅에서 <b>:이름:</b> 으로 넣어요.</p>
+    <div class="emoji-name-row"><span>:</span><input type="text" class="emoji-name-input" maxlength="32" placeholder="이름" /><span>:</span></div>
+    <p class="emoji-name-err" hidden></p>
+    <div class="emoji-name-actions">
+      <button type="button" class="ghost small" data-act="cancel">취소</button>
+      <button type="button" class="primary small" data-act="ok">추가</button>
+    </div>`;
+  backdrop.append(panel);
+  const input = panel.querySelector(".emoji-name-input");
+  const err = panel.querySelector(".emoji-name-err");
+  input.value = suggested || "";
+  input.addEventListener("input", () => { input.value = sanitizeEmojiName(input.value); if (err.hidden === false) err.hidden = true; });
+  const submit = () => {
+    const name = sanitizeEmojiName(input.value);
+    if (name.length < 2) { err.textContent = "이름은 영문·숫자·밑줄 2자 이상이어야 해요."; err.hidden = false; input.focus(); return; }
+    closeEmojiNameModal();
+    onConfirm(name);
+  };
+  panel.querySelector('[data-act="ok"]').addEventListener("click", submit);
+  panel.querySelector('[data-act="cancel"]').addEventListener("click", closeEmojiNameModal);
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } });
+  document.body.append(backdrop);
+  emojiNameModalEl = backdrop;
+  document.addEventListener("keydown", onEmojiNameModalKey, true);
+  setTimeout(() => { input.focus(); input.select(); }, 0);
 }
 async function uploadEmojiBlob(blob, name) {
   const channel = activeChatChannel();
@@ -9973,6 +10183,13 @@ async function copyCanvasImage() {
   if (!d) return;
   try {
     const canvas = compositeToCanvas();
+    // 일렉트론 앱: 비보안 컨텍스트라 navigator.clipboard가 막히므로 네이티브 브리지 사용
+    if (window.voiceDesktop?.copyImage) {
+      const r = await window.voiceDesktop.copyImage(canvas.toDataURL("image/png"));
+      if (!r?.ok) throw new Error(r?.error || "copy failed");
+      setDrawStatus("캔버스 이미지를 복사했어요", "");
+      return;
+    }
     const blob = await new Promise((res) => canvas.toBlob(res, "image/png"));
     if (!blob || !navigator.clipboard || !window.ClipboardItem) throw new Error("unsupported");
     await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
@@ -10090,8 +10307,13 @@ function renderDrawLayers() {
     const name = document.createElement("span");
     name.className = "draw-layer-name";
     name.textContent = layer.name;
-    name.title = "더블클릭하여 이름 변경";
+    name.title = "더블클릭(또는 ✏️)하여 이름 변경";
     name.addEventListener("dblclick", (e) => { e.stopPropagation(); startLayerRename(li, layer); });
+
+    const rename = document.createElement("button");
+    rename.className = "draw-layer-rename";
+    rename.type = "button"; rename.textContent = "✏️"; rename.title = "이름 변경";
+    rename.addEventListener("click", (e) => { e.stopPropagation(); selectDrawLayer(layer.id); startLayerRename(li, layer); });
 
     const order = document.createElement("span");
     order.className = "draw-layer-order";
@@ -10110,10 +10332,23 @@ function renderDrawLayers() {
     del.type = "button"; del.textContent = "🗑"; del.title = "레이어 삭제";
     del.addEventListener("click", (e) => { e.stopPropagation(); removeLayer(layer.id); });
 
-    li.append(vis, lock, name, order, del);
-    li.addEventListener("click", () => { d.activeLayerId = layer.id; d.transform = null; renderDrawLayers(); renderDrawOverlay(); });
+    li.append(vis, lock, name, rename, order, del);
+    // 선택은 목록을 다시 그리지 않고 active 클래스만 갱신한다(재렌더 시 더블클릭 이름변경이 씹히던 문제 방지).
+    li.addEventListener("click", () => selectDrawLayer(layer.id));
     list.appendChild(li);
   });
+}
+
+// 레이어 선택(경량): DOM을 새로 만들지 않고 활성 표시만 바꾼다.
+function selectDrawLayer(layerId) {
+  const d = state.draw;
+  if (!d) return;
+  d.activeLayerId = layerId;
+  d.transform = null;
+  for (const li of dom.drawLayerList?.querySelectorAll(".draw-layer-item") || []) {
+    li.classList.toggle("active", li.dataset.layerId === layerId);
+  }
+  renderDrawOverlay();
 }
 
 function startLayerRename(li, layer) {

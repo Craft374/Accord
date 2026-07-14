@@ -12,7 +12,7 @@ loadServerEnvFiles();
 store.init();
 seedAdminAccount();
 
-const VERSION = "2.2.0";
+const VERSION = "2.2.1";
 const PORT = Number(process.env.PORT || 25565);
 const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_HOST = cleanHost(process.env.PUBLIC_HOST || "");
@@ -952,7 +952,21 @@ function handleChannelMessage(client, message) {
       });
     case "channel:update-role":
       return ownerAction(client, message.channelId, () => {
-        const r = store.updateRole(message.channelId, message.roleId, { name: message.name, color: message.color, manageEmoji: message.manageEmoji });
+        const r = store.updateRole(message.channelId, message.roleId, {
+          name: message.name, color: message.color, manageEmoji: message.manageEmoji,
+          addEmoji: message.addEmoji, removeEmoji: message.removeEmoji,
+          useEmoji: message.useEmoji, attachFile: message.attachFile,
+        });
+        if (r.error) return channelError(client, r.error);
+        notifyChannelMembers(message.channelId);
+        return true;
+      });
+    case "channel:set-perms":
+      return ownerAction(client, message.channelId, () => {
+        const r = store.setChannelPerms(message.channelId, {
+          emojiUseRestricted: message.emojiUseRestricted,
+          attachRestricted: message.attachRestricted,
+        });
         if (r.error) return channelError(client, r.error);
         notifyChannelMembers(message.channelId);
         return true;
@@ -992,7 +1006,7 @@ function handleChannelMessage(client, message) {
         return true;
       });
     case "channel:add-emoji":
-      return emojiAction(client, message.channelId, () => {
+      return emojiAddAction(client, message.channelId, () => {
         const r = store.addEmoji(message.channelId, message.name, message.url);
         if (r.error) return channelError(client, r.error);
         logServer(`emoji add name=:${r.emoji.name}: channel=${message.channelId}`, client);
@@ -1000,7 +1014,7 @@ function handleChannelMessage(client, message) {
         return true;
       });
     case "channel:remove-emoji":
-      return emojiAction(client, message.channelId, () => {
+      return emojiRemoveAction(client, message.channelId, () => {
         const r = store.removeEmoji(message.channelId, message.emojiId);
         if (r.error) return channelError(client, r.error);
         notifyChannelMembers(message.channelId);
@@ -1046,10 +1060,17 @@ function creatorAction(client, channelId, fn) {
   return fn();
 }
 
-// 이모지 추가/삭제: 대표·관리자 또는 이모지 관리 역할 보유자만.
-function emojiAction(client, channelId, fn) {
-  if (!store.canManageEmoji(channelId, client.userId, client.isAdmin)) {
+// 이모지 추가(업로드): 대표·관리자 또는 addEmoji 역할 보유자만.
+function emojiAddAction(client, channelId, fn) {
+  if (!store.canAddEmoji(channelId, client.userId, client.isAdmin)) {
     return channelError(client, "이모지를 추가할 권한이 없습니다.");
+  }
+  return fn();
+}
+// 이모지 삭제: 대표·관리자 또는 removeEmoji 역할 보유자만.
+function emojiRemoveAction(client, channelId, fn) {
+  if (!store.canRemoveEmoji(channelId, client.userId, client.isAdmin)) {
+    return channelError(client, "이모지를 삭제할 권한이 없습니다.");
   }
   return fn();
 }
@@ -1167,6 +1188,19 @@ function handleChatMessage(client, message) {
       if (!text && !files.length) {
         send(client, { type: "chat-error", message: "빈 메시지는 보낼 수 없습니다." });
         return true;
+      }
+      // 파일 첨부 권한
+      if (files.length && !store.canAttach(ctx.channel.id, client.userId, client.isAdmin)) {
+        send(client, { type: "chat-error", message: "파일을 첨부할 권한이 없습니다." });
+        return true;
+      }
+      // 커스텀 이모지 사용 권한: 텍스트에 이 채널의 커스텀 이모지 토큰이 있으면 권한 필요
+      if (text && !store.canUseEmoji(ctx.channel.id, client.userId, client.isAdmin)) {
+        const emojis = (store.getChannel(ctx.channel.id)?.emojis) || [];
+        if (emojis.some((e) => e && e.name && new RegExp(`:${e.name}:`).test(text))) {
+          send(client, { type: "chat-error", message: "커스텀 이모지를 사용할 권한이 없습니다." });
+          return true;
+        }
       }
       const user = store.findById(client.userId);
       const msg = {

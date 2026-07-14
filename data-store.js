@@ -562,7 +562,7 @@ function createRole(channelId, name) {
   return { channel, role };
 }
 
-function updateRole(channelId, roleId, { name, color, manageEmoji } = {}) {
+function updateRole(channelId, roleId, { name, color, manageEmoji, addEmoji, removeEmoji, useEmoji, attachFile } = {}) {
   const channel = getChannel(channelId);
   if (!channel) return { error: "채널을 찾을 수 없습니다." };
   const role = rolesOf(channel).find((r) => r.id === roleId);
@@ -570,8 +570,24 @@ function updateRole(channelId, roleId, { name, color, manageEmoji } = {}) {
   if (name !== undefined) role.name = cleanRoleName(name);
   if (color !== undefined) role.color = cleanColor(color, role.color);
   if (manageEmoji !== undefined) role.manageEmoji = Boolean(manageEmoji);
+  // 세분화된 이모지/첨부 권한. 하나라도 명시되면 레거시 manageEmoji는 정리한다.
+  if (addEmoji !== undefined) role.addEmoji = Boolean(addEmoji);
+  if (removeEmoji !== undefined) role.removeEmoji = Boolean(removeEmoji);
+  if (useEmoji !== undefined) role.useEmoji = Boolean(useEmoji);
+  if (attachFile !== undefined) role.attachFile = Boolean(attachFile);
+  if ((addEmoji !== undefined || removeEmoji !== undefined) && role.manageEmoji !== undefined) delete role.manageEmoji;
   persistChannels();
   return { channel, role };
+}
+
+// 채널 단위 사용 제한 플래그(대표자 전용): 커스텀 이모지 사용/파일 첨부를 역할 보유자로 제한할지.
+function setChannelPerms(channelId, { emojiUseRestricted, attachRestricted } = {}) {
+  const channel = getChannel(channelId);
+  if (!channel) return { error: "채널을 찾을 수 없습니다." };
+  if (emojiUseRestricted !== undefined) channel.emojiUseRestricted = Boolean(emojiUseRestricted);
+  if (attachRestricted !== undefined) channel.attachRestricted = Boolean(attachRestricted);
+  persistChannels();
+  return { channel };
 }
 
 function deleteRole(channelId, roleId) {
@@ -701,12 +717,44 @@ function emojisOf(channel) {
   return channel.emojis;
 }
 
-// 이모지 관리(추가/삭제) 권한: 관리자·대표(창설자/공동대표) 또는 manageEmoji 역할 보유자.
-function canManageEmoji(channelId, userId, isAdmin = false) {
+// 역할별 능력 판정(레거시 manageEmoji=추가·삭제 겸용을 addEmoji/removeEmoji 미설정 시 폴백).
+const roleCanAdd = (r) => Boolean(r.addEmoji ?? r.manageEmoji);
+const roleCanRemove = (r) => Boolean(r.removeEmoji ?? r.manageEmoji);
+const roleHasMember = (r, userId) => (r.memberIds || []).includes(userId);
+
+// 이모지 추가(업로드) 권한: 관리자·대표 또는 addEmoji 역할 보유자.
+function canAddEmoji(channelId, userId, isAdmin = false) {
   const channel = getChannel(channelId);
   if (!channel) return false;
   if (isChannelOwner(channelId, userId, isAdmin)) return true;
-  return rolesOf(channel).some((r) => r.manageEmoji && (r.memberIds || []).includes(userId));
+  return rolesOf(channel).some((r) => roleCanAdd(r) && roleHasMember(r, userId));
+}
+// 이모지 삭제 권한: 관리자·대표 또는 removeEmoji 역할 보유자.
+function canRemoveEmoji(channelId, userId, isAdmin = false) {
+  const channel = getChannel(channelId);
+  if (!channel) return false;
+  if (isChannelOwner(channelId, userId, isAdmin)) return true;
+  return rolesOf(channel).some((r) => roleCanRemove(r) && roleHasMember(r, userId));
+}
+// 이모지 사용 권한: 제한 안 걸려있으면 전원 허용, 걸려있으면 대표·useEmoji 역할 보유자만.
+function canUseEmoji(channelId, userId, isAdmin = false) {
+  const channel = getChannel(channelId);
+  if (!channel) return false;
+  if (!channel.emojiUseRestricted) return true;
+  if (isChannelOwner(channelId, userId, isAdmin)) return true;
+  return rolesOf(channel).some((r) => Boolean(r.useEmoji) && roleHasMember(r, userId));
+}
+// 파일(이미지 포함) 첨부 권한: 제한 안 걸려있으면 전원 허용, 걸려있으면 대표·attachFile 역할 보유자만.
+function canAttach(channelId, userId, isAdmin = false) {
+  const channel = getChannel(channelId);
+  if (!channel) return false;
+  if (!channel.attachRestricted) return true;
+  if (isChannelOwner(channelId, userId, isAdmin)) return true;
+  return rolesOf(channel).some((r) => Boolean(r.attachFile) && roleHasMember(r, userId));
+}
+// 하위호환: 이모지 추가/삭제 둘 중 하나라도 가능한지(구 호출부용).
+function canManageEmoji(channelId, userId, isAdmin = false) {
+  return canAddEmoji(channelId, userId, isAdmin) || canRemoveEmoji(channelId, userId, isAdmin);
 }
 
 // 이모지 이름 정리: 소문자 영문/숫자/밑줄 2~32자. 앞뒤 콜론은 제거.
@@ -791,7 +839,14 @@ function channelSummary(channel) {
     icon: channel.icon || "",
     inviteCode: channel.inviteCode,
     memberIds: channel.members.slice(),
-    roles: rolesOf(channel).map((r) => ({ id: r.id, name: r.name, color: r.color, memberIds: (r.memberIds || []).slice(), manageEmoji: Boolean(r.manageEmoji) })),
+    roles: rolesOf(channel).map((r) => ({
+      id: r.id, name: r.name, color: r.color, memberIds: (r.memberIds || []).slice(),
+      manageEmoji: Boolean(r.manageEmoji),
+      addEmoji: roleCanAdd(r), removeEmoji: roleCanRemove(r),
+      useEmoji: Boolean(r.useEmoji), attachFile: Boolean(r.attachFile),
+    })),
+    emojiUseRestricted: Boolean(channel.emojiUseRestricted),
+    attachRestricted: Boolean(channel.attachRestricted),
     emojis: emojisOf(channel).map((e) => ({ id: e.id, name: e.name, url: e.url })),
     rooms: channel.rooms.map((r) => ({
       id: r.id,
@@ -1152,11 +1207,16 @@ module.exports = {
   setRoleMember,
   setRoomPerm,
   clearRoomPerm,
+  setChannelPerms,
   resolveRoomPerms,
   canAccessRoom,
   canUseRoom,
   // 커스텀 이모지
   canManageEmoji,
+  canAddEmoji,
+  canRemoveEmoji,
+  canUseEmoji,
+  canAttach,
   addEmoji,
   removeEmoji,
   renameChannel,
