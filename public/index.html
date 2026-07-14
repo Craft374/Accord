@@ -241,8 +241,10 @@
             </div>
             <div class="draw-toolbar">
               <div class="draw-tool-group">
-                <button class="draw-tool-btn active" id="drawToolPen" type="button" data-draw-tool="pen" title="펜">✏️</button>
-                <button class="draw-tool-btn" id="drawToolEraser" type="button" data-draw-tool="eraser" title="지우개">🧽</button>
+                <button class="draw-tool-btn active" id="drawToolPen" type="button" data-draw-tool="pen" title="펜 (B)">✏️</button>
+                <button class="draw-tool-btn" id="drawToolEraser" type="button" data-draw-tool="eraser" title="지우개 (E)">🧽</button>
+                <button class="draw-tool-btn" id="drawToolFill" type="button" data-draw-tool="fill" title="페인트통 (G)">🪣</button>
+                <button class="draw-tool-btn" id="drawToolMove" type="button" data-draw-tool="move" title="이동·크기 (V)">✥</button>
               </div>
               <label class="draw-color-wrap" title="색상">
                 <input type="color" id="drawColor" value="#1a1a1a" />
@@ -251,10 +253,20 @@
                 <input type="range" id="drawSize" min="1" max="60" value="4" />
                 <span class="draw-size-val" id="drawSizeVal">4</span>
               </div>
+              <div class="draw-tool-group draw-zoom-group" title="줌">
+                <button class="draw-tool-btn" id="drawZoomOut" type="button" title="축소 (Ctrl+휠)">－</button>
+                <button class="draw-tool-btn draw-zoom-val" id="drawZoomReset" type="button" title="100%로 맞추기">100%</button>
+                <button class="draw-tool-btn" id="drawZoomIn" type="button" title="확대 (Ctrl+휠)">＋</button>
+              </div>
               <div class="draw-tool-group">
                 <button class="draw-tool-btn" id="drawUndo" type="button" title="실행취소(내 마지막 획)">↶</button>
                 <button class="draw-tool-btn" id="drawClear" type="button" title="현재 레이어 지우기">🧹</button>
-                <button class="draw-tool-btn" id="drawResize" type="button" title="캔버스 크기">⤢</button>
+                <button class="draw-tool-btn" id="drawResize" type="button" title="캔버스 크기(숫자)">⤢</button>
+              </div>
+              <div class="draw-tool-group">
+                <button class="draw-tool-btn" id="drawSaveCanvas" type="button" title="캔버스 전체 저장(PNG)">💾</button>
+                <button class="draw-tool-btn" id="drawSaveLayer" type="button" title="현재 레이어 저장(PNG)">🖼️</button>
+                <button class="draw-tool-btn" id="drawCopyCanvas" type="button" title="캔버스 이미지 복사">📋</button>
               </div>
               <span class="draw-status" id="drawStatus"></span>
             </div>
@@ -268,6 +280,10 @@
             <div class="draw-canvas-scroll" id="drawCanvasScroll">
               <div class="draw-canvas-stage" id="drawCanvasStage">
                 <canvas id="drawCanvas"></canvas>
+                <canvas id="drawOverlay" class="draw-overlay"></canvas>
+                <span class="draw-rz-handle draw-rz-e" data-draw-rz="e" title="가로 크기 조절"></span>
+                <span class="draw-rz-handle draw-rz-s" data-draw-rz="s" title="세로 크기 조절"></span>
+                <span class="draw-rz-handle draw-rz-se" data-draw-rz="se" title="크기 조절"></span>
               </div>
             </div>
             <aside class="draw-layers">
@@ -276,7 +292,7 @@
                 <button class="draw-layer-add" id="drawLayerAdd" type="button" title="레이어 추가">＋</button>
               </div>
               <ul class="draw-layer-list" id="drawLayerList"></ul>
-              <p class="draw-hint">활성 레이어에 그려집니다. 이미지는 붙여넣기(Ctrl+V)로 추가.</p>
+              <p class="draw-hint">활성 레이어에 그려집니다. 이미지는 붙여넣기(Ctrl+V). 스페이스+드래그로 화면 이동, Ctrl+휠로 확대.</p>
             </aside>
           </div>
         </section>

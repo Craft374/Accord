@@ -12,7 +12,7 @@ loadServerEnvFiles();
 store.init();
 seedAdminAccount();
 
-const VERSION = "2.1.0";
+const VERSION = "2.2.0";
 const PORT = Number(process.env.PORT || 25565);
 const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_HOST = cleanHost(process.env.PUBLIC_HOST || "");
@@ -1413,7 +1413,7 @@ const DRAW_PERSIST_DEBOUNCE = 2000;
 function getDrawDoc(roomId) {
   let d = drawDocs.get(roomId);
   if (!d) {
-    d = { doc: store.getDraw(roomId), saveTimer: 0 };
+    d = { doc: store.getDraw(roomId), saveTimer: 0, cursors: new Map() };
     drawDocs.set(roomId, d);
   }
   return d;
@@ -1455,6 +1455,10 @@ function leaveDraw(client) {
   const roomId = client.drawRoomId;
   if (!roomId) return;
   client.drawRoomId = "";
+  const d = drawDocs.get(roomId);
+  if (d && d.cursors.delete(client.id)) {
+    broadcastDraw(roomId, { type: "draw:cursor-leave", roomId, clientId: client.id });
+  }
   if (drawViewerCount(roomId) === 0) {
     flushDrawPersist(roomId);
     drawDocs.delete(roomId); // 아무도 안 보면 메모리에서 내림(다음 open 시 파일에서 재적재)
@@ -1515,6 +1519,7 @@ function findDrawLayer(doc, layerId) {
 const DRAW_WRITE_TYPES = new Set([
   "draw:stroke", "draw:undo", "draw:clear", "draw:resize",
   "draw:layer-add", "draw:layer-remove", "draw:layer-update", "draw:layer-reorder",
+  "draw:layer-replace",
 ]);
 
 function handleDrawMessage(client, message) {
@@ -1541,7 +1546,8 @@ function handleDrawMessage(client, message) {
       const wasViewing = client.drawRoomId === ctx.room.id;
       client.drawRoomId = ctx.room.id;
       const d = getDrawDoc(ctx.room.id);
-      send(client, { type: "draw:state", roomId: ctx.room.id, doc: d.doc });
+      const cursors = [...d.cursors.values()].filter((cur) => cur.clientId !== client.id);
+      send(client, { type: "draw:state", roomId: ctx.room.id, doc: d.doc, cursors });
       // 재접속/재열기 도배를 막기 위해 30초 스로틀. 이미 보던 방을 다시 열면 기록 안 함.
       if (!wasViewing && logThrottleOk(`draw-join:${ctx.room.id}:${client.userId}`, 30000)) {
         logChannelEvent(ctx.channel.id, client, "draw-join", { roomName: ctx.room.name });
@@ -1641,9 +1647,28 @@ function handleDrawMessage(client, message) {
       const layer = findDrawLayer(d.doc, message.layerId);
       if (!layer) return true;
       if (typeof message.visible === "boolean") layer.visible = message.visible;
+      if (typeof message.locked === "boolean") layer.locked = message.locked;
       if (typeof message.name === "string") layer.name = message.name.slice(0, 40) || layer.name;
       scheduleDrawPersist(ctx.room.id);
-      broadcastDraw(ctx.room.id, { type: "draw:layer-update", roomId: ctx.room.id, layerId: layer.id, visible: layer.visible, name: layer.name }, client.id);
+      broadcastDraw(ctx.room.id, { type: "draw:layer-update", roomId: ctx.room.id, layerId: layer.id, visible: layer.visible, locked: layer.locked, name: layer.name }, client.id);
+      return true;
+    }
+    case "draw:layer-replace": {
+      // 레이어의 모든 획을 통째로 교체(이동/크기 변형 확정용). 신뢰할 수 없는 획을 정규화한다.
+      const ctx = resolveDrawRoom(client, message.roomId);
+      if (!ctx) return true;
+      const d = getDrawDoc(ctx.room.id);
+      const layer = findDrawLayer(d.doc, message.layerId);
+      if (!layer) return true;
+      const src = Array.isArray(message.strokes) ? message.strokes.slice(0, 20000) : [];
+      const cleaned = [];
+      for (const raw of src) {
+        const s = sanitizeStroke(raw, raw && raw.by ? String(raw.by).slice(0, 64) : client.userId);
+        if (s) cleaned.push(s);
+      }
+      layer.strokes = cleaned;
+      scheduleDrawPersist(ctx.room.id);
+      broadcastDraw(ctx.room.id, { type: "draw:layer-replace", roomId: ctx.room.id, layerId: layer.id, strokes: cleaned }, client.id);
       return true;
     }
     case "draw:layer-reorder": {
@@ -1659,6 +1684,36 @@ function handleDrawMessage(client, message) {
       d.doc.layers = reordered;
       scheduleDrawPersist(ctx.room.id);
       broadcastDraw(ctx.room.id, { type: "draw:layer-reorder", roomId: ctx.room.id, order: d.doc.layers.map((l) => l.id) }, client.id);
+      return true;
+    }
+    case "draw:cursor": {
+      // 실시간 커서/그리는 위치 공유(비영속). 발신자를 제외한 열람자에게 그대로 릴레이한다.
+      const ctx = resolveDrawRoom(client, message.roomId);
+      if (!ctx) return true;
+      if (client.drawRoomId !== ctx.room.id) return true; // 열람 중일 때만
+      const d = getDrawDoc(ctx.room.id);
+      const cur = {
+        clientId: client.id,
+        name: client.name || "게스트",
+        x: drawNum(message.x, 0),
+        y: drawNum(message.y, 0),
+        tool: String(message.tool || "pen").slice(0, 12),
+        color: cleanDrawColor(message.color),
+        size: drawClampNum(message.size, 1, 300, 4),
+        drawing: Boolean(message.drawing),
+        active: message.active !== false,
+      };
+      d.cursors.set(client.id, cur);
+      broadcastDraw(ctx.room.id, { type: "draw:cursor", roomId: ctx.room.id, ...cur }, client.id);
+      return true;
+    }
+    case "draw:cursor-leave": {
+      const roomId = client.drawRoomId;
+      if (!roomId) return true;
+      const d = drawDocs.get(roomId);
+      if (d && d.cursors.delete(client.id)) {
+        broadcastDraw(roomId, { type: "draw:cursor-leave", roomId, clientId: client.id }, client.id);
+      }
       return true;
     }
     default:

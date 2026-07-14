@@ -950,7 +950,7 @@ function defaultDrawDoc() {
   return {
     width: 900,
     height: 600,
-    layers: [{ id: "L1", name: "레이어 1", visible: true, strokes: [] }],
+    layers: [{ id: "L1", name: "레이어 1", visible: true, locked: false, strokes: [] }],
     seq: 1,
   };
 }
@@ -967,6 +967,7 @@ function normalizeDrawDoc(raw) {
       id: String(layer && layer.id ? layer.id : `L${i + 1}`).slice(0, 32),
       name: String(layer && layer.name ? layer.name : `레이어 ${i + 1}`).slice(0, 40),
       visible: layer && layer.visible === false ? false : true,
+      locked: layer && layer.locked === true ? true : false,
       strokes: Array.isArray(layer && layer.strokes) ? layer.strokes : [],
     }));
   }

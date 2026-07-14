@@ -1112,6 +1112,12 @@ body.draw-open .log-panel {
 }
 .draw-tool-btn:hover { background: var(--bg-elevated); color: var(--heading); }
 .draw-tool-btn.active { background: var(--accent, #5865f2); color: #fff; }
+.draw-zoom-val {
+  min-width: 46px;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
 .draw-color-wrap {
   display: inline-flex;
   align-items: center;
@@ -1199,6 +1205,7 @@ body.draw-open .log-panel {
   background-color: var(--bg-input);
 }
 .draw-canvas-stage {
+  position: relative;
   background: #ffffff;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.45);
   line-height: 0;
@@ -1207,6 +1214,53 @@ body.draw-open .log-panel {
   display: block;
   touch-action: none;
   cursor: crosshair;
+}
+#drawCanvas.tool-eraser { cursor: cell; }
+#drawCanvas.tool-fill { cursor: crosshair; }
+#drawCanvas.tool-move { cursor: move; }
+.draw-canvas-stage.space #drawCanvas,
+.draw-canvas-scroll.space { cursor: grab; }
+.draw-canvas-stage.panning #drawCanvas,
+.draw-canvas-scroll.panning { cursor: grabbing; }
+/* 오버레이: 원격 커서·브러시 미리보기·변형 핸들을 그린다(입력은 통과). */
+.draw-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+/* 캔버스 크기를 마우스로 직접 조절하는 손잡이 */
+.draw-rz-handle {
+  position: absolute;
+  z-index: 3;
+  background: var(--accent, #5865f2);
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.draw-canvas-stage:hover .draw-rz-handle { opacity: 0.85; }
+.draw-rz-handle:hover { opacity: 1; }
+.draw-rz-e {
+  top: 50%; right: -6px;
+  width: 12px; height: 46px;
+  margin-top: -23px;
+  border-radius: 6px;
+  cursor: ew-resize;
+}
+.draw-rz-s {
+  left: 50%; bottom: -6px;
+  width: 46px; height: 12px;
+  margin-left: -23px;
+  border-radius: 6px;
+  cursor: ns-resize;
+}
+.draw-rz-se {
+  right: -7px; bottom: -7px;
+  width: 16px; height: 16px;
+  border-radius: 5px;
+  cursor: nwse-resize;
 }
 .draw-layers {
   display: flex;
@@ -1254,8 +1308,8 @@ body.draw-open .log-panel {
 .draw-layer-item {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
+  gap: 4px;
+  padding: 2px 6px;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   background: var(--bg-input);
@@ -1265,13 +1319,16 @@ body.draw-open .log-panel {
   border-color: var(--accent, #5865f2);
   background: var(--bg-elevated);
 }
-.draw-layer-vis {
+.draw-layer-vis,
+.draw-layer-lock {
   border: none;
   background: none;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1;
-  padding: 0;
+  min-height: 0; /* 전역 button min-height:36 상속 차단 → 항목이 세로로 늘어나지 않게 */
+  padding: 2px;
+  flex-shrink: 0;
 }
 .draw-layer-name {
   flex: 1;
@@ -1281,12 +1338,14 @@ body.draw-open .log-panel {
   white-space: nowrap;
   color: var(--text);
   font-size: 12px;
+  padding: 3px 0;
 }
 .draw-layer-item.hidden-layer .draw-layer-name { opacity: 0.4; }
+.draw-layer-item.locked-layer .draw-layer-name { color: var(--muted); }
 .draw-layer-order {
   display: inline-flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 0;
 }
 .draw-layer-order button,
 .draw-layer-del {
@@ -1294,12 +1353,15 @@ body.draw-open .log-panel {
   background: none;
   color: var(--muted);
   cursor: pointer;
-  font-size: 11px;
+  font-size: 10px;
   line-height: 1;
-  padding: 1px 3px;
+  min-height: 0; /* 전역 button min-height:36 상속 차단 */
+  padding: 1px 2px;
 }
+.draw-layer-del { font-size: 12px; }
 .draw-layer-order button:hover,
 .draw-layer-del:hover { color: var(--heading); }
+.draw-layer-order button:disabled { opacity: 0.25; cursor: default; }
 .draw-hint {
   flex-shrink: 0;
   margin: 0;

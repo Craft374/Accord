@@ -206,9 +206,14 @@ const dom = {
   drawStatus: document.querySelector("#drawStatus"),
   drawToolPen: document.querySelector("#drawToolPen"),
   drawToolEraser: document.querySelector("#drawToolEraser"),
+  drawToolFill: document.querySelector("#drawToolFill"),
+  drawToolMove: document.querySelector("#drawToolMove"),
   drawColor: document.querySelector("#drawColor"),
   drawSize: document.querySelector("#drawSize"),
   drawSizeVal: document.querySelector("#drawSizeVal"),
+  drawZoomIn: document.querySelector("#drawZoomIn"),
+  drawZoomOut: document.querySelector("#drawZoomOut"),
+  drawZoomReset: document.querySelector("#drawZoomReset"),
   drawUndo: document.querySelector("#drawUndo"),
   drawClear: document.querySelector("#drawClear"),
   drawResize: document.querySelector("#drawResize"),
@@ -216,9 +221,13 @@ const dom = {
   drawResizeW: document.querySelector("#drawResizeW"),
   drawResizeH: document.querySelector("#drawResizeH"),
   drawResizeApply: document.querySelector("#drawResizeApply"),
+  drawSaveCanvas: document.querySelector("#drawSaveCanvas"),
+  drawSaveLayer: document.querySelector("#drawSaveLayer"),
+  drawCopyCanvas: document.querySelector("#drawCopyCanvas"),
   drawCanvasScroll: document.querySelector("#drawCanvasScroll"),
   drawCanvasStage: document.querySelector("#drawCanvasStage"),
   drawCanvas: document.querySelector("#drawCanvas"),
+  drawOverlay: document.querySelector("#drawOverlay"),
   drawLayerAdd: document.querySelector("#drawLayerAdd"),
   drawLayerList: document.querySelector("#drawLayerList"),
   logPanel: document.querySelector("#logPanel"),
@@ -8835,16 +8844,24 @@ function openDrawRoom(roomId) {
     height: 600,
     layers: [], // { id, name, visible, strokes:[], canvas, ctx }
     activeLayerId: "",
-    tool: dom.drawToolEraser?.classList.contains("active") ? "eraser" : "pen",
+    tool: "pen",
     color: dom.drawColor?.value || "#1a1a1a",
     size: Number(dom.drawSize?.value) || 4,
+    zoom: 1,
     strokeCounter: 0,
     drawing: null,
     myStrokes: [], // 내가 그린 획 스택(실행취소용) { layerId, strokeId }
     imageCache: new Map(),
     loaded: false,
     writable: canWriteRoom(found.channel, found.room),
+    spaceDown: false, // 스페이스로 화면 이동(팬) 준비 상태
+    panning: null, // { startX, startY, scrollLeft, scrollTop }
+    transform: null, // 이동·크기 변형 세션
+    cursors: new Map(), // clientId -> { name, x, y, tool, color, size, drawing, trail:[], ts }
+    hoverPt: null, // 브러시 미리보기용 최근 캔버스 좌표
+    cursorSeq: 0,
   };
+  setDrawTool("pen");
   document.body.classList.add("draw-open");
   if (dom.drawRoomName) dom.drawRoomName.textContent = found.room.name;
   if (dom.drawResizePop) dom.drawResizePop.hidden = true;
@@ -8859,6 +8876,8 @@ function closeDrawView() {
   sendSocket({ type: "draw:close" });
   state.draw = null;
   document.body.classList.remove("draw-open");
+  dom.drawCanvasStage?.classList.remove("space", "panning");
+  dom.drawCanvasScroll?.classList.remove("space", "panning");
   if (dom.drawResizePop) dom.drawResizePop.hidden = true;
   renderRooms();
 }
@@ -9276,6 +9295,7 @@ function buildDrawFromDoc(doc) {
       id: raw.id,
       name: raw.name || "레이어",
       visible: raw.visible !== false,
+      locked: raw.locked === true,
       strokes: Array.isArray(raw.strokes) ? raw.strokes.slice() : [],
       canvas: null,
       ctx: null,
@@ -9285,7 +9305,7 @@ function buildDrawFromDoc(doc) {
     return layer;
   });
   if (!d.layers.length) {
-    const layer = { id: "L1", name: "레이어 1", visible: true, strokes: [], canvas: makeLayerCanvas(d), ctx: null };
+    const layer = { id: "L1", name: "레이어 1", visible: true, locked: false, strokes: [], canvas: makeLayerCanvas(d), ctx: null };
     layer.ctx = layer.canvas.getContext("2d");
     d.layers.push(layer);
   }
@@ -9306,12 +9326,64 @@ function applyCanvasSize() {
   if (!canvas) return;
   canvas.width = d.width;
   canvas.height = d.height;
-  canvas.style.width = `${d.width}px`;
-  canvas.style.height = `${d.height}px`;
   for (const layer of d.layers) {
     layer.canvas.width = d.width;
     layer.canvas.height = d.height;
   }
+  applyZoom(); // CSS 표시 크기·오버레이 해상도 갱신
+}
+
+const DRAW_ZOOM_MIN = 0.1;
+const DRAW_ZOOM_MAX = 8;
+
+// 줌 배율을 CSS 표시 크기에 반영하고, 오버레이 해상도를 표시 픽셀에 맞춘다(라벨이 확대에도 또렷하게).
+function applyZoom() {
+  const d = state.draw;
+  if (!d) return;
+  const z = d.zoom || 1;
+  const w = Math.max(1, Math.round(d.width * z));
+  const h = Math.max(1, Math.round(d.height * z));
+  if (dom.drawCanvas) {
+    dom.drawCanvas.style.width = `${w}px`;
+    dom.drawCanvas.style.height = `${h}px`;
+  }
+  if (dom.drawOverlay) {
+    dom.drawOverlay.width = w;
+    dom.drawOverlay.height = h;
+    dom.drawOverlay.style.width = `${w}px`;
+    dom.drawOverlay.style.height = `${h}px`;
+  }
+  if (dom.drawZoomReset) dom.drawZoomReset.textContent = `${Math.round(z * 100)}%`;
+  renderDrawOverlay();
+}
+
+// clientX/Y(마우스)를 주면 그 지점을 기준으로 확대/축소(포토샵식). 안 주면 현재 스크롤 유지.
+function setDrawZoom(z, clientX, clientY) {
+  const d = state.draw;
+  if (!d) return;
+  const nz = Math.max(DRAW_ZOOM_MIN, Math.min(DRAW_ZOOM_MAX, z));
+  const scroll = dom.drawCanvasScroll;
+  const hasAnchor = scroll && dom.drawCanvas && clientX != null;
+  let ax = 0, ay = 0;
+  if (hasAnchor) {
+    const rb = dom.drawCanvas.getBoundingClientRect();
+    ax = (clientX - rb.left) / (d.zoom || 1); // 앵커의 캔버스 좌표
+    ay = (clientY - rb.top) / (d.zoom || 1);
+  }
+  d.zoom = nz;
+  applyZoom();
+  if (hasAnchor) {
+    const ra = dom.drawCanvas.getBoundingClientRect();
+    scroll.scrollLeft += ra.left + ax * nz - clientX;
+    scroll.scrollTop += ra.top + ay * nz - clientY;
+  }
+}
+
+function zoomStep(dir, clientX, clientY) {
+  const d = state.draw;
+  if (!d) return;
+  const factor = dir > 0 ? 1.2 : 1 / 1.2;
+  setDrawZoom((d.zoom || 1) * factor, clientX, clientY);
 }
 
 // 한 획을 주어진 컨텍스트에 그린다(펜/지우개/이미지).
@@ -9392,55 +9464,84 @@ function drawPointFromEvent(event) {
 function onDrawPointerDown(event) {
   const d = state.draw;
   if (!d || !d.loaded) return;
+  if (event.button !== undefined && event.button !== 0 && event.button !== 1) return;
+  d.hoverPt = drawPointFromEvent(event);
+
+  // 팬(화면 이동): 스페이스 누름 또는 가운데 버튼
+  if (d.spaceDown || event.button === 1) { beginPan(event); return; }
+
+  // 이동·크기 변형 도구
+  if (d.tool === "move") { beginTransform(event); return; }
+
   if (!d.writable) { setDrawStatus("읽기 전용 그림판 — 대표자만 그릴 수 있어요", "bad"); return; }
-  if (event.button !== undefined && event.button !== 0) return;
   const layer = findDrawLayer(d.activeLayerId);
   if (!layer) return;
   if (!layer.visible) { setDrawStatus("숨긴 레이어에는 그릴 수 없어요", "bad"); return; }
+  if (layer.locked) { setDrawStatus("잠긴 레이어에는 그릴 수 없어요", "bad"); return; }
   event.preventDefault();
+
+  // 페인트통(채우기)
+  if (d.tool === "fill") { floodFillAt(d.hoverPt, layer); return; }
+
   try { dom.drawCanvas.setPointerCapture?.(event.pointerId); } catch { /* 캡처 실패해도 그리기는 진행 */ }
   const stroke = {
     id: nextDrawStrokeId(),
     tool: d.tool,
     color: d.color,
     size: d.size,
-    points: [drawPointFromEvent(event)],
+    points: [d.hoverPt],
   };
   d.drawing = { stroke, layer };
   renderLayer(layer);
   compositeDraw();
+  sendDrawCursor(true, true);
 }
 
 function onDrawPointerMove(event) {
   const d = state.draw;
-  if (!d || !d.drawing) return;
+  if (!d || !d.loaded) return;
+  if (d.panning) { updatePan(event); return; }
+  if (d.transform && d.transform.dragging) { updateTransform(event); return; }
+
   const pt = drawPointFromEvent(event);
-  const pts = d.drawing.stroke.points;
-  const last = pts[pts.length - 1];
-  const dx = pt[0] - last[0];
-  const dy = pt[1] - last[1];
-  if (dx * dx + dy * dy < DRAW_MIN_POINT_DIST * DRAW_MIN_POINT_DIST) return;
-  pts.push(pt);
-  if (pts.length > 8000) pts.length = 8000;
-  // 마지막 구간만 증분 그리기(전체 재렌더 없이).
-  const ctx = d.drawing.layer.ctx;
-  ctx.save();
-  ctx.globalCompositeOperation = d.drawing.stroke.tool === "eraser" ? "destination-out" : "source-over";
-  ctx.strokeStyle = d.drawing.stroke.color;
-  ctx.lineWidth = d.drawing.stroke.size;
-  ctx.lineJoin = "round";
-  ctx.lineCap = "round";
-  ctx.beginPath();
-  ctx.moveTo(last[0], last[1]);
-  ctx.lineTo(pt[0], pt[1]);
-  ctx.stroke();
-  ctx.restore();
-  compositeDraw();
+  d.hoverPt = pt;
+
+  if (d.drawing) {
+    const pts = d.drawing.stroke.points;
+    const last = pts[pts.length - 1];
+    const dx = pt[0] - last[0];
+    const dy = pt[1] - last[1];
+    if (dx * dx + dy * dy >= DRAW_MIN_POINT_DIST * DRAW_MIN_POINT_DIST) {
+      pts.push(pt);
+      if (pts.length > 8000) pts.length = 8000;
+      // 마지막 구간만 증분 그리기(전체 재렌더 없이).
+      const ctx = d.drawing.layer.ctx;
+      ctx.save();
+      ctx.globalCompositeOperation = d.drawing.stroke.tool === "eraser" ? "destination-out" : "source-over";
+      ctx.strokeStyle = d.drawing.stroke.color;
+      ctx.lineWidth = d.drawing.stroke.size;
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(last[0], last[1]);
+      ctx.lineTo(pt[0], pt[1]);
+      ctx.stroke();
+      ctx.restore();
+      compositeDraw();
+    }
+    sendDrawCursor(true, false);
+  } else {
+    sendDrawCursor(false, false);
+  }
+  renderDrawOverlay();
 }
 
 function onDrawPointerUp(event) {
   const d = state.draw;
-  if (!d || !d.drawing) return;
+  if (!d) return;
+  if (d.panning) { endPan(event); return; }
+  if (d.transform && d.transform.dragging) { endTransform(event); return; }
+  if (!d.drawing) return;
   const { stroke, layer } = d.drawing;
   d.drawing = null;
   layer.strokes.push(stroke);
@@ -9448,6 +9549,437 @@ function onDrawPointerUp(event) {
   renderLayer(layer);
   compositeDraw();
   sendSocket({ type: "draw:stroke", roomId: d.roomId, layerId: layer.id, stroke });
+  sendDrawCursor(false, true); // 그리기 종료를 즉시 알려 원격 라이브 트레일을 정리
+  renderDrawOverlay();
+}
+
+// ── 화면 이동(팬): 스페이스 + 드래그 ──
+function beginPan(event) {
+  const d = state.draw;
+  const scroll = dom.drawCanvasScroll;
+  if (!scroll) return;
+  event.preventDefault();
+  d.panning = { x: event.clientX, y: event.clientY, sl: scroll.scrollLeft, st: scroll.scrollTop };
+  dom.drawCanvasStage?.classList.add("panning");
+  try { dom.drawCanvas.setPointerCapture?.(event.pointerId); } catch { /* noop */ }
+}
+function updatePan(event) {
+  const d = state.draw;
+  const scroll = dom.drawCanvasScroll;
+  if (!d.panning || !scroll) return;
+  scroll.scrollLeft = d.panning.sl - (event.clientX - d.panning.x);
+  scroll.scrollTop = d.panning.st - (event.clientY - d.panning.y);
+}
+function endPan(event) {
+  const d = state.draw;
+  d.panning = null;
+  dom.drawCanvasStage?.classList.remove("panning");
+  try { dom.drawCanvas.releasePointerCapture?.(event.pointerId); } catch { /* noop */ }
+}
+
+// ── 페인트통(flood fill) ──
+// 활성 레이어의 현재 픽셀을 기준으로 연결된 영역을 칠하고, 칠한 영역만 이미지 획으로 추가한다
+// (기존 image 획 타입을 재사용 → 서버 변경 없이 동기화·실행취소가 그대로 동작).
+function hexToRgba(hex) {
+  let h = String(hex || "#000000").replace("#", "");
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  if (h.length === 6) h += "ff";
+  if (h.length !== 8) h = "000000ff";
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16), parseInt(h.slice(6, 8), 16)];
+}
+
+function floodFillAt(pt, layer) {
+  const d = state.draw;
+  const W = d.width, H = d.height;
+  const x0 = Math.floor(pt[0]), y0 = Math.floor(pt[1]);
+  if (x0 < 0 || y0 < 0 || x0 >= W || y0 >= H) return;
+  const ctx = layer.ctx;
+  const img = ctx.getImageData(0, 0, W, H);
+  const data = new Uint32Array(img.data.buffer);
+  const idx0 = y0 * W + x0;
+  const [fr, fg, fb, fa] = hexToRgba(d.color);
+  const fill = ((fa << 24) | (fb << 16) | (fg << 8) | fr) >>> 0; // little-endian AABBGGRR
+  const target = data[idx0];
+  if (target === fill) return;
+  const tol = 40;
+  const tr = target & 0xff, tg = (target >> 8) & 0xff, tb = (target >> 16) & 0xff, ta = (target >>> 24) & 0xff;
+  const match = (v) => {
+    const r = v & 0xff, g = (v >> 8) & 0xff, b = (v >> 16) & 0xff, a = (v >>> 24) & 0xff;
+    return Math.abs(r - tr) <= tol && Math.abs(g - tg) <= tol && Math.abs(b - tb) <= tol && Math.abs(a - ta) <= tol;
+  };
+  const seen = new Uint8Array(W * H);
+  const filled = new Uint8Array(W * H);
+  let minX = x0, minY = y0, maxX = x0, maxY = y0;
+  const stack = [idx0];
+  seen[idx0] = 1;
+  while (stack.length) {
+    const idx = stack.pop();
+    if (!match(data[idx])) continue;
+    data[idx] = fill;
+    filled[idx] = 1;
+    const px = idx % W, py = (idx - px) / W;
+    if (px < minX) minX = px; if (px > maxX) maxX = px;
+    if (py < minY) minY = py; if (py > maxY) maxY = py;
+    if (px > 0 && !seen[idx - 1]) { seen[idx - 1] = 1; stack.push(idx - 1); }
+    if (px < W - 1 && !seen[idx + 1]) { seen[idx + 1] = 1; stack.push(idx + 1); }
+    if (py > 0 && !seen[idx - W]) { seen[idx - W] = 1; stack.push(idx - W); }
+    if (py < H - 1 && !seen[idx + W]) { seen[idx + W] = 1; stack.push(idx + W); }
+  }
+  // 칠한 영역만 잘라 이미지 획으로 만든다
+  const bw = maxX - minX + 1, bh = maxY - minY + 1;
+  const out = document.createElement("canvas");
+  out.width = bw; out.height = bh;
+  const octx = out.getContext("2d");
+  const oimg = octx.createImageData(bw, bh);
+  const odata = new Uint32Array(oimg.data.buffer);
+  for (let y = 0; y < bh; y++) {
+    const srow = (minY + y) * W + minX;
+    const drow = y * bw;
+    for (let x = 0; x < bw; x++) if (filled[srow + x]) odata[drow + x] = fill;
+  }
+  octx.putImageData(oimg, 0, 0);
+  const stroke = { id: nextDrawStrokeId(), tool: "image", src: out.toDataURL("image/png"), x: minX, y: minY, w: bw, h: bh };
+  layer.strokes.push(stroke);
+  d.myStrokes.push({ layerId: layer.id, strokeId: stroke.id });
+  renderLayer(layer);
+  compositeDraw();
+  sendSocket({ type: "draw:stroke", roomId: d.roomId, layerId: layer.id, stroke });
+  setDrawStatus("채우기 완료", "");
+}
+
+// ── 이동·크기 변형 도구(레이어 통째로 이동/확대·축소) ──
+function computeLayerBBox(layer) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const s of layer.strokes) {
+    if (s.tool === "image") {
+      minX = Math.min(minX, s.x); minY = Math.min(minY, s.y);
+      maxX = Math.max(maxX, s.x + s.w); maxY = Math.max(maxY, s.y + s.h);
+    } else {
+      const r = (s.size || 1) / 2;
+      for (const p of (s.points || [])) {
+        minX = Math.min(minX, p[0] - r); minY = Math.min(minY, p[1] - r);
+        maxX = Math.max(maxX, p[0] + r); maxY = Math.max(maxY, p[1] + r);
+      }
+    }
+  }
+  if (!isFinite(minX)) return null;
+  return { x: minX, y: minY, w: Math.max(1, maxX - minX), h: Math.max(1, maxY - minY) };
+}
+
+function transformHandles(box) {
+  const { x, y, w, h } = box;
+  return {
+    nw: [x, y], n: [x + w / 2, y], ne: [x + w, y],
+    e: [x + w, y + h / 2], se: [x + w, y + h], s: [x + w / 2, y + h],
+    sw: [x, y + h], w: [x, y + h / 2],
+  };
+}
+function hitTransformHandle(pt, box) {
+  const tol = 10 / (state.draw.zoom || 1);
+  for (const [name, [hx, hy]] of Object.entries(transformHandles(box))) {
+    if (Math.abs(pt[0] - hx) <= tol && Math.abs(pt[1] - hy) <= tol) return name;
+  }
+  return null; // 핸들이 아니면 내부 이동
+}
+
+function beginTransform(event) {
+  const d = state.draw;
+  if (!d.writable) { setDrawStatus("읽기 전용 그림판 — 대표자만 그릴 수 있어요", "bad"); return; }
+  const layer = findDrawLayer(d.activeLayerId);
+  if (!layer) return;
+  if (layer.locked) { setDrawStatus("잠긴 레이어는 변형할 수 없어요", "bad"); return; }
+  if (!d.transform || d.transform.layerId !== layer.id) {
+    const bbox = computeLayerBBox(layer);
+    if (!bbox) { setDrawStatus("빈 레이어입니다", "bad"); return; }
+    d.transform = {
+      layerId: layer.id,
+      orig: { ...bbox },
+      box: { ...bbox },
+      snapshot: layer.strokes.map((s) => JSON.parse(JSON.stringify(s))),
+      dragging: false,
+    };
+  }
+  const t = d.transform;
+  const pt = drawPointFromEvent(event);
+  event.preventDefault();
+  try { dom.drawCanvas.setPointerCapture?.(event.pointerId); } catch { /* noop */ }
+  t.handle = hitTransformHandle(pt, t.box);
+  t.startPt = pt;
+  t.startBox = { ...t.box };
+  t.dragging = true;
+  renderDrawOverlay();
+}
+
+function updateTransform(event) {
+  const d = state.draw;
+  const t = d.transform;
+  if (!t || !t.dragging) return;
+  const pt = drawPointFromEvent(event);
+  const dx = pt[0] - t.startPt[0];
+  const dy = pt[1] - t.startPt[1];
+  const b = { ...t.startBox };
+  const h = t.handle;
+  if (!h) { b.x += dx; b.y += dy; }
+  else {
+    if (h.includes("e")) b.w = t.startBox.w + dx;
+    if (h.includes("s")) b.h = t.startBox.h + dy;
+    if (h.includes("w")) { b.x = t.startBox.x + dx; b.w = t.startBox.w - dx; }
+    if (h.includes("n")) { b.y = t.startBox.y + dy; b.h = t.startBox.h - dy; }
+  }
+  if (b.w < 4) b.w = 4;
+  if (b.h < 4) b.h = 4;
+  t.box = b;
+  applyTransformToLayer();
+  renderDrawOverlay();
+}
+
+function applyTransformToLayer() {
+  const d = state.draw;
+  const t = d.transform;
+  const layer = findDrawLayer(t.layerId);
+  if (!layer) return;
+  const sx = t.box.w / t.orig.w;
+  const sy = t.box.h / t.orig.h;
+  const savg = (Math.abs(sx) + Math.abs(sy)) / 2;
+  const mapX = (x) => t.box.x + (x - t.orig.x) * sx;
+  const mapY = (y) => t.box.y + (y - t.orig.y) * sy;
+  layer.strokes = t.snapshot.map((s) => {
+    if (s.tool === "image") return { ...s, x: mapX(s.x), y: mapY(s.y), w: s.w * sx, h: s.h * sy };
+    return { ...s, size: Math.max(0.5, (s.size || 1) * savg), points: (s.points || []).map((p) => [mapX(p[0]), mapY(p[1])]) };
+  });
+  renderLayer(layer);
+  compositeDraw();
+}
+
+function endTransform(event) {
+  const d = state.draw;
+  const t = d.transform;
+  if (!t) return;
+  t.dragging = false;
+  try { dom.drawCanvas.releasePointerCapture?.(event.pointerId); } catch { /* noop */ }
+  const layer = findDrawLayer(t.layerId);
+  if (!layer) { d.transform = null; return; }
+  // 확정: 다음 드래그의 기준을 새 상태로 갱신하고 서버에 레이어 획을 통째로 교체 요청
+  t.orig = { ...t.box };
+  t.snapshot = layer.strokes.map((s) => JSON.parse(JSON.stringify(s)));
+  d.myStrokes = d.myStrokes.filter((e) => e.layerId !== layer.id); // 좌표가 바뀌어 개별 undo 무효
+  sendSocket({ type: "draw:layer-replace", roomId: d.roomId, layerId: layer.id, strokes: layer.strokes });
+  renderDrawOverlay();
+  setDrawStatus(`${Math.round(t.box.w)} × ${Math.round(t.box.h)}`, "");
+}
+
+// ── 캔버스 크기를 마우스로 직접 조절(모서리 손잡이 드래그) ──
+function beginCanvasResize(event, dir) {
+  const d = state.draw;
+  if (!d) return;
+  if (!d.writable) { setDrawStatus("읽기 전용 — 크기를 바꿀 수 없어요", "bad"); return; }
+  event.preventDefault();
+  event.stopPropagation();
+  d.canvasResize = { dir, x: event.clientX, y: event.clientY, w0: d.width, h0: d.height };
+  window.addEventListener("pointermove", onCanvasResizeMove);
+  window.addEventListener("pointerup", onCanvasResizeUp, { once: true });
+}
+function onCanvasResizeMove(event) {
+  const d = state.draw;
+  if (!d || !d.canvasResize) return;
+  const cr = d.canvasResize;
+  const z = d.zoom || 1;
+  const dx = (event.clientX - cr.x) / z;
+  const dy = (event.clientY - cr.y) / z;
+  if (cr.dir.includes("e")) d.width = Math.max(200, Math.min(4000, Math.round(cr.w0 + dx)));
+  if (cr.dir.includes("s")) d.height = Math.max(200, Math.min(4000, Math.round(cr.h0 + dy)));
+  applyCanvasSize();
+  for (const layer of d.layers) renderLayer(layer);
+  compositeDraw();
+  setDrawStatus(`${d.width} × ${d.height}`, "");
+}
+function onCanvasResizeUp() {
+  const d = state.draw;
+  window.removeEventListener("pointermove", onCanvasResizeMove);
+  if (!d || !d.canvasResize) return;
+  d.canvasResize = null;
+  sendSocket({ type: "draw:resize", roomId: d.roomId, width: d.width, height: d.height });
+  setDrawStatus(d.writable ? "" : "읽기 전용 — 대표자만 그릴 수 있어요", d.writable ? "" : "muted");
+}
+
+// ── 실시간 커서/라이브 펜 오버레이 ──
+let drawLastCursorSent = 0;
+function sendDrawCursor(drawing, force) {
+  const d = state.draw;
+  if (!d || !d.loaded || !d.hoverPt) return;
+  const now = performance.now();
+  if (!force && now - drawLastCursorSent < 45) return;
+  drawLastCursorSent = now;
+  sendSocket({
+    type: "draw:cursor",
+    roomId: d.roomId,
+    x: Math.round(d.hoverPt[0]),
+    y: Math.round(d.hoverPt[1]),
+    tool: d.tool,
+    color: d.color,
+    size: d.size,
+    drawing: Boolean(drawing),
+    active: true,
+  });
+}
+
+const DRAW_TOOL_ICON = { pen: "✏️", eraser: "🧽", fill: "🪣", move: "✥" };
+
+function overlayRoundRect(ctx, x, y, w, h, r) {
+  if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); return; }
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function drawRemoteCursorMarker(ctx, cur, z) {
+  const x = cur.x * z, y = cur.y * z;
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(x, y, 4, 0, Math.PI * 2);
+  ctx.fillStyle = cur.color || "#5865f2";
+  ctx.strokeStyle = "#fff";
+  ctx.lineWidth = 1.5;
+  ctx.fill();
+  ctx.stroke();
+  const label = `${DRAW_TOOL_ICON[cur.tool] || "✏️"} ${cur.name || "유저"}`;
+  ctx.font = "12px sans-serif";
+  ctx.textBaseline = "middle";
+  const w = ctx.measureText(label).width + 12;
+  const lx = x + 9, ly = y + 6;
+  ctx.fillStyle = "rgba(20,22,28,0.86)";
+  overlayRoundRect(ctx, lx, ly, w, 18, 5);
+  ctx.fill();
+  ctx.fillStyle = "#fff";
+  ctx.fillText(label, lx + 6, ly + 10);
+  ctx.restore();
+}
+
+// 오버레이 = 표시 픽셀(캔버스*줌) 해상도. 캔버스 좌표에 z를 곱해 그린다.
+function renderDrawOverlay() {
+  const d = state.draw;
+  const ov = dom.drawOverlay;
+  if (!d || !ov) return;
+  const ctx = ov.getContext("2d");
+  const z = d.zoom || 1;
+  ctx.clearRect(0, 0, ov.width, ov.height);
+
+  // 1) 원격 라이브 트레일(그리는 중인 상대 펜)
+  for (const cur of d.cursors.values()) {
+    if (cur.drawing && cur.trail && cur.trail.length > 1 && cur.tool !== "eraser") {
+      ctx.save();
+      ctx.strokeStyle = cur.color || "#888";
+      ctx.lineWidth = Math.max(1, (cur.size || 2) * z);
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      ctx.globalAlpha = 0.85;
+      ctx.beginPath();
+      ctx.moveTo(cur.trail[0][0] * z, cur.trail[0][1] * z);
+      for (let i = 1; i < cur.trail.length; i++) ctx.lineTo(cur.trail[i][0] * z, cur.trail[i][1] * z);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  // 2) 내 브러시 크기 미리보기(펜/지우개 hover 중)
+  if (d.hoverPt && !d.drawing && !d.panning && (d.tool === "pen" || d.tool === "eraser")) {
+    const r = Math.max(1, (d.size / 2) * z);
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(d.hoverPt[0] * z, d.hoverPt[1] * z, r, 0, Math.PI * 2);
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = d.tool === "eraser" ? "rgba(240,80,80,0.9)" : "rgba(0,0,0,0.7)";
+    ctx.stroke();
+    ctx.setLineDash([3, 3]);
+    ctx.strokeStyle = "rgba(255,255,255,0.9)";
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // 3) 변형 박스 + 핸들
+  if (d.tool === "move" && d.transform) {
+    const b = d.transform.box;
+    ctx.save();
+    ctx.strokeStyle = "#5865f2";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([5, 4]);
+    ctx.strokeRect(b.x * z, b.y * z, b.w * z, b.h * z);
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#5865f2";
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 1.5;
+    for (const [, [hx, hy]] of Object.entries(transformHandles(b))) {
+      ctx.beginPath();
+      ctx.rect(hx * z - 4, hy * z - 4, 8, 8);
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // 4) 원격 커서 마커(도구 모양 + 이름)
+  for (const cur of d.cursors.values()) {
+    if (cur.active === false) continue;
+    drawRemoteCursorMarker(ctx, cur, z);
+  }
+}
+
+// ── 캔버스 전체/레이어 저장·복사 ──
+function drawSanitizeFileName(name) {
+  return String(name || "canvas").replace(/[\\/:*?"<>|]/g, "_").slice(0, 60) || "canvas";
+}
+function compositeToCanvas() {
+  const d = state.draw;
+  const c = document.createElement("canvas");
+  c.width = d.width;
+  c.height = d.height;
+  const ctx = c.getContext("2d");
+  for (const layer of d.layers) if (layer.visible) ctx.drawImage(layer.canvas, 0, 0);
+  return c;
+}
+function downloadCanvasPng(canvas, filename) {
+  canvas.toBlob((blob) => {
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }, "image/png");
+}
+function saveCanvasPng() {
+  const d = state.draw;
+  if (!d) return;
+  downloadCanvasPng(compositeToCanvas(), `${drawSanitizeFileName(d.name)}.png`);
+  setDrawStatus("캔버스를 저장했어요", "");
+}
+function saveLayerPng() {
+  const d = state.draw;
+  if (!d) return;
+  const layer = findDrawLayer(d.activeLayerId);
+  if (!layer) return;
+  downloadCanvasPng(layer.canvas, `${drawSanitizeFileName(d.name)}-${drawSanitizeFileName(layer.name)}.png`);
+  setDrawStatus(`'${layer.name}' 레이어를 저장했어요`, "");
+}
+async function copyCanvasImage() {
+  const d = state.draw;
+  if (!d) return;
+  try {
+    const canvas = compositeToCanvas();
+    const blob = await new Promise((res) => canvas.toBlob(res, "image/png"));
+    if (!blob || !navigator.clipboard || !window.ClipboardItem) throw new Error("unsupported");
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+    setDrawStatus("캔버스 이미지를 복사했어요", "");
+  } catch {
+    setDrawStatus("복사 실패 — 브라우저가 지원하지 않을 수 있어요", "bad");
+  }
 }
 
 function undoMyLastStroke() {
@@ -9538,7 +10070,7 @@ function renderDrawLayers() {
   list.innerHTML = "";
   d.layers.forEach((layer, index) => {
     const li = document.createElement("li");
-    li.className = "draw-layer-item" + (layer.id === d.activeLayerId ? " active" : "") + (layer.visible ? "" : " hidden-layer");
+    li.className = "draw-layer-item" + (layer.id === d.activeLayerId ? " active" : "") + (layer.visible ? "" : " hidden-layer") + (layer.locked ? " locked-layer" : "");
     li.dataset.layerId = layer.id;
 
     const vis = document.createElement("button");
@@ -9547,6 +10079,13 @@ function renderDrawLayers() {
     vis.textContent = layer.visible ? "👁" : "🚫";
     vis.title = layer.visible ? "숨기기" : "보이기";
     vis.addEventListener("click", (e) => { e.stopPropagation(); toggleLayerVisible(layer.id); });
+
+    const lock = document.createElement("button");
+    lock.className = "draw-layer-lock";
+    lock.type = "button";
+    lock.textContent = layer.locked ? "🔒" : "🔓";
+    lock.title = layer.locked ? "잠금 해제" : "잠그기";
+    lock.addEventListener("click", (e) => { e.stopPropagation(); toggleLayerLock(layer.id); });
 
     const name = document.createElement("span");
     name.className = "draw-layer-name";
@@ -9571,8 +10110,8 @@ function renderDrawLayers() {
     del.type = "button"; del.textContent = "🗑"; del.title = "레이어 삭제";
     del.addEventListener("click", (e) => { e.stopPropagation(); removeLayer(layer.id); });
 
-    li.append(vis, name, order, del);
-    li.addEventListener("click", () => { d.activeLayerId = layer.id; renderDrawLayers(); });
+    li.append(vis, lock, name, order, del);
+    li.addEventListener("click", () => { d.activeLayerId = layer.id; d.transform = null; renderDrawLayers(); renderDrawOverlay(); });
     list.appendChild(li);
   });
 }
@@ -9604,7 +10143,7 @@ function addDrawLayer() {
   const d = state.draw;
   if (!d) return;
   const id = `L${Date.now().toString(36)}`;
-  const layer = { id, name: `레이어 ${d.layers.length + 1}`, visible: true, strokes: [], canvas: makeLayerCanvas(d), ctx: null };
+  const layer = { id, name: `레이어 ${d.layers.length + 1}`, visible: true, locked: false, strokes: [], canvas: makeLayerCanvas(d), ctx: null };
   layer.ctx = layer.canvas.getContext("2d");
   d.layers.push(layer);
   d.activeLayerId = id;
@@ -9641,6 +10180,17 @@ function toggleLayerVisible(layerId) {
   renderDrawLayers();
   compositeDraw();
   sendSocket({ type: "draw:layer-update", roomId: d.roomId, layerId, visible: layer.visible });
+}
+
+function toggleLayerLock(layerId) {
+  const d = state.draw;
+  const layer = findDrawLayer(layerId);
+  if (!layer) return;
+  layer.locked = !layer.locked;
+  if (layer.locked && d.transform && d.transform.layerId === layerId) d.transform = null;
+  renderDrawLayers();
+  renderDrawOverlay();
+  sendSocket({ type: "draw:layer-update", roomId: d.roomId, layerId, locked: layer.locked });
 }
 
 // dir=+1 위로(배열 뒤로, 위에 표시), -1 아래로.
@@ -9691,7 +10241,12 @@ function handleDrawSocketMessage(message) {
   switch (message.type) {
     case "draw:state": {
       buildDrawFromDoc(message.doc || {});
+      d.cursors.clear();
+      if (Array.isArray(message.cursors)) {
+        for (const c of message.cursors) if (c.clientId !== state.clientId) d.cursors.set(c.clientId, { ...c, trail: [] });
+      }
       d.loaded = true;
+      renderDrawOverlay();
       setDrawStatus(d.writable ? "" : "읽기 전용 — 대표자만 그릴 수 있어요", d.writable ? "" : "muted");
       break;
     }
@@ -9733,7 +10288,7 @@ function handleDrawSocketMessage(message) {
     case "draw:layer-add": {
       if (findDrawLayer(message.layer.id)) return;
       const raw = message.layer;
-      const layer = { id: raw.id, name: raw.name || "레이어", visible: true, strokes: [], canvas: makeLayerCanvas(d), ctx: null };
+      const layer = { id: raw.id, name: raw.name || "레이어", visible: true, locked: false, strokes: [], canvas: makeLayerCanvas(d), ctx: null };
       layer.ctx = layer.canvas.getContext("2d");
       d.layers.push(layer);
       renderDrawLayers();
@@ -9748,9 +10303,47 @@ function handleDrawSocketMessage(message) {
       const layer = findDrawLayer(message.layerId);
       if (!layer) return;
       if (typeof message.visible === "boolean") layer.visible = message.visible;
+      if (typeof message.locked === "boolean") layer.locked = message.locked;
       if (typeof message.name === "string") layer.name = message.name;
       renderDrawLayers();
       compositeDraw();
+      break;
+    }
+    case "draw:layer-replace": {
+      const layer = findDrawLayer(message.layerId);
+      if (!layer) return;
+      layer.strokes = Array.isArray(message.strokes) ? message.strokes.slice() : [];
+      d.myStrokes = d.myStrokes.filter((e) => e.layerId !== layer.id);
+      if (d.transform && d.transform.layerId === layer.id) d.transform = null; // 남의 변형이 확정되면 내 세션 폐기
+      renderLayer(layer);
+      compositeDraw();
+      break;
+    }
+    case "draw:cursor": {
+      if (message.clientId === state.clientId) break;
+      let cur = d.cursors.get(message.clientId);
+      if (!cur) { cur = { clientId: message.clientId, trail: [] }; d.cursors.set(message.clientId, cur); }
+      const wasDrawing = cur.drawing;
+      cur.name = message.name;
+      cur.x = message.x;
+      cur.y = message.y;
+      cur.tool = message.tool;
+      cur.color = message.color;
+      cur.size = message.size;
+      cur.active = message.active !== false;
+      cur.drawing = Boolean(message.drawing);
+      if (cur.drawing && cur.tool !== "eraser") {
+        if (!wasDrawing) cur.trail = [];
+        cur.trail.push([message.x, message.y]);
+        if (cur.trail.length > 600) cur.trail.shift();
+      } else {
+        cur.trail = [];
+      }
+      renderDrawOverlay();
+      break;
+    }
+    case "draw:cursor-leave": {
+      if (d.cursors.delete(message.clientId)) renderDrawOverlay();
       break;
     }
     case "draw:layer-reorder": {
@@ -9771,10 +10364,24 @@ function handleDrawSocketMessage(message) {
 
 function setDrawTool(tool) {
   const d = state.draw;
-  const t = tool === "eraser" ? "eraser" : "pen";
-  if (d) d.tool = t;
+  const t = ["pen", "eraser", "fill", "move"].includes(tool) ? tool : "pen";
+  if (d) {
+    d.tool = t;
+    if (t !== "move") d.transform = null; // 이동 도구를 벗어나면 변형 세션 종료
+  }
   dom.drawToolPen?.classList.toggle("active", t === "pen");
   dom.drawToolEraser?.classList.toggle("active", t === "eraser");
+  dom.drawToolFill?.classList.toggle("active", t === "fill");
+  dom.drawToolMove?.classList.toggle("active", t === "move");
+  updateDrawCanvasCursor();
+  renderDrawOverlay();
+}
+
+function updateDrawCanvasCursor() {
+  const c = dom.drawCanvas;
+  if (!c) return;
+  c.classList.remove("tool-pen", "tool-eraser", "tool-fill", "tool-move");
+  c.classList.add("tool-" + (state.draw?.tool || "pen"));
 }
 
 function bindDrawEvents() {
@@ -9784,26 +10391,89 @@ function bindDrawEvents() {
     canvas.addEventListener("pointermove", onDrawPointerMove);
     canvas.addEventListener("pointerup", onDrawPointerUp);
     canvas.addEventListener("pointercancel", onDrawPointerUp);
-    canvas.addEventListener("pointerleave", (e) => { if (state.draw?.drawing) onDrawPointerUp(e); });
+    canvas.addEventListener("pointerleave", (e) => {
+      const d = state.draw;
+      if (!d) return;
+      if (d.drawing) onDrawPointerUp(e);
+      if (d.hoverPt) { d.hoverPt = null; sendSocket({ type: "draw:cursor-leave", roomId: d.roomId }); renderDrawOverlay(); }
+    });
   }
   dom.drawToolPen?.addEventListener("click", () => setDrawTool("pen"));
   dom.drawToolEraser?.addEventListener("click", () => setDrawTool("eraser"));
+  dom.drawToolFill?.addEventListener("click", () => setDrawTool("fill"));
+  dom.drawToolMove?.addEventListener("click", () => setDrawTool("move"));
   dom.drawColor?.addEventListener("input", (e) => { if (state.draw) state.draw.color = e.target.value; });
   dom.drawSize?.addEventListener("input", (e) => {
     const v = Number(e.target.value) || 1;
     if (state.draw) state.draw.size = v;
     if (dom.drawSizeVal) dom.drawSizeVal.textContent = String(v);
+    renderDrawOverlay();
   });
+  dom.drawZoomIn?.addEventListener("click", () => zoomStep(1));
+  dom.drawZoomOut?.addEventListener("click", () => zoomStep(-1));
+  dom.drawZoomReset?.addEventListener("click", () => setDrawZoom(1));
   dom.drawUndo?.addEventListener("click", undoMyLastStroke);
   dom.drawClear?.addEventListener("click", clearActiveLayer);
   dom.drawResize?.addEventListener("click", toggleResizePop);
   dom.drawResizeApply?.addEventListener("click", applyResize);
+  dom.drawSaveCanvas?.addEventListener("click", saveCanvasPng);
+  dom.drawSaveLayer?.addEventListener("click", saveLayerPng);
+  dom.drawCopyCanvas?.addEventListener("click", copyCanvasImage);
   dom.drawLayerAdd?.addEventListener("click", addDrawLayer);
-  document.addEventListener("paste", handleDrawPaste);
-  document.addEventListener("keydown", (e) => {
-    if (!state.draw || !document.body.classList.contains("draw-open")) return;
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); undoMyLastStroke(); }
+  // 캔버스 크기를 마우스로 직접 조절하는 손잡이
+  document.querySelectorAll(".draw-rz-handle").forEach((h) => {
+    h.addEventListener("pointerdown", (e) => beginCanvasResize(e, h.dataset.drawRz || "se"));
   });
+  // Ctrl+휠로 마우스 지점 기준 확대/축소
+  dom.drawCanvasScroll?.addEventListener("wheel", (e) => {
+    if (!state.draw || !document.body.classList.contains("draw-open")) return;
+    if (!(e.ctrlKey || e.metaKey)) return;
+    e.preventDefault();
+    zoomStep(e.deltaY < 0 ? 1 : -1, e.clientX, e.clientY);
+  }, { passive: false });
+  document.addEventListener("paste", handleDrawPaste);
+  document.addEventListener("keydown", onDrawKeyDown);
+  document.addEventListener("keyup", onDrawKeyUp);
+}
+
+function drawTypingTarget(e) {
+  const t = e.target;
+  return t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
+}
+
+function onDrawKeyDown(e) {
+  if (!state.draw || !document.body.classList.contains("draw-open")) return;
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); undoMyLastStroke(); return; }
+  if (drawTypingTarget(e)) return;
+  // 스페이스: 화면 이동(팬) 준비
+  if (e.code === "Space" || e.key === " ") {
+    e.preventDefault();
+    if (!state.draw.spaceDown) {
+      state.draw.spaceDown = true;
+      dom.drawCanvasStage?.classList.add("space");
+      dom.drawCanvasScroll?.classList.add("space");
+    }
+    return;
+  }
+  // 도구 단축키
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const k = e.key.toLowerCase();
+  if (k === "b") setDrawTool("pen");
+  else if (k === "e") setDrawTool("eraser");
+  else if (k === "g") setDrawTool("fill");
+  else if (k === "v") setDrawTool("move");
+  else if (k === "=" || k === "+") { e.preventDefault(); zoomStep(1); }
+  else if (k === "-" || k === "_") { e.preventDefault(); zoomStep(-1); }
+  else if (k === "0") { e.preventDefault(); setDrawZoom(1); }
+}
+
+function onDrawKeyUp(e) {
+  if (!state.draw) return;
+  if (e.code === "Space" || e.key === " ") {
+    state.draw.spaceDown = false;
+    dom.drawCanvasStage?.classList.remove("space");
+    dom.drawCanvasScroll?.classList.remove("space");
+  }
 }
 
 // ── 안전한 마크다운 렌더러(외부 의존성 없음, HTML 이스케이프 후 변환) ──
