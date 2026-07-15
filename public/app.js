@@ -11,6 +11,20 @@ function getClientVersion() {
   return CLIENT_VERSION;
 }
 
+// 프로필 배경 그라데이션 템플릿. 키는 서버에 저장되고, 실제 CSS는 여기서 매핑한다.
+// init() 이 setBanner/renderGradientSwatches 를 부르는 시점보다 먼저 초기화돼야 하므로 파일 최상단에 둔다(TDZ 방지).
+const BANNER_GRADIENTS = [
+  { key: "aurora", label: "오로라", css: "linear-gradient(135deg, #5b3fd1, #2f6fed 55%, #21c1c9)" },
+  { key: "sunset", label: "노을", css: "linear-gradient(135deg, #ff7a59, #ff3d77 55%, #a83279)" },
+  { key: "ocean", label: "바다", css: "linear-gradient(135deg, #0f3d6e, #1f7bce 60%, #23c6b6)" },
+  { key: "forest", label: "숲", css: "linear-gradient(135deg, #1d5c3f, #3a8f4d 55%, #9fce4f)" },
+  { key: "grape", label: "포도", css: "linear-gradient(135deg, #3a1c71, #6d28d9 55%, #d76d9e)" },
+  { key: "ember", label: "잔불", css: "linear-gradient(135deg, #7a1e0f, #c8471f 55%, #f2b134)" },
+  { key: "mono", label: "모노", css: "linear-gradient(135deg, #2b2f3a, #3f4657 60%, #5a6377)" },
+  { key: "rosegold", label: "로즈골드", css: "linear-gradient(135deg, #b76e79, #e3a5a0 55%, #f6d5c0)" },
+];
+const BANNER_GRADIENT_MAP = Object.fromEntries(BANNER_GRADIENTS.map((g) => [g.key, g.css]));
+
 const ROOM_TYPE_META = {
   voice: { icon: "🔊", label: "통화방" },
   chat: { icon: "#", label: "채팅방" },
@@ -1324,19 +1338,6 @@ function setAvatar(el, user) {
     el.textContent = (user?.displayName || user?.username || "?").trim().charAt(0).toUpperCase();
   }
 }
-
-// 프로필 배경 그라데이션 템플릿. 키는 서버에 저장되고, 실제 CSS는 여기서 매핑한다.
-const BANNER_GRADIENTS = [
-  { key: "aurora", label: "오로라", css: "linear-gradient(135deg, #5b3fd1, #2f6fed 55%, #21c1c9)" },
-  { key: "sunset", label: "노을", css: "linear-gradient(135deg, #ff7a59, #ff3d77 55%, #a83279)" },
-  { key: "ocean", label: "바다", css: "linear-gradient(135deg, #0f3d6e, #1f7bce 60%, #23c6b6)" },
-  { key: "forest", label: "숲", css: "linear-gradient(135deg, #1d5c3f, #3a8f4d 55%, #9fce4f)" },
-  { key: "grape", label: "포도", css: "linear-gradient(135deg, #3a1c71, #6d28d9 55%, #d76d9e)" },
-  { key: "ember", label: "잔불", css: "linear-gradient(135deg, #7a1e0f, #c8471f 55%, #f2b134)" },
-  { key: "mono", label: "모노", css: "linear-gradient(135deg, #2b2f3a, #3f4657 60%, #5a6377)" },
-  { key: "rosegold", label: "로즈골드", css: "linear-gradient(135deg, #b76e79, #e3a5a0 55%, #f6d5c0)" },
-];
-const BANNER_GRADIENT_MAP = Object.fromEntries(BANNER_GRADIENTS.map((g) => [g.key, g.css]));
 
 // 프로필 배경(배너). 이미지 → 선택한 그라데이션 → 코드 기반 기본 그라데이션 순으로 채운다.
 function setBanner(el, user) {
