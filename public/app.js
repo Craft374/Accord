@@ -326,7 +326,6 @@ const dom = {
   refreshDevicesButton: document.querySelector("#refreshDevicesButton"),
   testAudioButton: document.querySelector("#testAudioButton"),
   noiseSuppressionToggle: document.querySelector("#noiseSuppressionToggle"),
-  echoCancellationToggle: document.querySelector("#echoCancellationToggle"),
   autoGainToggle: document.querySelector("#autoGainToggle"),
   systemAudioToggle: document.querySelector("#systemAudioToggle"),
   systemAudioAction: document.querySelector("#systemAudioAction"),
@@ -670,7 +669,6 @@ function bindEvents() {
 
   for (const toggle of [
     dom.noiseSuppressionToggle,
-    dom.echoCancellationToggle,
     dom.autoGainToggle,
     dom.lowLatencyToggle,
     dom.highQualityToggle,
@@ -1863,10 +1861,11 @@ async function openMic() {
   applyMicTrackEnabled();
 }
 
-function getSpeechProcessingConstraints(echo, noise, autoGain) {
+// 에코 제거(AEC)는 기능 자체를 제거했다. 목소리를 갉아먹는 부작용이 커서 항상 끈 상태로 캡처한다.
+function getSpeechProcessingConstraints(noise, autoGain) {
   const supported = navigator.mediaDevices?.getSupportedConstraints?.() || {};
   const constraints = {
-    echoCancellation: echo,
+    echoCancellation: false,
     noiseSuppression: noise,
     autoGainControl: autoGain,
   };
@@ -1874,11 +1873,8 @@ function getSpeechProcessingConstraints(echo, noise, autoGain) {
   return constraints;
 }
 
-function getLegacyWebRtcProcessingConstraints(echo, noise, autoGain) {
+function getLegacyWebRtcProcessingConstraints(noise, autoGain) {
   return {
-    googEchoCancellation: echo,
-    googEchoCancellation2: echo,
-    googDAEchoCancellation: echo,
     googNoiseSuppression: noise,
     googNoiseSuppression2: noise,
     googAutoGainControl: autoGain,
@@ -1888,26 +1884,25 @@ function getLegacyWebRtcProcessingConstraints(echo, noise, autoGain) {
   };
 }
 
-function getAudioProcessingAdvancedConstraints(echo, noise, autoGain) {
+function getAudioProcessingAdvancedConstraints(noise, autoGain) {
   return [
-    getSpeechProcessingConstraints(echo, noise, autoGain),
-    getLegacyWebRtcProcessingConstraints(echo, noise, autoGain),
+    getSpeechProcessingConstraints(noise, autoGain),
+    getLegacyWebRtcProcessingConstraints(noise, autoGain),
   ];
 }
 
 function getMicConstraints() {
   const deviceId = dom.inputDeviceSelect.value;
-  const echo = dom.echoCancellationToggle.checked;
   const noise = shouldUseNativeNoiseSuppression();
   const autoGain = dom.autoGainToggle.checked;
   const constraints = {
-    ...getSpeechProcessingConstraints(echo, noise, autoGain),
-    ...getLegacyWebRtcProcessingConstraints(echo, noise, autoGain),
+    ...getSpeechProcessingConstraints(noise, autoGain),
+    ...getLegacyWebRtcProcessingConstraints(noise, autoGain),
     sampleRate: { ideal: 48000 },
     sampleSize: { ideal: 16 },
     latency: { ideal: dom.lowLatencyToggle.checked ? 0.01 : 0.02 },
-    channelCount: { ideal: dom.highQualityToggle.checked && !echo ? 2 : 1 },
-    advanced: getAudioProcessingAdvancedConstraints(echo, noise, autoGain),
+    channelCount: { ideal: dom.highQualityToggle.checked ? 2 : 1 },
+    advanced: getAudioProcessingAdvancedConstraints(noise, autoGain),
   };
   if (deviceId) constraints.deviceId = { exact: deviceId };
   return constraints;
@@ -1915,15 +1910,14 @@ function getMicConstraints() {
 
 async function enforceMicProcessingConstraints() {
   if (!state.rawMicTrack?.applyConstraints) return;
-  const echo = dom.echoCancellationToggle.checked;
   const noise = shouldUseNativeNoiseSuppression();
   const autoGain = dom.autoGainToggle.checked;
   const constraints = {
-    ...getSpeechProcessingConstraints(echo, noise, autoGain),
-    ...getLegacyWebRtcProcessingConstraints(echo, noise, autoGain),
+    ...getSpeechProcessingConstraints(noise, autoGain),
+    ...getLegacyWebRtcProcessingConstraints(noise, autoGain),
     latency: { ideal: dom.lowLatencyToggle.checked ? 0.01 : 0.02 },
     sampleRate: { ideal: 48000 },
-    advanced: getAudioProcessingAdvancedConstraints(echo, noise, autoGain),
+    advanced: getAudioProcessingAdvancedConstraints(noise, autoGain),
   };
   await state.rawMicTrack.applyConstraints(constraints).catch(() => {});
 }
@@ -2329,11 +2323,11 @@ async function getBrowserSystemAudioDisplayStream() {
       echoCancellation: false,
       noiseSuppression: false,
       autoGainControl: false,
-      ...getLegacyWebRtcProcessingConstraints(false, false, false),
+      ...getLegacyWebRtcProcessingConstraints(false, false),
       suppressLocalAudioPlayback: true,
       channelCount: { ideal: 2 },
       sampleRate: { ideal: 48000 },
-      advanced: getAudioProcessingAdvancedConstraints(false, false, false),
+      advanced: getAudioProcessingAdvancedConstraints(false, false),
     },
   });
 }
@@ -2397,13 +2391,13 @@ function getSystemAudioCaptureConstraints() {
     echoCancellation: false,
     noiseSuppression: false,
     autoGainControl: false,
-    ...getLegacyWebRtcProcessingConstraints(false, false, false),
+    ...getLegacyWebRtcProcessingConstraints(false, false),
     sampleRate: { ideal: 48000 },
     sampleSize: { ideal: 16 },
     channelCount: { ideal: 2 },
     latency: { ideal: 0.005 },
     suppressLocalAudioPlayback: false,
-    advanced: getAudioProcessingAdvancedConstraints(false, false, false),
+    advanced: getAudioProcessingAdvancedConstraints(false, false),
   };
 }
 
@@ -2450,12 +2444,12 @@ function getSystemInputConstraints() {
     echoCancellation: false,
     noiseSuppression: false,
     autoGainControl: false,
-    ...getLegacyWebRtcProcessingConstraints(false, false, false),
+    ...getLegacyWebRtcProcessingConstraints(false, false),
     sampleRate: { ideal: 48000 },
     sampleSize: { ideal: 16 },
     latency: { ideal: 0.01 },
     channelCount: { ideal: 2 },
-    advanced: getAudioProcessingAdvancedConstraints(false, false, false),
+    advanced: getAudioProcessingAdvancedConstraints(false, false),
   };
   if (deviceId) constraints.deviceId = { exact: deviceId };
   return constraints;
@@ -6134,15 +6128,13 @@ function getMacAudioRoutingMessage(issue) {
 }
 
 function getProcessingText(settings) {
-  const echo = formatSetting(settings.echoCancellation, dom.echoCancellationToggle.checked);
   const noise = formatSetting(settings.noiseSuppression, shouldUseNativeNoiseSuppression());
   const gain = formatSetting(settings.autoGainControl, dom.autoGainToggle.checked);
-  return `에코 ${echo} / 잡음 ${noise} / 자동 ${gain} / 힌트 ${getProcessingHintText()} / 보조 ${getLocalProcessingText()}`;
+  return `잡음 ${noise} / 자동 ${gain} / 힌트 ${getProcessingHintText()} / 보조 ${getLocalProcessingText()}`;
 }
 
 function getProcessingHintText() {
   const parts = [];
-  if (dom.echoCancellationToggle.checked) parts.push("AEC");
   if (shouldUseNativeNoiseSuppression()) parts.push("NS강");
   else if (dom.noiseSuppressionToggle.checked && getNoiseGateStrength() > 0) parts.push(`NS보조${Math.round(getNoiseGateStrength() * 100)}%`);
   if (dom.autoGainToggle.checked) parts.push("AGC");
@@ -6156,7 +6148,6 @@ function getLocalProcessingText() {
     return planned.length ? `예정 ${planned.join("+")}` : "꺼짐";
   }
   const parts = [];
-  if (dom.echoCancellationToggle.checked) parts.push("AEC후");
   if (state.micProcess.gateNode) parts.push(`게이트${Math.round(getNoiseGateStrength() * 100)}%`);
   if (state.micProcess.compressor) parts.push("압축");
   if (state.micProcess.bleedSuppressorNode) parts.push(getBleedSuppressorText());
@@ -6170,7 +6161,6 @@ function getBleedSuppressorText() {
 
 function getPlannedLocalProcessingParts() {
   const parts = [];
-  if (dom.echoCancellationToggle.checked) parts.push("AEC");
   if (dom.noiseSuppressionToggle.checked && getNoiseGateStrength() > 0) parts.push(`게이트${Math.round(getNoiseGateStrength() * 100)}%`);
   if (dom.autoGainToggle.checked) parts.push("AGC");
   if (Math.abs(getMicGain() - 1) >= 0.001) parts.push("증폭");
@@ -9372,6 +9362,13 @@ function memoFontExists(key) {
   }
   return false;
 }
+// 서버가 넘겨준 글꼴 키를 받아들인다. 내장 글꼴이거나 업로드 글꼴(custom:<id>) 형식이면 그대로 쓴다.
+// (지워졌거나 아직 FontFace 로드 전인 업로드 글꼴은 memoFontStack 이 기본 스택으로 자연 대체한다.)
+// ※ 예전엔 MEMO_FONTS[key] 로만 검사해 업로드 글꼴이 전부 기본으로 되돌아가는 버그가 있었다.
+function acceptMemoFont(key) {
+  if (typeof key === "string" && (MEMO_FONTS[key] || key.startsWith("custom:"))) return key;
+  return MEMO_FONT_DEFAULT_KEY;
+}
 
 // 업로드 글꼴을 브라우저에 등록(FontFace). 이미 등록한 것은 건너뛴다.
 const registeredFontIds = new Set();
@@ -9527,7 +9524,7 @@ function handleMemoState(message) {
   m.serverRev = message.rev || 0;
   m.inflight = null;
   m.buffer = [];
-  m.font = MEMO_FONTS[message.font] ? message.font : MEMO_FONT_DEFAULT_KEY;
+  m.font = acceptMemoFont(message.font);
   if (dom.memoEditor) { dom.memoEditor.disabled = !m.writable; dom.memoEditor.value = m.doc; }
   applyMemoFont(m.font);
   updateMemoToolsEnabled();
@@ -9543,7 +9540,7 @@ function handleMemoState(message) {
 function handleMemoFont(message) {
   const m = state.memo;
   if (!m || m.roomId !== message.roomId) return;
-  m.font = MEMO_FONTS[message.font] ? message.font : MEMO_FONT_DEFAULT_KEY;
+  m.font = acceptMemoFont(message.font);
   applyMemoFont(m.font);
 }
 
