@@ -1293,6 +1293,53 @@ body.draw-open .log-panel {
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
+/* 자주 안 쓰는 동작(저장·복사·크기)은 ⋯ 더보기 메뉴로 모아 툴바를 정리한다. */
+.draw-more-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.draw-more-btn {
+  background: var(--bg-input);
+  border-radius: var(--radius-sm);
+  font-size: 18px;
+  line-height: 1;
+}
+.draw-more-btn:hover { background: var(--bg-elevated); color: var(--heading); }
+.draw-more-wrap.open .draw-more-btn { background: var(--bg-elevated); color: var(--heading); }
+.draw-more-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  min-width: 200px;
+  padding: 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+}
+.draw-more-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.draw-more-item:hover { background: var(--accent, #5865f2); color: #fff; }
+.draw-more-icon {
+  width: 18px;
+  font-size: 14px;
+  text-align: center;
+  flex: none;
+}
 .draw-color-wrap {
   display: inline-flex;
   align-items: center;
@@ -1318,12 +1365,35 @@ body.draw-open .log-panel {
   font-size: 12px;
   text-align: right;
 }
+/* 상태 메시지: 캔버스 위에 떠 있는 토스트라 툴바 버튼 배치를 밀지 않는다. */
 .draw-status {
-  color: var(--muted);
-  font-size: 12px;
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  /* 레이어 패널(200px)만큼 왼쪽 보정해 캔버스 영역 중앙에 오게 한다. */
+  margin-left: -100px;
+  z-index: 8;
+  max-width: min(72%, 460px);
+  padding: 7px 15px;
+  border-radius: 999px;
+  background: rgba(15, 17, 21, 0.9);
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 500;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, 8px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
 }
-.draw-status.bad { color: var(--danger); }
+.draw-status.show {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+.draw-status.bad { background: rgba(190, 46, 50, 0.94); }
 .draw-resize-pop {
   position: absolute;
   top: 100%;
@@ -1361,6 +1431,7 @@ body.draw-open .log-panel {
 }
 
 .draw-body {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: grid;
@@ -1381,7 +1452,15 @@ body.draw-open .log-panel {
 }
 .draw-canvas-stage {
   position: relative;
-  background: #ffffff;
+  /* 투명 영역(레이어 전부 끔)은 포토샵식 체커보드로 보이게 한다. */
+  background-color: #ffffff;
+  background-image:
+    linear-gradient(45deg, #c7ccd1 25%, transparent 25%),
+    linear-gradient(-45deg, #c7ccd1 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #c7ccd1 75%),
+    linear-gradient(-45deg, transparent 75%, #c7ccd1 75%);
+  background-size: 18px 18px;
+  background-position: 0 0, 0 9px, 9px -9px, -9px 0;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.45);
   line-height: 0;
 }

@@ -277,27 +277,27 @@
                 <input type="range" id="drawSize" min="1" max="60" value="4" />
                 <span class="draw-size-val" id="drawSizeVal">4</span>
               </div>
+              <div class="draw-tool-group">
+                <button class="draw-tool-btn" id="drawUndo" type="button" title="실행취소(내 마지막 획)">↶</button>
+                <button class="draw-tool-btn" id="drawClear" type="button" title="현재 레이어 지우기">🧹</button>
+              </div>
               <div class="draw-tool-group draw-zoom-group" title="줌">
                 <button class="draw-tool-btn" id="drawZoomOut" type="button" title="축소 (Ctrl+휠)">－</button>
                 <button class="draw-tool-btn draw-zoom-val" id="drawZoomReset" type="button" title="100%로 맞추기">100%</button>
                 <button class="draw-tool-btn" id="drawZoomIn" type="button" title="확대 (Ctrl+휠)">＋</button>
               </div>
-              <div class="draw-tool-group">
-                <button class="draw-tool-btn" id="drawUndo" type="button" title="실행취소(내 마지막 획)">↶</button>
-                <button class="draw-tool-btn" id="drawClear" type="button" title="현재 레이어 지우기">🧹</button>
-                <button class="draw-tool-btn" id="drawResize" type="button" title="캔버스 크기(숫자)">⤢</button>
+              <div class="draw-more-wrap">
+                <button class="draw-tool-btn draw-more-btn" id="drawMoreBtn" type="button" title="더보기" aria-label="더보기" aria-haspopup="true" aria-expanded="false">⋯</button>
+                <div class="draw-more-menu" id="drawMoreMenu" role="menu" hidden>
+                  <button class="draw-more-item" id="drawResize" type="button" role="menuitem"><span class="draw-more-icon">⤢</span>캔버스 크기 조절…</button>
+                  <button class="draw-more-item" id="drawSaveCanvas" type="button" role="menuitem"><span class="draw-more-icon">💾</span>캔버스 저장 (PNG)</button>
+                  <button class="draw-more-item" id="drawSaveLayer" type="button" role="menuitem"><span class="draw-more-icon">🖼️</span>현재 레이어 저장 (PNG)</button>
+                  <button class="draw-more-item" id="drawCopyCanvas" type="button" role="menuitem"><span class="draw-more-icon">📋</span>캔버스 이미지 복사</button>
+                </div>
               </div>
-              <div class="draw-tool-group">
-                <button class="draw-tool-btn" id="drawSaveCanvas" type="button" title="캔버스 전체 저장(PNG)">💾</button>
-                <button class="draw-tool-btn" id="drawSaveLayer" type="button" title="현재 레이어 저장(PNG)">🖼️</button>
-                <button class="draw-tool-btn" id="drawCopyCanvas" type="button" title="캔버스 이미지 복사">📋</button>
-              </div>
-              <div class="draw-tool-group">
-                <button class="draw-tool-btn focus-btn" id="drawFocusButton" type="button" title="집중모드" aria-label="집중모드">
-                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
-                </button>
-              </div>
-              <span class="draw-status" id="drawStatus"></span>
+              <button class="focus-btn" id="drawFocusButton" type="button" title="집중모드" aria-label="집중모드">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
+              </button>
             </div>
             <div class="draw-resize-pop" id="drawResizePop" hidden>
               <label>가로 <input type="number" id="drawResizeW" min="200" max="4000" step="10" /></label>
@@ -306,6 +306,7 @@
             </div>
           </header>
           <div class="draw-body">
+            <span class="draw-status" id="drawStatus" role="status" aria-live="polite"></span>
             <div class="draw-canvas-scroll" id="drawCanvasScroll">
               <div class="draw-canvas-stage" id="drawCanvasStage">
                 <canvas id="drawCanvas"></canvas>

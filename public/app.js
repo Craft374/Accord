@@ -237,6 +237,8 @@ const dom = {
   drawSaveCanvas: document.querySelector("#drawSaveCanvas"),
   drawSaveLayer: document.querySelector("#drawSaveLayer"),
   drawCopyCanvas: document.querySelector("#drawCopyCanvas"),
+  drawMoreBtn: document.querySelector("#drawMoreBtn"),
+  drawMoreMenu: document.querySelector("#drawMoreMenu"),
   drawCanvasScroll: document.querySelector("#drawCanvasScroll"),
   drawCanvasStage: document.querySelector("#drawCanvasStage"),
   drawCanvas: document.querySelector("#drawCanvas"),
@@ -10231,10 +10233,22 @@ function autoResizeDmInput() {
   el.style.height = Math.min(el.scrollHeight, 120) + "px";
 }
 
+let drawStatusTimer = null;
 function setDrawStatus(text, tone) {
-  if (!dom.drawStatus) return;
-  dom.drawStatus.textContent = text || "";
-  dom.drawStatus.className = "draw-status" + (tone ? ` ${tone}` : "");
+  const el = dom.drawStatus;
+  if (!el) return;
+  clearTimeout(drawStatusTimer);
+  // 캔버스 위 토스트로 띄운다(툴바 버튼을 밀지 않음). 빈 문자열이면 숨긴다.
+  if (!text) {
+    el.classList.remove("show");
+    return;
+  }
+  el.textContent = text;
+  el.className = "draw-status show" + (tone === "bad" ? " bad" : "");
+  // 읽기 전용 안내(muted)는 계속 떠 있고, 나머지 확인 메시지는 잠시 뒤 사라진다.
+  if (tone !== "muted") {
+    drawStatusTimer = setTimeout(() => el.classList.remove("show"), 2600);
+  }
 }
 
 function nextDrawStrokeId() {
@@ -11197,6 +11211,21 @@ function moveLayer(layerId, dir) {
 }
 
 // ── 캔버스 크기 조절 ──
+function closeDrawMore() {
+  if (!dom.drawMoreMenu) return;
+  dom.drawMoreMenu.hidden = true;
+  dom.drawMoreBtn?.parentElement?.classList.remove("open");
+  dom.drawMoreBtn?.setAttribute("aria-expanded", "false");
+}
+function toggleDrawMore() {
+  if (!dom.drawMoreMenu) return;
+  const willOpen = dom.drawMoreMenu.hidden;
+  dom.drawMoreMenu.hidden = !willOpen;
+  dom.drawMoreBtn?.parentElement?.classList.toggle("open", willOpen);
+  dom.drawMoreBtn?.setAttribute("aria-expanded", willOpen ? "true" : "false");
+  if (willOpen && dom.drawResizePop) dom.drawResizePop.hidden = true;
+}
+
 function toggleResizePop() {
   const d = state.draw;
   const pop = dom.drawResizePop;
@@ -11404,11 +11433,15 @@ function bindDrawEvents() {
   dom.drawZoomReset?.addEventListener("click", () => setDrawZoom(1));
   dom.drawUndo?.addEventListener("click", undoMyLastStroke);
   dom.drawClear?.addEventListener("click", clearActiveLayer);
-  dom.drawResize?.addEventListener("click", toggleResizePop);
+  dom.drawResize?.addEventListener("click", () => { closeDrawMore(); toggleResizePop(); });
   dom.drawResizeApply?.addEventListener("click", applyResize);
-  dom.drawSaveCanvas?.addEventListener("click", saveCanvasPng);
-  dom.drawSaveLayer?.addEventListener("click", saveLayerPng);
-  dom.drawCopyCanvas?.addEventListener("click", copyCanvasImage);
+  dom.drawSaveCanvas?.addEventListener("click", () => { closeDrawMore(); saveCanvasPng(); });
+  dom.drawSaveLayer?.addEventListener("click", () => { closeDrawMore(); saveLayerPng(); });
+  dom.drawCopyCanvas?.addEventListener("click", () => { closeDrawMore(); copyCanvasImage(); });
+  dom.drawMoreBtn?.addEventListener("click", (e) => { e.stopPropagation(); toggleDrawMore(); });
+  document.addEventListener("click", (e) => {
+    if (dom.drawMoreMenu && !dom.drawMoreMenu.hidden && !e.target.closest(".draw-more-wrap")) closeDrawMore();
+  });
   dom.drawLayerAdd?.addEventListener("click", addDrawLayer);
   // 캔버스 크기를 마우스로 직접 조절하는 손잡이
   document.querySelectorAll(".draw-rz-handle").forEach((h) => {
