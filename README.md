@@ -1,7 +1,14 @@
 # Accord
 
-친구랑 바로 들어가서 통화하려고 만든 **개인용 저지연 음성 통화 + 화면 공유** 도구입니다.
-이름은 같은 통화 플랫폼인 Discord의 반대 의미에서 가져왔습니다.
+> 대화와 기록, 협업이 하나의 흐름으로.
+
+**Accord**는 저지연 음성 통화와 화면 공유에서 시작해 채팅, 마크다운 메모, 공동 창작 도구까지 한곳에 담은 협업 앱입니다.
+Discord의 소통, Slack의 협업, Notion의 기록이 만나는 지점—그 사이 어딘가를 지향합니다.
+
+이름은 불일치를 뜻하는 Discord의 반대말, **Accord(조화·합의)**에서 가져왔습니다.
+흩어진 대화와 작업이 자연스럽게 어우러지는 공간이라는 의미를 담았습니다.
+
+[공식 홈페이지](https://craft374.github.io/Accord/) · [서버 열기](docs/SERVER.md) · [앱 빌드](docs/BUILD.md)
 
 - 서버(`server.js`)가 시그널링(WebSocket)과 통화 UI(`public/`)를 함께 내려줍니다.
 - 데스크톱 앱(Electron)은 서버 주소를 입력해 그 UI를 여는 얇은 껍데기입니다.
@@ -37,6 +44,7 @@
 server.js                          시그널링 + UI 서빙 서버 (의존성 없음)
 data-store.js                      계정·채널·방·메모 등 영속 데이터
 public/                            통화·채팅·메모·그림판 UI (서버가 내려줌)
+website/                           GitHub Pages 공식 홈페이지
 electron/                          데스크톱 앱 메인/프리로드
 shell/                             데스크톱 앱 시작 화면 (서버 주소 입력)
 native/windows-process-loopback/   Windows 프로그램별 오디오 캡처 helper (C#)
