@@ -250,6 +250,15 @@ const dom = {
   logSubtitle: document.querySelector("#logSubtitle"),
   logScroll: document.querySelector("#logScroll"),
   logList: document.querySelector("#logList"),
+  logSearchToggle: document.querySelector("#logSearchToggle"),
+  logFilters: document.querySelector("#logFilters"),
+  logSearchInput: document.querySelector("#logSearchInput"),
+  logSearchClear: document.querySelector("#logSearchClear"),
+  logFilterUser: document.querySelector("#logFilterUser"),
+  logFilterRoom: document.querySelector("#logFilterRoom"),
+  logFilterDate: document.querySelector("#logFilterDate"),
+  logFilterReset: document.querySelector("#logFilterReset"),
+  logFilterCount: document.querySelector("#logFilterCount"),
   dmPanel: document.querySelector("#dmPanel"),
   dmNewButton: document.querySelector("#dmNewButton"),
   dmNewRow: document.querySelector("#dmNewRow"),
@@ -520,6 +529,7 @@ function bindEvents() {
   bindMemoEvents();
   bindDrawEvents();
   bindDmEvents();
+  bindLogEvents();
 
   dom.inputDeviceSelect.addEventListener("change", () => {
     resetEchoProbe();
@@ -9856,7 +9866,15 @@ function openLogRoom(roomId) {
     document.body.classList.add("log-open");
     return;
   }
-  state.activeLog = { roomId, channelId: found.channel.id, name: found.room.name, entries: [] };
+  state.activeLog = {
+    roomId,
+    channelId: found.channel.id,
+    name: found.room.name,
+    entries: [],
+    filter: { q: "", user: "", room: "", date: "" },
+    collapsedDays: new Set(),
+  };
+  clearLogFilterInputs();
   document.body.classList.add("log-open");
   if (dom.logRoomName) dom.logRoomName.textContent = found.room.name;
   if (dom.logSubtitle) dom.logSubtitle.textContent = found.channel.name;
@@ -9887,6 +9905,7 @@ function verifyActiveLog() {
 function handleLogHistory(message) {
   if (!state.activeLog || state.activeLog.roomId !== message.roomId) return;
   state.activeLog.entries = Array.isArray(message.entries) ? message.entries : [];
+  updateLogFilterOptions();
   renderLogEntries();
   scrollLogToBottom();
 }
@@ -9900,8 +9919,9 @@ function handleLogEntry(message) {
   const stick = logIsNearBottom();
   list.push(entry);
   if (list.length > LOG_MAX_ENTRIES) list.splice(0, list.length - LOG_MAX_ENTRIES);
+  updateLogFilterOptions();
   renderLogEntries();
-  if (stick) scrollLogToBottom();
+  if (stick && !logHasActiveFilter()) scrollLogToBottom();
 }
 
 // 이벤트 종류별 아이콘 + 설명 문구. name/roomName 은 반드시 이스케이프해서 넣는다.
@@ -9931,39 +9951,216 @@ function formatLogEntry(entry) {
 
 function renderLogEntries() {
   if (!dom.logList) return;
-  const entries = state.activeLog?.entries || [];
-  if (!entries.length) {
+  const log = state.activeLog;
+  const allEntries = log?.entries || [];
+  if (!allEntries.length) {
     dom.logList.innerHTML = '<li class="log-empty">아직 기록된 활동이 없습니다.</li>';
+    updateLogFilterCount(0, 0);
     return;
   }
-  const frag = document.createDocumentFragment();
-  let lastDay = "";
+  const filter = log.filter || (log.filter = { q: "", user: "", room: "", date: "" });
+  const collapsed = log.collapsedDays || (log.collapsedDays = new Set());
+  const active = logHasActiveFilter();
+  const entries = active ? allEntries.filter((e) => logMatchesFilter(e, filter)) : allEntries;
+  updateLogFilterCount(entries.length, allEntries.length);
+
+  if (!entries.length) {
+    dom.logList.innerHTML = '<li class="log-empty">검색 결과가 없습니다.</li>';
+    return;
+  }
+
+  // 같은 날짜끼리 묶는다(날짜 헤더 하나로 접었다 폈다).
+  const groups = [];
+  let cur = null;
   for (const entry of entries) {
-    const day = logDayLabel(entry.at);
-    if (day !== lastDay) {
-      const divider = document.createElement("li");
-      divider.className = "log-day";
-      divider.textContent = day;
-      frag.append(divider);
-      lastDay = day;
+    const key = logDayKey(entry.at);
+    if (!cur || cur.key !== key) {
+      cur = { key, label: logDayLabel(entry.at), items: [] };
+      groups.push(cur);
     }
-    const { icon, html } = formatLogEntry(entry);
-    const li = document.createElement("li");
-    li.className = "log-entry";
-    const ic = document.createElement("span");
-    ic.className = "log-entry-icon";
-    ic.textContent = icon;
-    const body = document.createElement("span");
-    body.className = "log-entry-body";
-    body.innerHTML = html;
-    const time = document.createElement("span");
-    time.className = "log-entry-time";
-    time.textContent = logTime(entry.at);
-    li.append(ic, body, time);
-    frag.append(li);
+    cur.items.push(entry);
+  }
+
+  const frag = document.createDocumentFragment();
+  for (const g of groups) {
+    const isCollapsed = collapsed.has(g.key);
+    const dayLi = document.createElement("li");
+    dayLi.className = "log-day" + (isCollapsed ? " collapsed" : "");
+    dayLi.dataset.day = g.key;
+    const toggle = document.createElement("button");
+    toggle.className = "log-day-toggle";
+    toggle.type = "button";
+    toggle.setAttribute("aria-expanded", isCollapsed ? "false" : "true");
+    const arrow = document.createElement("span");
+    arrow.className = "log-day-arrow";
+    arrow.textContent = "▾";
+    arrow.setAttribute("aria-hidden", "true");
+    const label = document.createElement("span");
+    label.className = "log-day-label";
+    label.textContent = g.label;
+    const count = document.createElement("span");
+    count.className = "log-day-count";
+    count.textContent = String(g.items.length);
+    toggle.append(arrow, label, count);
+    dayLi.append(toggle);
+    frag.append(dayLi);
+    if (isCollapsed) continue;
+    for (const entry of g.items) {
+      const { icon, html } = formatLogEntry(entry);
+      const li = document.createElement("li");
+      li.className = "log-entry";
+      li.dataset.day = g.key;
+      const ic = document.createElement("span");
+      ic.className = "log-entry-icon";
+      ic.textContent = icon;
+      const body = document.createElement("span");
+      body.className = "log-entry-body";
+      body.innerHTML = html;
+      const time = document.createElement("span");
+      time.className = "log-entry-time";
+      time.textContent = logTime(entry.at);
+      li.append(ic, body, time);
+      frag.append(li);
+    }
   }
   dom.logList.innerHTML = "";
   dom.logList.append(frag);
+}
+
+// ── 로그 검색·필터 ─────────────────────────
+// 서버는 채널의 전체 history 를 한 번에 내려주므로 검색·필터·접기는 모두 클라이언트에서 처리한다.
+function logHasActiveFilter() {
+  const f = state.activeLog?.filter;
+  return !!(f && (f.q.trim() || f.user || f.room || f.date));
+}
+
+function logMatchesFilter(entry, f) {
+  if (f.date && logDayKey(entry.at) !== f.date) return false;         // 날짜별
+  if (f.user && (entry.name || "") !== f.user) return false;          // 유저별
+  if (f.room && (entry.roomName || "") !== f.room) return false;      // 방별
+  const q = f.q.trim().toLowerCase();                                 // 자유 검색
+  if (q && !logSearchHaystack(entry).includes(q)) return false;
+  return true;
+}
+
+// 이름·방·설명 문구를 한 문자열로 합쳐 검색 대상으로 삼는다(HTML 태그 제거).
+function logSearchHaystack(entry) {
+  const { html } = formatLogEntry(entry);
+  const text = html.replace(/<[^>]*>/g, " ");
+  return [entry.name, entry.roomName, entry.byName, text].filter(Boolean).join(" ").toLowerCase();
+}
+
+// 타임스탬프 → 로컬 달력 날짜 키(YYYY-MM-DD). date input 값과 동일한 형식이라 그대로 비교 가능.
+function logDayKey(ts) {
+  const d = new Date(Number(ts) || 0);
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
+// 유저·방 드롭다운을 현재 history 에 등장한 값으로 채운다(선택값은 최대한 유지).
+function updateLogFilterOptions() {
+  const log = state.activeLog;
+  if (!log) return;
+  const users = new Set();
+  const rooms = new Set();
+  for (const e of log.entries || []) {
+    if (e.name) users.add(e.name);
+    if (e.roomName) rooms.add(e.roomName);
+  }
+  const byKo = (a, b) => a.localeCompare(b, "ko");
+  fillLogSelect(dom.logFilterUser, [...users].sort(byKo), "모든 유저");
+  fillLogSelect(dom.logFilterRoom, [...rooms].sort(byKo), "모든 방");
+  // 선택했던 값이 사라졌으면 필터 상태도 동기화한다.
+  if (log.filter) {
+    if (dom.logFilterUser && log.filter.user) log.filter.user = dom.logFilterUser.value;
+    if (dom.logFilterRoom && log.filter.room) log.filter.room = dom.logFilterRoom.value;
+  }
+}
+
+function fillLogSelect(sel, values, allLabel) {
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = "";
+  const opt0 = document.createElement("option");
+  opt0.value = "";
+  opt0.textContent = allLabel;
+  sel.append(opt0);
+  for (const v of values) {
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = v;
+    sel.append(o);
+  }
+  sel.value = values.includes(prev) ? prev : "";
+}
+
+function updateLogFilterCount(shown, total) {
+  if (!dom.logFilterCount) return;
+  dom.logFilterCount.textContent = logHasActiveFilter() ? `${total}개 중 ${shown}개 표시` : "";
+}
+
+function clearLogFilterInputs() {
+  if (dom.logSearchInput) dom.logSearchInput.value = "";
+  if (dom.logSearchClear) dom.logSearchClear.hidden = true;
+  if (dom.logFilterUser) dom.logFilterUser.value = "";
+  if (dom.logFilterRoom) dom.logFilterRoom.value = "";
+  if (dom.logFilterDate) dom.logFilterDate.value = "";
+  if (dom.logFilterCount) dom.logFilterCount.textContent = "";
+}
+
+function setLogFilter(key, value) {
+  const log = state.activeLog;
+  if (!log) return;
+  if (!log.filter) log.filter = { q: "", user: "", room: "", date: "" };
+  log.filter[key] = value;
+  renderLogEntries();
+}
+
+function toggleLogFilters(force) {
+  if (!dom.logFilters) return;
+  const show = typeof force === "boolean" ? force : dom.logFilters.hidden;
+  dom.logFilters.hidden = !show;
+  dom.logSearchToggle?.classList.toggle("active", show);
+  if (show) dom.logSearchInput?.focus();
+}
+
+function resetLogFilters() {
+  const log = state.activeLog;
+  if (!log) return;
+  log.filter = { q: "", user: "", room: "", date: "" };
+  clearLogFilterInputs();
+  renderLogEntries();
+}
+
+function bindLogEvents() {
+  dom.logSearchToggle?.addEventListener("click", () => toggleLogFilters());
+  dom.logSearchInput?.addEventListener("input", () => {
+    const v = dom.logSearchInput.value;
+    if (dom.logSearchClear) dom.logSearchClear.hidden = !v;
+    setLogFilter("q", v);
+  });
+  dom.logSearchClear?.addEventListener("click", () => {
+    dom.logSearchInput.value = "";
+    dom.logSearchClear.hidden = true;
+    setLogFilter("q", "");
+    dom.logSearchInput.focus();
+  });
+  dom.logFilterUser?.addEventListener("change", () => setLogFilter("user", dom.logFilterUser.value));
+  dom.logFilterRoom?.addEventListener("change", () => setLogFilter("room", dom.logFilterRoom.value));
+  dom.logFilterDate?.addEventListener("change", () => setLogFilter("date", dom.logFilterDate.value));
+  dom.logFilterReset?.addEventListener("click", resetLogFilters);
+  // 날짜 헤더의 화살표 클릭 → 그날 로그 접기/펴기.
+  dom.logList?.addEventListener("click", (event) => {
+    const toggle = event.target?.closest?.(".log-day-toggle");
+    if (!toggle) return;
+    const key = toggle.closest(".log-day")?.dataset.day;
+    if (!key || !state.activeLog) return;
+    const set = state.activeLog.collapsedDays || (state.activeLog.collapsedDays = new Set());
+    if (set.has(key)) set.delete(key);
+    else set.add(key);
+    renderLogEntries();
+  });
 }
 
 function logTime(ts) {

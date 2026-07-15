@@ -334,7 +334,24 @@
               <h2 id="logRoomName">전역 로그</h2>
             </div>
             <p class="log-subtitle" id="logSubtitle"></p>
+            <button class="log-search-toggle" id="logSearchToggle" type="button" title="검색·필터" aria-label="검색·필터">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+            </button>
           </header>
+          <div class="log-filters" id="logFilters" hidden>
+            <div class="log-search-box">
+              <svg class="log-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+              <input id="logSearchInput" type="text" placeholder="유저·방·활동 검색" autocomplete="off" spellcheck="false" />
+              <button class="log-search-clear" id="logSearchClear" type="button" title="지우기" aria-label="지우기" hidden>×</button>
+            </div>
+            <div class="log-filter-row">
+              <select id="logFilterUser" class="log-filter-select" aria-label="유저별 검색"><option value="">모든 유저</option></select>
+              <select id="logFilterRoom" class="log-filter-select" aria-label="방별 검색"><option value="">모든 방</option></select>
+              <input id="logFilterDate" type="date" class="log-filter-date" aria-label="날짜별 검색" />
+              <button class="log-filter-reset" id="logFilterReset" type="button">초기화</button>
+            </div>
+            <p class="log-filter-count" id="logFilterCount" aria-live="polite"></p>
+          </div>
           <div class="log-scroll" id="logScroll">
             <ul class="log-list" id="logList"></ul>
           </div>

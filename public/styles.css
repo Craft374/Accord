@@ -1905,12 +1905,179 @@ body.log-open .draw-panel {
   padding-top: 1px;
 }
 .log-day {
-  margin: 12px 14px 4px;
+  margin: 10px 8px 2px;
+}
+.log-day-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 0;
+  padding: 4px 6px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.02em;
+  text-align: left;
+  cursor: pointer;
+}
+.log-day-toggle:hover {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+.log-day-arrow {
+  font-size: 9px;
+  line-height: 1;
+  transition: transform 0.15s ease;
   color: var(--muted);
-  text-transform: none;
+}
+.log-day.collapsed .log-day-arrow {
+  transform: rotate(-90deg);
+}
+.log-day-count {
+  margin-left: auto;
+  padding: 0 7px;
+  border-radius: 9px;
+  background: var(--bg-elevated);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+}
+
+/* ─── 로그 검색·필터 ─────────────────────── */
+.log-search-toggle {
+  margin-left: auto;
+  align-self: center;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  min-height: 0;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.log-search-toggle svg {
+  width: 17px;
+  height: 17px;
+}
+.log-search-toggle:hover {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+.log-search-toggle.active {
+  background: var(--accent-soft, var(--bg-elevated));
+  color: var(--accent, var(--heading));
+}
+.log-filters {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-base);
+}
+.log-search-box {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.log-search-icon {
+  position: absolute;
+  left: 9px;
+  width: 15px;
+  height: 15px;
+  color: var(--muted);
+  pointer-events: none;
+}
+.log-search-box input {
+  width: 100%;
+  min-height: 0;
+  padding: 8px 30px 8px 30px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: 13px;
+}
+.log-search-box input:focus {
+  outline: none;
+  border-color: var(--accent, var(--heading));
+}
+.log-search-clear {
+  position: absolute;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  min-height: 0;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.log-search-clear:hover {
+  background: var(--bg-base);
+  color: var(--text);
+}
+.log-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.log-filter-select,
+.log-filter-date {
+  flex: 1 1 100px;
+  min-width: 0;
+  min-height: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: 12px;
+}
+.log-filter-select:focus,
+.log-filter-date:focus {
+  outline: none;
+  border-color: var(--accent, var(--heading));
+}
+.log-filter-reset {
+  flex: 0 0 auto;
+  min-height: 0;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.log-filter-reset:hover {
+  background: var(--bg-base);
+  color: var(--text);
+}
+.log-filter-count {
+  margin: 0;
+  font-size: 11px;
+  color: var(--muted);
+  min-height: 14px;
 }
 
 /* ─── 다이렉트 메시지(DM) ─────────────────── */
