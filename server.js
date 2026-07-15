@@ -2138,7 +2138,7 @@ function printTurnStatus() {
     const privateTurn = turnUrls.filter((url) => /(?:^|[:/@])(?:192\.168\.|10\.|172\.(?:1[6-9]|2\d|3[01])\.)/.test(url));
     if (privateTurn.length) {
       console.log("경고: TURN 주소가 사설 IP입니다. 외부(친구) 클라이언트는 relay 후보를 만들 수 없어 연결이 실패합니다.");
-      console.log("  공인 IP로 재설정: TURN_HOST=<공인IP> ./setup-turn-mac.sh 실행 후 서버 재시작");
+      console.log("  공인 IP로 재설정: TURN_HOST=<공인IP> ./scripts/mac/setup-turn-mac.sh 실행 후 서버 재시작");
       console.log("  공유기 포트포워딩 필요: 3478/TCP+UDP, relay 49160-49200/TCP+UDP → Mac");
     }
     return;
