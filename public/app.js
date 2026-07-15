@@ -213,6 +213,7 @@ const dom = {
   memoViewEdit: document.querySelector("#memoViewEdit"),
   memoViewPreview: document.querySelector("#memoViewPreview"),
   memoFontSelect: document.querySelector("#memoFontSelect"),
+  memoFontManageButton: document.querySelector("#memoFontManageButton"),
   memoColorPick: document.querySelector("#memoColorPick"),
   drawPanel: document.querySelector("#drawPanel"),
   drawRoomName: document.querySelector("#drawRoomName"),
@@ -1580,6 +1581,8 @@ async function handleSocketMessage(message) {
       if (!stillExists) { rolePreview.active = false; rolePreview.kind = ""; rolePreview.id = ""; }
     }
     renderChannels();
+    registerAllCustomFonts();    // 업로드된 공유 글꼴을 브라우저에 등록
+    syncMemoFontUi();            // 메모장 글꼴 선택/관리 버튼을 최신 채널 글꼴로 갱신
     renderPermsModal(); // 권한 모달이 열려 있으면 최신 데이터로 갱신
     refreshEmojiPickerIfOpen(); // 이모지 목록이 바뀌었으면 피커 갱신
     updateChatInputPreview();   // 이모지 변경 시 입력 미리보기도 갱신
@@ -6339,6 +6342,10 @@ function canAttachCh(channel) {
 }
 // 하위호환: 이모지 관리(추가 또는 삭제) 가능 여부.
 function canManageEmoji(channel) { return canAddEmoji(channel) || canRemoveEmoji(channel); }
+// 방 이름 변경 권한(대표·개별허용·역할).
+function canRenameRoom(channel) { return memberHasCap(channel, "renameRoom"); }
+// 공유 글꼴 업로드·삭제 권한(대표·개별허용·역할).
+function canManageFont(channel) { return memberHasCap(channel, "manageFont"); }
 
 // ===== 권한 시스템(클라이언트 해석) =====
 // 서버 data-store 의 resolveRoomPerms 와 동일한 규칙을 클라이언트에서도 계산한다
@@ -6984,8 +6991,10 @@ const CAP_META = {
   removeEmoji: { icon: "🗑", name: "커스텀 이모지 삭제", short: "이모지 삭제", desc: "채널에 등록된 이모지를 지울 수 있어요." },
   useEmoji: { icon: "😀", name: "커스텀 이모지 사용", short: "이모지 사용", desc: "채팅에 커스텀 이모지를 넣을 수 있어요.", gate: "emojiUseRestricted" },
   attachFile: { icon: "📎", name: "파일·이미지 첨부", short: "파일 첨부", desc: "채팅에 파일·이미지를 올릴 수 있어요.", gate: "attachRestricted" },
+  renameRoom: { icon: "✏️", name: "방 이름 변경", short: "방 이름", desc: "채널의 방 이름을 바꿀 수 있어요." },
+  manageFont: { icon: "🅰", name: "공유 글꼴 관리", short: "글꼴 관리", desc: "메모장 공유 글꼴을 올리고 지울 수 있어요." },
 };
-const CAP_KEYS = ["addEmoji", "removeEmoji", "useEmoji", "attachFile"];
+const CAP_KEYS = ["addEmoji", "removeEmoji", "useEmoji", "attachFile", "renameRoom", "manageFont"];
 
 // 스위치형 권한 카드(제목 + 설명 + 오른쪽 토글). data 속성은 호출부에서 지정한다.
 function buildPermCard({ title, desc, checked, badge, dim, dataset }) {
@@ -7578,12 +7587,12 @@ function bindChannelEvents() {
     if (head) openRoom(head.dataset.roomId, head.dataset.roomType);
   });
 
-  // 방 우클릭 → 이름 변경(대표자만)
+  // 방 우클릭 → 이름 변경(대표자 또는 방 이름 변경 권한 보유자)
   dom.roomList?.addEventListener("contextmenu", (event) => {
     const head = event.target?.closest?.(".room-item-head");
     if (!head) return;
     const channel = currentChannel();
-    if (!channel || !isChannelOwner(channel)) return;
+    if (!channel || (!isChannelOwner(channel) && !canRenameRoom(channel))) return;
     event.preventDefault();
     openRoomRenameModal(head.dataset.roomId);
   });
@@ -9342,19 +9351,65 @@ const MEMO_FONTS = {
 };
 const MEMO_FONT_DEFAULT_KEY = "default";
 function memoFontStack(key) {
+  // 업로드 글꼴(custom:<id>) 은 등록된 FontFace 패밀리 + 기본 대체 스택을 쓴다.
+  if (typeof key === "string" && key.startsWith("custom:")) {
+    return `"af-${key.slice(7)}", ${MEMO_FONTS[MEMO_FONT_DEFAULT_KEY].stack}`;
+  }
   return (MEMO_FONTS[key] || MEMO_FONTS[MEMO_FONT_DEFAULT_KEY]).stack;
 }
 
-// 글꼴 <select> 옵션을 한 번만 채운다(bindMemoEvents 시점엔 MEMO_FONTS 가 TDZ 라 지연 호출).
+// 현재 메모방이 속한 채널의 업로드 글꼴 목록.
+function memoChannelFonts() {
+  const chId = state.memo?.channelId;
+  const ch = state.channels.find((c) => c.id === chId);
+  return Array.isArray(ch?.fonts) ? ch.fonts : [];
+}
+function memoFontExists(key) {
+  if (MEMO_FONTS[key]) return true;
+  if (typeof key === "string" && key.startsWith("custom:")) {
+    return memoChannelFonts().some((f) => `custom:${f.id}` === key);
+  }
+  return false;
+}
+
+// 업로드 글꼴을 브라우저에 등록(FontFace). 이미 등록한 것은 건너뛴다.
+const registeredFontIds = new Set();
+function registerCustomFonts(channel) {
+  if (!channel || !Array.isArray(channel.fonts) || typeof FontFace === "undefined" || !document.fonts) return;
+  for (const font of channel.fonts) {
+    if (!font?.id || registeredFontIds.has(font.id)) continue;
+    registeredFontIds.add(font.id);
+    try {
+      const face = new FontFace(`af-${font.id}`, `url("${serverUrl}${font.url}")`);
+      face.load().then((loaded) => {
+        document.fonts.add(loaded);
+        // 지금 이 글꼴을 쓰는 메모가 열려 있으면 로드 완료 후 다시 렌더.
+        if (state.memo && state.memo.font === `custom:${font.id}`) applyMemoFont(state.memo.font);
+      }).catch(() => {});
+    } catch { /* 잘못된 폰트 URL 무시 */ }
+  }
+}
+function registerAllCustomFonts() {
+  for (const ch of state.channels || []) registerCustomFonts(ch);
+}
+
+// 글꼴 <select> 옵션을 채운다(내장 글꼴 + 현재 채널 업로드 글꼴). 채널 글꼴이 바뀌면 다시 호출된다.
 function populateMemoFonts() {
   const sel = dom.memoFontSelect;
-  if (!sel || sel.options.length) return;
+  if (!sel) return;
+  const keep = sel.value;
+  sel.innerHTML = "";
   for (const [key, f] of Object.entries(MEMO_FONTS)) {
-    const opt = document.createElement("option");
-    opt.value = key;
-    opt.textContent = f.label;
-    sel.append(opt);
+    sel.append(new Option(f.label, key));
   }
+  const fonts = memoChannelFonts();
+  if (fonts.length) {
+    const grp = document.createElement("optgroup");
+    grp.label = "업로드 글꼴";
+    for (const font of fonts) grp.append(new Option(font.name, `custom:${font.id}`));
+    sel.append(grp);
+  }
+  if (keep && memoFontExists(keep)) sel.value = keep;
 }
 
 function clampMemoFont(px) {
@@ -9368,7 +9423,7 @@ function applyMemoFont(key) {
   if (dom.memoGutter) dom.memoGutter.style.fontFamily = stack;
   if (dom.memoPreview) dom.memoPreview.style.fontFamily = stack;
   if (dom.memoFontSelect && dom.memoFontSelect.value !== key) {
-    dom.memoFontSelect.value = MEMO_FONTS[key] ? key : MEMO_FONT_DEFAULT_KEY;
+    dom.memoFontSelect.value = memoFontExists(key) ? key : MEMO_FONT_DEFAULT_KEY;
   }
   renderMemoCursors(); // 글꼴에 따라 줄바꿈·캐럿 좌표가 달라지므로 다시 그린다
 }
@@ -9432,6 +9487,7 @@ function openMemoRoom(roomId) {
   applyMemoFontSize(memoFontSize); // 저장된 글자 크기 반영
   populateMemoFonts();
   applyMemoFont(state.memo.font);
+  updateMemoFontManageButton();
   updateMemoToolsEnabled();
   clearMemoCursors();
   applyMemoView(state.memo.view);
@@ -9445,6 +9501,7 @@ function closeMemoView() {
   sendSocket({ type: "memo:close" });
   state.memo = null;
   clearMemoCursors();
+  closeFontManager();
   document.body.classList.remove("memo-open");
   exitFocusMode();
   renderRooms();
@@ -9496,6 +9553,136 @@ function updateMemoToolsEnabled() {
   document.querySelectorAll("#memoPanel [data-memo-color], #memoColorPick").forEach((el) => { el.disabled = !on; });
   const tools = document.querySelector(".memo-tools");
   if (tools) tools.classList.toggle("disabled", !on);
+}
+
+// ===== 메모장 공유 글꼴 관리 =====
+// 채널 데이터가 갱신될 때마다 글꼴 선택/관리버튼/열려있는 관리창을 최신 채널 글꼴로 맞춘다.
+function syncMemoFontUi() {
+  if (!state.memo) return;
+  populateMemoFonts();
+  applyMemoFont(state.memo.font);
+  updateMemoFontManageButton();
+  if (fontManagerEl) renderFontManagerList();
+}
+function memoChannel() {
+  return state.channels.find((c) => c.id === state.memo?.channelId) || null;
+}
+function updateMemoFontManageButton() {
+  const btn = dom.memoFontManageButton;
+  if (!btn) return;
+  const ch = memoChannel();
+  btn.hidden = !(ch && canManageFont(ch));
+}
+
+let fontManagerEl = null;
+function closeFontManager() {
+  if (fontManagerEl) { fontManagerEl.remove(); fontManagerEl = null; }
+  document.removeEventListener("keydown", onFontManagerKey, true);
+}
+function onFontManagerKey(e) { if (e.key === "Escape") { e.stopPropagation(); closeFontManager(); } }
+function openFontManager() {
+  const ch = memoChannel();
+  if (!ch || !canManageFont(ch)) return;
+  closeFontManager();
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop font-manager-backdrop";
+  backdrop.addEventListener("click", (e) => { if (e.target === backdrop) closeFontManager(); });
+  const panel = document.createElement("div");
+  panel.className = "modal font-manager";
+  panel.innerHTML = `
+    <header class="modal-head">
+      <h2>공유 글꼴 관리</h2>
+      <button class="ghost small" data-font-close="1" type="button">닫기</button>
+    </header>
+    <div class="modal-body">
+      <p class="modal-hint">올린 글꼴은 이 채널의 모든 메모장에서 함께 쓸 수 있어요. (ttf·otf·woff·woff2)</p>
+      <div class="font-list" data-font-list></div>
+      <div class="font-manager-foot">
+        <button class="primary small" data-font-upload="1" type="button">＋ 글꼴 올리기</button>
+      </div>
+      <p class="font-manager-msg" data-font-msg aria-live="polite"></p>
+    </div>`;
+  backdrop.append(panel);
+  document.body.append(backdrop);
+  fontManagerEl = backdrop;
+  panel.querySelector("[data-font-close]").addEventListener("click", closeFontManager);
+  panel.querySelector("[data-font-upload]").addEventListener("click", startFontUpload);
+  panel.querySelector("[data-font-list]").addEventListener("click", (e) => {
+    const del = e.target?.closest?.("[data-font-del]");
+    if (del) deleteFont(del.dataset.fontDel);
+  });
+  document.addEventListener("keydown", onFontManagerKey, true);
+  renderFontManagerList();
+}
+function setFontManagerMsg(text, ok = false) {
+  const el = fontManagerEl?.querySelector("[data-font-msg]");
+  if (!el) return;
+  el.textContent = text || "";
+  el.classList.toggle("ok", Boolean(ok));
+}
+function renderFontManagerList() {
+  const list = fontManagerEl?.querySelector("[data-font-list]");
+  if (!list) return;
+  const ch = memoChannel();
+  const fonts = Array.isArray(ch?.fonts) ? ch.fonts : [];
+  list.innerHTML = "";
+  if (!fonts.length) {
+    list.append(el("p", "font-empty", "아직 올린 글꼴이 없어요."));
+    return;
+  }
+  for (const font of fonts) {
+    const row = document.createElement("div");
+    row.className = "font-row";
+    const name = document.createElement("span");
+    name.className = "font-row-name";
+    name.textContent = font.name;
+    name.style.fontFamily = `"af-${font.id}", ${MEMO_FONTS.default.stack}`;
+    const sample = document.createElement("span");
+    sample.className = "font-row-sample";
+    sample.textContent = "가나다 AaBb 123";
+    sample.style.fontFamily = `"af-${font.id}", ${MEMO_FONTS.default.stack}`;
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "font-row-del";
+    del.textContent = "삭제";
+    del.dataset.fontDel = font.id;
+    row.append(name, sample, del);
+    list.append(row);
+  }
+}
+function startFontUpload() {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".ttf,.otf,.woff,.woff2,font/*";
+  input.addEventListener("change", () => {
+    const file = input.files?.[0];
+    if (file) uploadFont(file);
+  });
+  input.click();
+}
+async function uploadFont(file) {
+  const ch = memoChannel();
+  if (!ch) return;
+  const ext = (file.name.split(".").pop() || "").toLowerCase();
+  if (!["ttf", "otf", "woff", "woff2"].includes(ext)) {
+    setFontManagerMsg("ttf·otf·woff·woff2 파일만 올릴 수 있습니다.");
+    return;
+  }
+  const name = file.name.replace(/\.[^.]+$/, "").replace(/\s+/g, " ").trim().slice(0, 40) || "글꼴";
+  setFontManagerMsg("글꼴 올리는 중…", true);
+  try {
+    const result = await uploadChatFile(file);
+    sendSocket({ type: "channel:add-font", channelId: ch.id, name, url: result.url });
+    setFontManagerMsg("올렸습니다. 목록에 곧 표시됩니다.", true);
+  } catch (error) {
+    setFontManagerMsg(error.message || "글꼴 업로드에 실패했습니다.");
+  }
+}
+function deleteFont(fontId) {
+  const ch = memoChannel();
+  if (!ch) return;
+  if (!window.confirm("이 글꼴을 삭제할까요? 이 글꼴을 쓰던 메모는 기본 글꼴로 바뀝니다.")) return;
+  sendSocket({ type: "channel:remove-font", channelId: ch.id, fontId });
 }
 
 // 로컬 편집 → 변경분(op)을 만들어 서버로 보낸다.
@@ -9813,11 +10000,12 @@ function bindMemoEvents() {
   dom.memoFontSelect?.addEventListener("change", () => {
     const m = state.memo;
     if (!m || !m.writable) return;
-    const key = MEMO_FONTS[dom.memoFontSelect.value] ? dom.memoFontSelect.value : MEMO_FONT_DEFAULT_KEY;
+    const key = memoFontExists(dom.memoFontSelect.value) ? dom.memoFontSelect.value : MEMO_FONT_DEFAULT_KEY;
     m.font = key;
     applyMemoFont(key);
     sendSocket({ type: "memo:font", roomId: m.roomId, font: key });
   });
+  dom.memoFontManageButton?.addEventListener("click", openFontManager);
   // 색 버튼: 선택한 텍스트를 {색:#hex}…{/색} 로 감싼다.
   dom.memoPanel?.querySelectorAll("[data-memo-color]").forEach((btn) => {
     btn.addEventListener("click", () => applyMemoColor(btn.dataset.memoColor));
@@ -11910,14 +12098,15 @@ function openRoomRenameModal(roomId) {
   roomRenameTargetId = roomId;
   dom.roomRenameInput.value = found.room.name || "";
   if (dom.roomRenameMessage) dom.roomRenameMessage.textContent = "";
-  // 통화방이면 최대 인원 필드를, 채팅/메모/그림이면 읽기 전용 필드를 보여준다.
-  const isVoice = found.room.type === "voice";
-  const canReadOnly = ["chat", "memo", "draw"].includes(found.room.type);
+  // 인원/읽기전용/방별권한은 대표자 전용. 방 이름 변경 권한만 있는 유저에겐 이름 필드만 보인다.
+  const owner = isChannelOwner(found.channel);
+  const isVoice = owner && found.room.type === "voice";
+  const canReadOnly = owner && ["chat", "memo", "draw"].includes(found.room.type);
   if (dom.roomLimitField) dom.roomLimitField.hidden = !isVoice;
   if (dom.roomLimitInput) dom.roomLimitInput.value = String(found.room.limit || 8);
   if (dom.roomReadOnlyField) dom.roomReadOnlyField.hidden = !canReadOnly;
   if (dom.roomReadOnlyInput) dom.roomReadOnlyInput.checked = Boolean(found.room.readOnly);
-  if (dom.roomPermsButton) dom.roomPermsButton.hidden = !isChannelOwner(found.channel);
+  if (dom.roomPermsButton) dom.roomPermsButton.hidden = !owner;
   dom.roomRenameModal.hidden = false;
   dom.roomRenameInput.focus();
   dom.roomRenameInput.select();
@@ -11934,6 +12123,8 @@ function confirmRoomRename() {
   if (name !== found.room.name) {
     sendSocket({ type: "channel:rename-room", channelId: found.channel.id, roomId: roomRenameTargetId, name });
   }
+  // 인원/읽기전용은 대표자만(서버도 재확인). 이름만 바꾸는 권한 유저는 여기서 건너뛴다.
+  if (!isChannelOwner(found.channel)) { closeRoomRenameModal(); return; }
   if (found.room.type === "voice") {
     const limit = Math.max(1, Math.min(99, Math.floor(Number(dom.roomLimitInput.value) || 8)));
     if (limit !== (found.room.limit || 8)) {

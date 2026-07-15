@@ -407,6 +407,7 @@ function createChannel(ownerId, name) {
     members: [ownerId],
     roles: [], // 권한 역할 목록 [{ id, name, color, memberIds:[], manageEmoji }]
     emojis: [], // 커스텀 이모지 [{ id, name, url, by, at }]
+    fonts: [], // 업로드한 공유 글꼴 [{ id, name, url, by, at }]
     rooms: [
       { id: newId(), name: "일반", type: "voice", limit: DEFAULT_ROOM_LIMIT },
       { id: newId(), name: "공지", type: "chat" },
@@ -587,7 +588,7 @@ function createRole(channelId, name) {
   return { channel, role };
 }
 
-function updateRole(channelId, roleId, { name, color, manageEmoji, addEmoji, removeEmoji, useEmoji, attachFile } = {}) {
+function updateRole(channelId, roleId, { name, color, manageEmoji, addEmoji, removeEmoji, useEmoji, attachFile, renameRoom, manageFont } = {}) {
   const channel = getChannel(channelId);
   if (!channel) return { error: "채널을 찾을 수 없습니다." };
   const role = rolesOf(channel).find((r) => r.id === roleId);
@@ -600,6 +601,8 @@ function updateRole(channelId, roleId, { name, color, manageEmoji, addEmoji, rem
   if (removeEmoji !== undefined) role.removeEmoji = Boolean(removeEmoji);
   if (useEmoji !== undefined) role.useEmoji = Boolean(useEmoji);
   if (attachFile !== undefined) role.attachFile = Boolean(attachFile);
+  if (renameRoom !== undefined) role.renameRoom = Boolean(renameRoom);
+  if (manageFont !== undefined) role.manageFont = Boolean(manageFont);
   if ((addEmoji !== undefined || removeEmoji !== undefined) && role.manageEmoji !== undefined) delete role.manageEmoji;
   persistChannels();
   return { channel, role };
@@ -784,7 +787,24 @@ function canAttach(channelId, userId, isAdmin = false) {
   return rolesOf(channel).some((r) => Boolean(r.attachFile) && roleHasMember(r, userId));
 }
 
-const USER_PERM_CAPS = ["addEmoji", "removeEmoji", "useEmoji", "attachFile"];
+const USER_PERM_CAPS = ["addEmoji", "removeEmoji", "useEmoji", "attachFile", "renameRoom", "manageFont"];
+
+// 방 이름 변경 권한: 관리자·대표 또는 renameRoom 역할 보유자·개별허용 유저.
+function canRenameRoom(channelId, userId, isAdmin = false) {
+  const channel = getChannel(channelId);
+  if (!channel) return false;
+  if (isChannelOwner(channelId, userId, isAdmin)) return true;
+  if (userPermGranted(channel, userId, "renameRoom")) return true;
+  return rolesOf(channel).some((r) => Boolean(r.renameRoom) && roleHasMember(r, userId));
+}
+// 공유 글꼴 업로드·삭제 권한: 관리자·대표 또는 manageFont 역할 보유자·개별허용 유저.
+function canManageFont(channelId, userId, isAdmin = false) {
+  const channel = getChannel(channelId);
+  if (!channel) return false;
+  if (isChannelOwner(channelId, userId, isAdmin)) return true;
+  if (userPermGranted(channel, userId, "manageFont")) return true;
+  return rolesOf(channel).some((r) => Boolean(r.manageFont) && roleHasMember(r, userId));
+}
 // 유저 개별 권한 오버라이드 설정(대표자 전용). value=true면 허용, false면 제거.
 function setUserPerm(channelId, userId, cap, value) {
   const channel = getChannel(channelId);
@@ -828,11 +848,50 @@ function addEmoji(channelId, name, url) {
 function removeEmoji(channelId, emojiId) {
   const channel = getChannel(channelId);
   if (!channel) return { error: "채널을 찾을 수 없습니다." };
-  const before = emojisOf(channel).length;
+  const removed = emojisOf(channel).find((e) => e.id === emojiId);
+  if (!removed) return { error: "이모지를 찾을 수 없습니다." };
   channel.emojis = emojisOf(channel).filter((e) => e.id !== emojiId);
-  if (channel.emojis.length === before) return { error: "이모지를 찾을 수 없습니다." };
   persistChannels();
-  return { channel };
+  deleteUpload(removed.url); // 삭제한 이모지 이미지는 서버 저장소에서도 지운다(용량 확보)
+  return { channel, emoji: removed };
+}
+
+// ===== 공유 글꼴(업로드) =====
+const FONT_MAX_PER_CHANNEL = 30;
+const FONT_URL_RE = /^\/uploads\/[a-f0-9]{24}_[A-Za-z0-9._-]+\.(ttf|otf|woff|woff2)$/i;
+
+function fontsOf(channel) {
+  if (!Array.isArray(channel.fonts)) channel.fonts = [];
+  return channel.fonts;
+}
+
+function cleanFontName(value) {
+  return String(value || "").trim().replace(/\s+/g, " ").slice(0, 40);
+}
+
+function addFont(channelId, name, url) {
+  const channel = getChannel(channelId);
+  if (!channel) return { error: "채널을 찾을 수 없습니다." };
+  const list = fontsOf(channel);
+  if (list.length >= FONT_MAX_PER_CHANNEL) return { error: `글꼴은 최대 ${FONT_MAX_PER_CHANNEL}개까지 올릴 수 있습니다.` };
+  const clean = cleanFontName(name) || "글꼴";
+  const safeUrl = String(url || "");
+  if (!FONT_URL_RE.test(safeUrl)) return { error: "글꼴 파일 형식이 올바르지 않습니다(ttf·otf·woff·woff2)." };
+  const font = { id: newId(), name: clean, url: safeUrl, by: "", at: Date.now() };
+  list.push(font);
+  persistChannels();
+  return { channel, font };
+}
+
+function removeFont(channelId, fontId) {
+  const channel = getChannel(channelId);
+  if (!channel) return { error: "채널을 찾을 수 없습니다." };
+  const removed = fontsOf(channel).find((f) => f.id === fontId);
+  if (!removed) return { error: "글꼴을 찾을 수 없습니다." };
+  channel.fonts = fontsOf(channel).filter((f) => f.id !== fontId);
+  persistChannels();
+  deleteUpload(removed.url); // 삭제한 글꼴 파일도 서버 저장소에서 제거
+  return { channel, font: removed };
 }
 
 function setRoomLimit(channelId, roomId, limit) {
@@ -860,7 +919,12 @@ function renameChannel(channelId, name) {
 
 function deleteChannel(channelId) {
   const channel = getChannel(channelId);
-  if (channel) for (const room of channel.rooms) { deleteRoomMessages(room.id); deleteRoomMemo(room.id); deleteRoomDraw(room.id); }
+  if (channel) {
+    for (const room of channel.rooms) { deleteRoomMessages(room.id); deleteRoomMemo(room.id); deleteRoomDraw(room.id); }
+    // 채널의 커스텀 이모지·공유 글꼴 파일도 서버 저장소에서 정리한다.
+    for (const e of emojisOf(channel)) deleteUpload(e.url);
+    for (const f of fontsOf(channel)) deleteUpload(f.url);
+  }
   deleteChannelLog(channelId);
   const before = channelsDb.channels.length;
   channelsDb.channels = channelsDb.channels.filter((c) => c.id !== channelId);
@@ -891,11 +955,13 @@ function channelSummary(channel) {
       manageEmoji: Boolean(r.manageEmoji),
       addEmoji: roleCanAdd(r), removeEmoji: roleCanRemove(r),
       useEmoji: Boolean(r.useEmoji), attachFile: Boolean(r.attachFile),
+      renameRoom: Boolean(r.renameRoom), manageFont: Boolean(r.manageFont),
     })),
     emojiUseRestricted: Boolean(channel.emojiUseRestricted),
     attachRestricted: Boolean(channel.attachRestricted),
     userPerms: Object.fromEntries(Object.entries(channel.userPerms || {}).map(([k, v]) => [k, { ...v }])),
     emojis: emojisOf(channel).map((e) => ({ id: e.id, name: e.name, url: e.url })),
+    fonts: fontsOf(channel).map((f) => ({ id: f.id, name: f.name, url: f.url })),
     rooms: channel.rooms.map((r) => ({
       id: r.id,
       name: r.name,
@@ -940,6 +1006,9 @@ function addMessage(roomId, message) {
 
 function deleteRoomMessages(roomId) {
   if (!isSafeRoomId(roomId)) return;
+  // 방 삭제 시 이 방 메시지들이 참조하던 첨부 파일도 저장소에서 정리한다.
+  const list = readJson(messagesFile(roomId), []);
+  if (Array.isArray(list)) for (const m of list) deleteUploadsFromFiles(m && m.files);
   try {
     fs.unlinkSync(messagesFile(roomId));
   } catch {
@@ -970,6 +1039,7 @@ function deleteMessage(roomId, msgId) {
   if (idx === -1) return null;
   const [removed] = list.splice(idx, 1);
   writeJsonAtomic(messagesFile(roomId), list);
+  deleteUploadsFromFiles(removed.files); // 첨부 파일도 서버 저장소에서 정리
   return removed;
 }
 
@@ -1008,6 +1078,27 @@ function getUploadPath(fileName) {
   const rel = path.relative(UPLOADS_DIR, filePath);
   if (rel.startsWith("..") || path.isAbsolute(rel)) return null;
   return filePath;
+}
+
+// 업로드 파일 삭제(용량 확보). /uploads/<파일명> URL 을 받아 실제 파일을 지운다.
+// 우리 업로드 엔드포인트가 발급한 경로만 지우고, 없는 파일은 조용히 무시한다.
+function deleteUpload(url) {
+  const raw = String(url || "");
+  if (!raw.startsWith("/uploads/")) return false;
+  const filePath = getUploadPath(raw.slice("/uploads/".length));
+  if (!filePath) return false;
+  try {
+    fs.unlinkSync(filePath);
+    return true;
+  } catch {
+    return false; // 이미 없으면 무시
+  }
+}
+
+// 여러 첨부를 한 번에 정리(메시지/방 삭제 시). files: [{ url }] 배열.
+function deleteUploadsFromFiles(files) {
+  if (!Array.isArray(files)) return;
+  for (const f of files) if (f && f.url) deleteUpload(f.url);
 }
 
 // ===== 공동 메모장 =====
@@ -1285,6 +1376,11 @@ module.exports = {
   canAttach,
   addEmoji,
   removeEmoji,
+  // 공유 글꼴 · 추가 권한
+  addFont,
+  removeFont,
+  canRenameRoom,
+  canManageFont,
   renameChannel,
   deleteChannel,
   findRoom,
@@ -1297,6 +1393,7 @@ module.exports = {
   deleteRoomMessages,
   saveUpload,
   getUploadPath,
+  deleteUpload,
   UPLOAD_MAX_BYTES,
   // 메모장
   getMemo,

@@ -1049,6 +1049,22 @@ body.memo-open .log-panel {
   cursor: pointer;
   min-height: 0;
 }
+.memo-font-manage {
+  height: 28px;
+  min-height: 0;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-xs);
+  background: var(--bg-input);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.memo-font-manage:hover {
+  background: var(--bg-elevated);
+  color: var(--heading);
+}
 .memo-color-tools {
   display: inline-flex;
   align-items: center;
@@ -4881,6 +4897,65 @@ input.perm-switch:checked::after { transform: translateX(16px); }
   gap: 8px;
   margin-top: 16px;
 }
+
+/* ===== 공유 글꼴 관리 모달 ===== */
+.font-manager-backdrop { z-index: 260; }
+.font-manager {
+  width: min(94vw, 460px);
+  max-height: 84vh;
+}
+.font-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0 4px;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+.font-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+}
+.font-row-name {
+  font-weight: 700;
+  color: var(--heading);
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40%;
+}
+.font-row-sample {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  font-size: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.font-row-del {
+  flex: none;
+  min-height: 0;
+  padding: 4px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.font-row-del:hover { background: var(--danger); color: #fff; }
+.font-empty { color: var(--muted); font-size: 13px; padding: 12px 2px; }
+.font-manager-foot { margin-top: 10px; }
+.font-manager-msg { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
+.font-manager-msg.ok { color: var(--green); }
 .img-viewer {
   display: flex;
   flex-direction: column;

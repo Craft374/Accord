@@ -15,7 +15,7 @@ seedAdminAccount();
 // 서버 버전. 클라이언트(앱) 버전은 package.json 의 version 이며 따로 관리한다.
 // 규칙: 클라 코드가 바뀌면 서버가 그 코드를 배포하므로 서버·클라 둘 다 올리고,
 //       서버만 바뀌면 서버 버전만 올린다.
-const VERSION = "2.3.4";
+const VERSION = "2.3.5";
 const PORT = Number(process.env.PORT || 25565);
 const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_HOST = cleanHost(process.env.PUBLIC_HOST || "");
@@ -898,7 +898,7 @@ function handleChannelMessage(client, message) {
         return true;
       });
     case "channel:rename-room":
-      return ownerAction(client, message.channelId, () => {
+      return renameRoomAction(client, message.channelId, () => {
         const r = store.renameRoom(message.channelId, message.roomId, message.name);
         if (r.error) return channelError(client, r.error);
         notifyChannelMembers(message.channelId);
@@ -962,6 +962,7 @@ function handleChannelMessage(client, message) {
           name: message.name, color: message.color, manageEmoji: message.manageEmoji,
           addEmoji: message.addEmoji, removeEmoji: message.removeEmoji,
           useEmoji: message.useEmoji, attachFile: message.attachFile,
+          renameRoom: message.renameRoom, manageFont: message.manageFont,
         });
         if (r.error) return channelError(client, r.error);
         notifyChannelMembers(message.channelId);
@@ -1033,6 +1034,21 @@ function handleChannelMessage(client, message) {
         notifyChannelMembers(message.channelId);
         return true;
       });
+    case "channel:add-font":
+      return fontManageAction(client, message.channelId, () => {
+        const r = store.addFont(message.channelId, message.name, message.url);
+        if (r.error) return channelError(client, r.error);
+        logServer(`font add name=${r.font.name} channel=${message.channelId}`, client);
+        notifyChannelMembers(message.channelId);
+        return true;
+      });
+    case "channel:remove-font":
+      return fontManageAction(client, message.channelId, () => {
+        const r = store.removeFont(message.channelId, message.fontId);
+        if (r.error) return channelError(client, r.error);
+        notifyChannelMembers(message.channelId);
+        return true;
+      });
     default:
       return false;
   }
@@ -1084,6 +1100,20 @@ function emojiAddAction(client, channelId, fn) {
 function emojiRemoveAction(client, channelId, fn) {
   if (!store.canRemoveEmoji(channelId, client.userId, client.isAdmin)) {
     return channelError(client, "이모지를 삭제할 권한이 없습니다.");
+  }
+  return fn();
+}
+// 방 이름 변경: 대표·관리자 또는 renameRoom 역할 보유자만.
+function renameRoomAction(client, channelId, fn) {
+  if (!store.canRenameRoom(channelId, client.userId, client.isAdmin)) {
+    return channelError(client, "방 이름을 변경할 권한이 없습니다.");
+  }
+  return fn();
+}
+// 공유 글꼴 업로드·삭제: 대표·관리자 또는 manageFont 역할 보유자만.
+function fontManageAction(client, channelId, fn) {
+  if (!store.canManageFont(channelId, client.userId, client.isAdmin)) {
+    return channelError(client, "글꼴을 관리할 권한이 없습니다.");
   }
   return fn();
 }
@@ -1337,9 +1367,13 @@ const memoDocs = new Map(); // roomId -> { text, history:[], cursors:Map(clientI
 const MEMO_PERSIST_DEBOUNCE = 1500;
 
 const MEMO_FONT_KEYS = new Set(["default", "sans", "serif", "round", "hand"]);
+// 내장 글꼴 키 또는 업로드 글꼴 키(custom:<id>) 형식만 허용. 지워진 글꼴이면 클라이언트가
+// 기본 스택으로 자연스럽게 대체하므로 존재 여부까지는 검사하지 않는다.
 function cleanMemoFont(font) {
   const f = String(font || "");
-  return MEMO_FONT_KEYS.has(f) ? f : "default";
+  if (MEMO_FONT_KEYS.has(f)) return f;
+  if (/^custom:[a-f0-9]{4,32}$/.test(f)) return f;
+  return "default";
 }
 
 function getMemoDoc(roomId) {
@@ -2096,6 +2130,10 @@ function getContentType(filePath) {
     ".pdf": "application/pdf",
     ".txt": "text/plain; charset=utf-8",
     ".zip": "application/zip",
+    ".ttf": "font/ttf",
+    ".otf": "font/otf",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
   }[ext] || "application/octet-stream";
 }
 
