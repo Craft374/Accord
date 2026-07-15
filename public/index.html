@@ -349,6 +349,10 @@
               <select id="logFilterUser" class="log-filter-select" aria-label="유저별 검색"><option value="">모든 유저</option></select>
               <select id="logFilterRoom" class="log-filter-select" aria-label="방별 검색"><option value="">모든 방</option></select>
               <input id="logFilterDate" type="date" class="log-filter-date" aria-label="날짜별 검색" />
+              <select id="logFilterSort" class="log-filter-select" aria-label="정렬 순서">
+                <option value="asc">오래된순</option>
+                <option value="desc">최신순</option>
+              </select>
               <button class="log-filter-reset" id="logFilterReset" type="button">초기화</button>
             </div>
             <p class="log-filter-count" id="logFilterCount" aria-live="polite"></p>

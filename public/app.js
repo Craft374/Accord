@@ -272,6 +272,7 @@ const dom = {
   logFilterUser: document.querySelector("#logFilterUser"),
   logFilterRoom: document.querySelector("#logFilterRoom"),
   logFilterDate: document.querySelector("#logFilterDate"),
+  logFilterSort: document.querySelector("#logFilterSort"),
   logFilterReset: document.querySelector("#logFilterReset"),
   logFilterCount: document.querySelector("#logFilterCount"),
   dmPanel: document.querySelector("#dmPanel"),
@@ -9476,6 +9477,7 @@ function openMemoRoom(roomId) {
     cursors: new Map(), // clientId -> { userId, name, pos, sel, color }
     cursorSentAt: 0,
     lastCursor: "",
+    folds: new Set(), // 미리보기에서 접어둔 목록 항목(문서 순서 기준 인덱스)
     writable: canWriteRoom(found.channel, found.room),
   };
   document.body.classList.add("memo-open");
@@ -9972,6 +9974,54 @@ function renderMemoPreview() {
   if (dom.memoPreview) dom.memoPreview.innerHTML = renderMarkdown(dom.memoEditor?.value || "");
 }
 
+// 미리보기의 체크박스를 눌렀을 때 원문에서 해당 항목을 찾아 [ ]↔[x] 로 토글한다.
+// index 는 문서 순서상 몇 번째 체크박스인지(코드펜스 안쪽은 세지 않음).
+function toggleMemoCheckbox(index) {
+  const m = state.memo;
+  if (!m || !m.writable || !dom.memoEditor) return;
+  const lines = dom.memoEditor.value.split("\n");
+  let fenced = false;
+  let count = -1;
+  let hit = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^\s*```/.test(lines[i])) { fenced = !fenced; continue; }
+    if (fenced) continue;
+    const cb = lines[i].match(/^([ \t]*)([-*+])([ \t]+)\[([ xX])\]((?:[ \t][\s\S]*)?)$/);
+    if (!cb) continue;
+    count++;
+    if (count !== index) continue;
+    const nextMark = cb[4].toLowerCase() === "x" ? " " : "x";
+    lines[i] = `${cb[1]}${cb[2]}${cb[3]}[${nextMark}]${cb[5]}`;
+    hit = i;
+    break;
+  }
+  if (hit < 0) return;
+  const el = dom.memoEditor;
+  const selStart = el.selectionStart;
+  const selEnd = el.selectionEnd;
+  const scroll = el.scrollTop;
+  const previewScroll = dom.memoPreview ? dom.memoPreview.scrollTop : 0;
+  const newDoc = lines.join("\n");
+  el.value = newDoc;
+  el.selectionStart = Math.min(selStart, newDoc.length);
+  el.selectionEnd = Math.min(selEnd, newDoc.length);
+  el.scrollTop = scroll;
+  onMemoInput(); // 진단: 원격에도 전파 + 미리보기 재렌더
+  if (dom.memoPreview) dom.memoPreview.scrollTop = previewScroll;
+}
+
+// 접기/펼치기: 문서 변경이 아니라 미리보기 표시 상태만 바꾼다(m.folds 에 인덱스 저장).
+function toggleMemoFold(id) {
+  const m = state.memo;
+  if (!m) return;
+  if (!m.folds) m.folds = new Set();
+  if (m.folds.has(id)) m.folds.delete(id);
+  else m.folds.add(id);
+  const scroll = dom.memoPreview ? dom.memoPreview.scrollTop : 0;
+  renderMemoPreview();
+  if (dom.memoPreview) dom.memoPreview.scrollTop = scroll;
+}
+
 function setMemoStatus(text, tone) {
   if (!dom.memoStatus) return;
   dom.memoStatus.textContent = text || "";
@@ -10009,18 +10059,65 @@ function bindMemoEvents() {
     btn.addEventListener("click", () => applyMemoColor(btn.dataset.memoColor));
   });
   dom.memoColorPick?.addEventListener("input", () => applyMemoColor(dom.memoColorPick.value));
+  // 미리보기의 체크박스/접기 버튼 클릭 처리(문서 원문을 직접 갱신).
+  dom.memoPreview?.addEventListener("click", (event) => {
+    const check = event.target?.closest?.("input.md-check");
+    if (check) {
+      event.preventDefault(); // 실제 체크 상태는 문서 재렌더로만 반영(원문이 곧 진실)
+      const idx = Number(check.dataset.cb);
+      if (Number.isInteger(idx)) toggleMemoCheckbox(idx);
+      return;
+    }
+    const fold = event.target?.closest?.(".md-fold");
+    if (fold) {
+      const id = Number(fold.dataset.fold);
+      if (Number.isInteger(id)) toggleMemoFold(id);
+    }
+  });
+  dom.memoPreview?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    const fold = event.target?.closest?.(".md-fold");
+    if (!fold) return;
+    event.preventDefault();
+    const id = Number(fold.dataset.fold);
+    if (Number.isInteger(id)) toggleMemoFold(id);
+  });
   // 커서 이동/선택 변경을 다른 사람에게 알린다.
   const cursorEvents = ["keyup", "mouseup", "click", "select", "focus"];
   for (const ev of cursorEvents) dom.memoEditor?.addEventListener(ev, sendMemoCursor);
   dom.memoEditor?.addEventListener("scroll", renderMemoCursors);
+  // Tab: 들여쓰기(2칸), Shift+Tab: 내어쓰기. 여러 줄/선택 영역은 줄 단위로 처리.
   dom.memoEditor?.addEventListener("keydown", (event) => {
     if (event.key !== "Tab") return;
     event.preventDefault();
+    const m = state.memo;
+    if (!m || !m.writable) return;
     const el = dom.memoEditor;
+    const value = el.value;
     const start = el.selectionStart;
     const end = el.selectionEnd;
-    el.value = `${el.value.slice(0, start)}  ${el.value.slice(end)}`;
-    el.selectionStart = el.selectionEnd = start + 2;
+    const outdent = event.shiftKey;
+    const lineMode = outdent || start !== end;
+    if (lineMode) {
+      const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+      const regionLines = value.slice(lineStart, end).split("\n");
+      const newLines = regionLines.map((ln) => {
+        if (outdent) {
+          if (ln.startsWith("\t")) return ln.slice(1);
+          if (ln.startsWith("  ")) return ln.slice(2);
+          if (ln.startsWith(" ")) return ln.slice(1);
+          return ln;
+        }
+        return `  ${ln}`;
+      });
+      const replaced = newLines.join("\n");
+      el.value = value.slice(0, lineStart) + replaced + value.slice(end);
+      el.selectionStart = lineStart;
+      el.selectionEnd = lineStart + replaced.length;
+    } else {
+      el.value = `${value.slice(0, start)}  ${value.slice(end)}`;
+      el.selectionStart = el.selectionEnd = start + 2;
+    }
     onMemoInput();
   });
   // Ctrl(⌘)+휠 로 글자 크기 조절 — 편집기/미리보기 어느 쪽 위에서든 동작.
@@ -10121,9 +10218,11 @@ function openLogRoom(roomId) {
     name: found.room.name,
     entries: [],
     filter: { q: "", user: "", room: "", date: "" },
+    sort: state.activeLog?.sort === "desc" ? "desc" : "asc", // 오래된순(기본)/최신순
     collapsedDays: new Set(),
   };
   clearLogFilterInputs();
+  if (dom.logFilterSort) dom.logFilterSort.value = state.activeLog.sort;
   document.body.classList.add("log-open");
   if (dom.logRoomName) dom.logRoomName.textContent = found.room.name;
   if (dom.logSubtitle) dom.logSubtitle.textContent = found.channel.name;
@@ -10156,7 +10255,7 @@ function handleLogHistory(message) {
   state.activeLog.entries = Array.isArray(message.entries) ? message.entries : [];
   updateLogFilterOptions();
   renderLogEntries();
-  scrollLogToBottom();
+  scrollLogToNewest();
 }
 
 function handleLogEntry(message) {
@@ -10165,12 +10264,12 @@ function handleLogEntry(message) {
   if (!entry || !entry.id) return;
   const list = state.activeLog.entries;
   if (list.some((e) => e.id === entry.id)) return; // 중복 수신 방지
-  const stick = logIsNearBottom();
+  const stick = logIsNearNewest();
   list.push(entry);
   if (list.length > LOG_MAX_ENTRIES) list.splice(0, list.length - LOG_MAX_ENTRIES);
   updateLogFilterOptions();
   renderLogEntries();
-  if (stick && !logHasActiveFilter()) scrollLogToBottom();
+  if (stick && !logHasActiveFilter()) scrollLogToNewest();
 }
 
 // 이벤트 종류별 아이콘 + 설명 문구. name/roomName 은 반드시 이스케이프해서 넣는다.
@@ -10210,13 +10309,18 @@ function renderLogEntries() {
   const filter = log.filter || (log.filter = { q: "", user: "", room: "", date: "" });
   const collapsed = log.collapsedDays || (log.collapsedDays = new Set());
   const active = logHasActiveFilter();
-  const entries = active ? allEntries.filter((e) => logMatchesFilter(e, filter)) : allEntries;
-  updateLogFilterCount(entries.length, allEntries.length);
+  const filtered = active ? allEntries.filter((e) => logMatchesFilter(e, filter)) : allEntries;
+  updateLogFilterCount(filtered.length, allEntries.length);
 
-  if (!entries.length) {
+  if (!filtered.length) {
     dom.logList.innerHTML = '<li class="log-empty">검색 결과가 없습니다.</li>';
     return;
   }
+
+  // 정렬: 오래된순(asc, 기본) 또는 최신순(desc). 서버는 항상 오래된순으로 내려준다.
+  const desc = log.sort === "desc";
+  const entries = [...filtered].sort((a, b) =>
+    desc ? (Number(b.at) || 0) - (Number(a.at) || 0) : (Number(a.at) || 0) - (Number(b.at) || 0));
 
   // 같은 날짜끼리 묶는다(날짜 헤더 하나로 접었다 폈다).
   const groups = [];
@@ -10398,6 +10502,12 @@ function bindLogEvents() {
   dom.logFilterUser?.addEventListener("change", () => setLogFilter("user", dom.logFilterUser.value));
   dom.logFilterRoom?.addEventListener("change", () => setLogFilter("room", dom.logFilterRoom.value));
   dom.logFilterDate?.addEventListener("change", () => setLogFilter("date", dom.logFilterDate.value));
+  dom.logFilterSort?.addEventListener("change", () => {
+    if (!state.activeLog) return;
+    state.activeLog.sort = dom.logFilterSort.value === "desc" ? "desc" : "asc";
+    renderLogEntries();
+    scrollLogToNewest();
+  });
   dom.logFilterReset?.addEventListener("click", resetLogFilters);
   // 날짜 헤더의 화살표 클릭 → 그날 로그 접기/펴기.
   dom.logList?.addEventListener("click", (event) => {
@@ -10433,9 +10543,22 @@ function scrollLogToBottom() {
   if (dom.logScroll) dom.logScroll.scrollTop = dom.logScroll.scrollHeight;
 }
 
+// 정렬 방향에 따라 "가장 최근" 쪽으로 스크롤(오래된순=아래, 최신순=위).
+function scrollLogToNewest() {
+  if (!dom.logScroll) return;
+  dom.logScroll.scrollTop = state.activeLog?.sort === "desc" ? 0 : dom.logScroll.scrollHeight;
+}
+
 function logIsNearBottom() {
   const el = dom.logScroll;
   if (!el) return true;
+  return el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+}
+
+function logIsNearNewest() {
+  const el = dom.logScroll;
+  if (!el) return true;
+  if (state.activeLog?.sort === "desc") return el.scrollTop < 80;
   return el.scrollHeight - el.scrollTop - el.clientHeight < 80;
 }
 
@@ -11970,55 +12093,139 @@ function renderMarkdown(src) {
 
   const lines = text.split("\n");
   const html = [];
-  let listType = null;
   let inQuote = false;
-  const closeList = () => { if (listType) { html.push(`</${listType}>`); listType = null; } };
   const closeQuote = () => { if (inQuote) { html.push("</blockquote>"); inQuote = false; } };
+  // 체크박스·접기 식별자는 문서 전체를 통틀어 나타난 순서대로 번호를 매긴다.
+  // (미리보기 클릭 → 원문의 N번째 항목을 찾아 토글/접기 하기 위한 안정적 인덱스)
+  const counters = { cb: 0, fold: 0 };
+  const foldSet = (state.memo && state.memo.folds) || null;
 
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     const codeMatch = line.match(/^\u0000CODE(\d+)\u0000$/);
     if (codeMatch) {
-      closeList(); closeQuote();
+      closeQuote();
       const blk = codeBlocks[Number(codeMatch[1])];
       const langTag = blk.lang ? `<span class="md-code-lang">${escapeHtmlText(blk.lang)}</span>` : "";
       html.push(`<pre class="md-code"${blk.lang ? ` data-lang="${escapeHtmlText(blk.lang)}"` : ""}>${langTag}<code>${highlightCode(blk.code, blk.lang)}</code></pre>`);
       continue;
     }
-    if (/^\s*$/.test(line)) { closeList(); closeQuote(); continue; }
-    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { closeList(); closeQuote(); html.push("<hr />"); continue; }
+    if (/^\s*$/.test(line)) { closeQuote(); continue; }
+    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { closeQuote(); html.push("<hr />"); continue; }
 
     const heading = line.match(/^(#{1,6})\s+(.*)$/);
     if (heading) {
-      closeList(); closeQuote();
+      closeQuote();
       html.push(`<h${heading[1].length}>${inlineMarkdown(heading[2])}</h${heading[1].length}>`);
       continue;
     }
     const quote = line.match(/^&gt;\s?(.*)$/); // '>' 는 이미 이스케이프됨
     if (quote) {
-      closeList();
       if (!inQuote) { html.push("<blockquote>"); inQuote = true; }
       html.push(`<p>${inlineMarkdown(quote[1])}</p>`);
       continue;
     }
-    const ul = line.match(/^\s*[-*+]\s+(.*)$/);
-    if (ul) {
+    // 목록: 연속된 목록 줄을 한 블록으로 모아 들여쓰기(탭) 기준 중첩 트리로 렌더한다.
+    // 그래야 '- 로 찍은 점을 탭으로 층 나누기', 체크박스, 접기가 모두 동작한다.
+    if (parseMemoListLine(line)) {
       closeQuote();
-      if (listType !== "ul") { closeList(); html.push("<ul>"); listType = "ul"; }
-      html.push(`<li>${inlineMarkdown(ul[1])}</li>`);
+      const items = [];
+      let j = i;
+      while (j < lines.length) {
+        const it = parseMemoListLine(lines[j]);
+        if (!it) break;
+        items.push(it);
+        j++;
+      }
+      html.push(renderMemoList(items, counters, foldSet));
+      i = j - 1;
       continue;
     }
-    const ol = line.match(/^\s*\d+\.\s+(.*)$/);
-    if (ol) {
-      closeQuote();
-      if (listType !== "ol") { closeList(); html.push("<ol>"); listType = "ol"; }
-      html.push(`<li>${inlineMarkdown(ol[1])}</li>`);
-      continue;
+    closeQuote();
+    // 일반 문단 — 앞쪽 탭/공백 들여쓰기를 미리보기에도 그대로 반영(옵시디언처럼).
+    const indented = line.match(/^([ \t]+)(\S[\s\S]*)$/);
+    if (indented) {
+      const level = memoIndentLevel(indented[1]);
+      html.push(`<p style="margin-left:${(level * 1.6).toFixed(2)}em">${inlineMarkdown(indented[2])}</p>`);
+    } else {
+      html.push(`<p>${inlineMarkdown(line)}</p>`);
     }
-    closeList(); closeQuote();
-    html.push(`<p>${inlineMarkdown(line)}</p>`);
   }
-  closeList(); closeQuote();
+  closeQuote();
   return html.join("\n");
+}
+
+// 앞쪽 공백/탭을 들여쓰기 층 수로 환산. 탭 1개 = 공백 2칸 = 1층(편집기 tab-size 와 동일).
+function memoIndentLevel(ws) {
+  let level = 0;
+  let spaces = 0;
+  for (let k = 0; k < ws.length; k++) {
+    if (ws[k] === "\t") { level += 1; spaces = 0; }
+    else { spaces += 1; if (spaces >= 2) { level += 1; spaces = 0; } }
+  }
+  return level;
+}
+
+// 한 줄이 목록 항목이면 {level, ordered, checkbox, content} 를 돌려준다(아니면 null).
+// line 은 이미 HTML 이스케이프된 상태라 대괄호·별표는 그대로 남아 있다.
+function parseMemoListLine(line) {
+  const m = line.match(/^([ \t]*)([-*+]|\d+[.)])[ \t]+([\s\S]*)$/);
+  if (!m) return null;
+  const ordered = /\d/.test(m[2]);
+  let content = m[3];
+  let checkbox = null;
+  if (!ordered) {
+    // - [ ] / - [x] (뒤에 공백+내용, 또는 체크박스만)
+    const cb = content.match(/^\[([ xX])\](?:[ \t]+([\s\S]*)|\s*)$/);
+    if (cb) { checkbox = cb[1].toLowerCase() === "x" ? "checked" : "unchecked"; content = cb[2] || ""; }
+  }
+  return { level: memoIndentLevel(m[1]), ordered, checkbox, content };
+}
+
+// 평탄한 목록 항목 배열을 상대 들여쓰기로 중첩 트리로 만든 뒤 HTML 로 렌더.
+function renderMemoList(items, counters, foldSet) {
+  const root = { children: [] };
+  const stack = [{ node: root, level: -1 }];
+  for (const it of items) {
+    while (stack.length > 1 && stack[stack.length - 1].level >= it.level) stack.pop();
+    const node = { item: it, children: [] };
+    stack[stack.length - 1].node.children.push(node);
+    stack.push({ node, level: it.level });
+  }
+  return renderMemoListNodes(root.children, counters, foldSet);
+}
+
+function renderMemoListNodes(nodes, counters, foldSet) {
+  if (!nodes.length) return "";
+  const tag = nodes[0].item.ordered ? "ol" : "ul";
+  const parts = [`<${tag} class="md-list">`];
+  for (const node of nodes) {
+    const it = node.item;
+    const hasChildren = node.children.length > 0;
+    const cls = [];
+    let inner = "";
+    if (hasChildren) {
+      const foldId = counters.fold++;
+      const collapsed = foldSet ? foldSet.has(foldId) : false;
+      cls.push("md-foldable");
+      if (collapsed) cls.push("md-collapsed");
+      inner += `<span class="md-fold" data-fold="${foldId}" role="button" tabindex="0" aria-label="접기/펼치기"></span>`;
+    }
+    if (it.checkbox) {
+      const cbId = counters.cb++;
+      const checked = it.checkbox === "checked";
+      cls.push("md-task");
+      if (checked) cls.push("md-task-done");
+      inner += `<input type="checkbox" class="md-check" data-cb="${cbId}"${checked ? " checked" : ""} />`;
+      inner += `<span class="md-task-text">${inlineMarkdown(it.content)}</span>`;
+    } else {
+      inner += `<span class="md-li-text">${inlineMarkdown(it.content)}</span>`;
+    }
+    if (hasChildren) inner += renderMemoListNodes(node.children, counters, foldSet);
+    parts.push(`<li${cls.length ? ` class="${cls.join(" ")}"` : ""}>${inner}</li>`);
+  }
+  parts.push(`</${tag}>`);
+  return parts.join("");
 }
 
 function inlineMarkdown(str) {

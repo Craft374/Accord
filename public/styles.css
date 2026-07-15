@@ -1237,6 +1237,19 @@ body.memo-open .log-panel {
   padding: 16px 20px;
   background: var(--bg-base);
 }
+/* 미리보기는 편집기 줄과 촘촘히 맞도록 문단·목록 간격을 좁힌다(나란히/미리보기 공통) */
+.memo-preview.markdown-body { line-height: 1.5; }
+.memo-preview.markdown-body p { margin: 0.1em 0; }
+.memo-preview.markdown-body ul,
+.memo-preview.markdown-body ol { margin: 0.15em 0; }
+.memo-preview.markdown-body li { margin: 0.05em 0; }
+.memo-preview.markdown-body h1,
+.memo-preview.markdown-body h2,
+.memo-preview.markdown-body h3,
+.memo-preview.markdown-body h4,
+.memo-preview.markdown-body h5,
+.memo-preview.markdown-body h6 { margin: 0.6em 0 0.25em; }
+.memo-preview.markdown-body blockquote { margin: 0.25em 0; }
 
 /* ─── 공동 그림판 ─────────────────────────── */
 .draw-panel {
@@ -1739,6 +1752,43 @@ body.draw-open .log-panel {
 }
 .markdown-body strong { color: var(--heading); font-weight: 700; }
 .markdown-body del { color: var(--muted); }
+/* 체크박스 목록 — 전역 input[type=checkbox] 규칙(auto/native)보다 특이도가 높아 크기가 살아남는다 */
+.markdown-body li.md-task { list-style: none; }
+.markdown-body .md-check {
+  width: 15px;
+  height: 15px;
+  margin: 0 0.5em 0 0;
+  vertical-align: -2px;
+  cursor: pointer;
+  accent-color: var(--blurple);
+}
+.markdown-body li.md-task-done > .md-task-text { color: var(--muted); text-decoration: line-through; }
+/* 접기/펼치기 — 자식이 있는 항목은 왼쪽 여백에 삼각형 토글을 둔다(불릿 대신) */
+.markdown-body li.md-foldable { position: relative; list-style: none; }
+.markdown-body .md-fold {
+  position: absolute;
+  left: -1.2em;
+  top: 0;
+  width: 1em;
+  text-align: center;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  line-height: inherit;
+}
+.markdown-body .md-fold::before {
+  content: "▾";
+  display: inline-block;
+  font-size: 0.8em;
+  transition: transform 0.12s ease;
+}
+.markdown-body li.md-collapsed > .md-fold::before { transform: rotate(-90deg); }
+.markdown-body li.md-collapsed > ul,
+.markdown-body li.md-collapsed > ol { display: none; }
+.markdown-body .md-fold:hover { color: var(--text); }
+/* 중첩 목록은 위아래 여백 없이 붙여 층이 촘촘히 보이게 */
+.markdown-body li > ul,
+.markdown-body li > ol { margin: 0.1em 0 0.1em; }
 
 .field {
   display: grid;
