@@ -1,12 +1,14 @@
 const desktop = window.voiceDesktop || { isDesktop: false, platform: "" };
 const serverUrl = location.origin;
 
-// 클라이언트(앱) 버전. 서버 버전(server.js VERSION)과 따로 관리하며 package.json 의 version 과 같아야 한다.
+// 클라이언트(앱) 버전. 서버 버전(server.js VERSION, n.n.n)과 헷갈리지 않도록 **그냥 정수**(1, 2, 3 …)로 올린다.
+// package.json 의 version 은 electron-builder 가 semver 를 요구해 "N.0.0" 형태로 두고, 그 major 가 이 값과 같아야 한다.
 // (scripts/check-v2.js 가 둘이 어긋나지 않는지 검사한다)
-const CLIENT_VERSION = "1.0.1";
+const CLIENT_VERSION = "3";
 
 function getClientVersion() {
-  return desktop.appVersion || CLIENT_VERSION;
+  // 표시는 항상 단일 정수 CLIENT_VERSION 을 쓴다(package.json 의 semver appVersion 대신).
+  return CLIENT_VERSION;
 }
 
 const ROOM_TYPE_META = {

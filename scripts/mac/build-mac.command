@@ -1,7 +1,7 @@
 #!/bin/zsh
 set -euo pipefail
 
-cd "${0:A:h}/.."
+cd "${0:A:h}/../.."
 
 pause() {
   echo ""

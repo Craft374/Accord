@@ -2,7 +2,7 @@
 
 cd "$(dirname "$0")"
 
-./start-mac-server.sh
+./scripts/mac/start-mac-server.sh
 exit_code=$?
 
 echo ""

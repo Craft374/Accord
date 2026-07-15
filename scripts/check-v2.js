@@ -43,16 +43,17 @@ const launcherJs = fs.readFileSync("shell/launcher.js", "utf8");
 const launcherHtml = fs.readFileSync("shell/index.html", "utf8");
 const pruneDist = fs.readFileSync("scripts/prune-dist.js", "utf8");
 const startHttps = fs.readFileSync("scripts/start-https.js", "utf8");
-const buildWindowsBat = fs.readFileSync("scripts/build-windows.bat", "utf8");
-const buildWindowsCommand = fs.readFileSync("scripts/build-windows.command", "utf8");
-const buildMacCommand = fs.readFileSync("scripts/build-mac.command", "utf8");
+const buildWindowsBat = fs.readFileSync("scripts/win/build-windows.bat", "utf8");
+const buildWindowsCommand = fs.readFileSync("scripts/win/build-windows.command", "utf8");
+const buildMacCommand = fs.readFileSync("scripts/mac/build-mac.command", "utf8");
 const startServerMacCommand = fs.readFileSync("start-server-mac.command", "utf8");
-const startMacServer = fs.readFileSync("start-mac-server.sh", "utf8");
+const startMacServer = fs.readFileSync("scripts/mac/start-mac-server.sh", "utf8");
 const requiredLaunchers = [
-  "scripts/build-windows.bat",
-  "scripts/build-windows.command",
-  "scripts/build-mac.command",
+  "scripts/win/build-windows.bat",
+  "scripts/win/build-windows.command",
+  "scripts/mac/build-mac.command",
   "start-server-mac.command",
+  "start-server-win.bat",
 ];
 const commandBatFiles = listCommandBatFiles(".");
 const iconSvg = fs.readFileSync("assets/icon.svg", "utf8");
@@ -129,8 +130,9 @@ const checks = [
   [app.includes("testAudioSettings") && html.includes("testAudioButton"), "audio diagnostics button exists"],
   [html.includes("versionLabel") && app.includes("state.config.version"), "server version label exists"],
   [
-    app.includes(`const CLIENT_VERSION = "${pkg.version}"`),
-    `client version constant matches package.json (${pkg.version})`,
+    // 클라 버전은 단일 정수. package.json 은 semver("N.0.0")이고 그 major 가 CLIENT_VERSION 과 같아야 한다.
+    app.includes(`const CLIENT_VERSION = "${String(parseInt(pkg.version, 10))}"`),
+    `client version constant matches package.json major (${String(parseInt(pkg.version, 10))})`,
   ],
   [
     /const VERSION = "\d+\.\d+\.\d+"/.test(server) && preload.includes("appVersion"),
@@ -155,7 +157,7 @@ const checks = [
   [buildWindowsBat.includes("npm run build:win") && buildWindowsBat.includes("Accord Windows x64 Portable.exe"), "windows bat builds windows artifact"],
   [buildWindowsCommand.includes("npm run build:win") && buildWindowsCommand.includes("Accord Windows x64 Portable.exe"), "mac command builds windows artifact"],
   [buildMacCommand.includes("npm run build:mac") && buildMacCommand.includes("Accord Mac arm64.zip"), "mac command builds mac artifact"],
-  [startServerMacCommand.includes("./start-mac-server.sh") && startMacServer.includes("./setup-turn-mac.sh") && startMacServer.includes("scripts/start-https.js"), "mac server command starts TURN and HTTPS"],
+  [startServerMacCommand.includes("./scripts/mac/start-mac-server.sh") && startMacServer.includes("setup-turn-mac.sh") && startMacServer.includes("scripts/start-https.js"), "mac server command starts TURN and HTTPS"],
   [app.includes("ensureSecureAudioContext") && app.includes("window.isSecureContext"), "secure audio context guard exists"],
   [html.includes("statBuffer") && html.includes("statConcealment") && html.includes("statHealth"), "expanded audio quality stats exist"],
   [app.includes("getQualityHealthText") && app.includes("getRemoteRepairStatusText"), "quality health includes recovery diagnostics"],

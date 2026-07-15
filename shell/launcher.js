@@ -10,7 +10,9 @@ showVersions();
 
 // 좌하단 버전 표시: 클라이언트 버전은 앱에서, 서버 버전은 저장된 주소에 물어본다(실패하면 생략).
 function showVersions() {
-  const clientVersion = window.voiceDesktop?.appVersion || "";
+  // package.json 은 semver("N.0.0")지만, 표시는 서버 버전과 헷갈리지 않게 major 정수만 쓴다.
+  const raw = window.voiceDesktop?.appVersion || "";
+  const clientVersion = raw ? String(parseInt(raw, 10) || raw) : "";
   if (clientVersionEl) clientVersionEl.textContent = `클라이언트 v${clientVersion || "?"}`;
   const saved = normalizeServerUrl(input.value);
   if (!saved || !serverVersionEl) return;

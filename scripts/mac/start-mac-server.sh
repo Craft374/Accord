@@ -1,7 +1,9 @@
 #!/bin/zsh
 set -u
 
-ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# 이 스크립트는 scripts/mac/ 안에 있으므로 저장소 루트는 두 단계 위.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 NODE_BIN=""
 TURN_CONTAINER_NAME="${TURN_CONTAINER_NAME:-accord-coturn}"
 STOP_TURN_ON_EXIT=0
@@ -32,7 +34,7 @@ main() {
 
   echo ""
   echo "TURN/coturn을 준비합니다."
-  ./setup-turn-mac.sh || return 1
+  "$SCRIPT_DIR/setup-turn-mac.sh" || return 1
   STOP_TURN_ON_EXIT=1
 
   echo ""

@@ -1,7 +1,7 @@
 #!/bin/zsh
 set -e
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 echo "Accord Windows x64 build"
 echo "------------------------"

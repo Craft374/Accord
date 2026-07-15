@@ -1,7 +1,8 @@
 #!/bin/zsh
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# scripts/mac/ 안에 있으므로 저장소 루트는 두 단계 위(server.env 는 루트에 둔다).
+ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 ENV_FILE="$ROOT_DIR/server.env"
 CONTAINER_NAME="${TURN_CONTAINER_NAME:-accord-coturn}"
 IMAGE="${TURN_IMAGE:-coturn/coturn:latest}"
@@ -37,7 +38,7 @@ main() {
 
   if [[ -z "$TURN_HOST" ]]; then
     echo "Mac 내부 IP를 자동으로 찾지 못했습니다."
-    echo "예: TURN_HOST=192.168.0.10 ./setup-turn-mac.sh"
+    echo "예: TURN_HOST=192.168.0.10 ./scripts/mac/setup-turn-mac.sh"
     exit 1
   fi
 
@@ -54,7 +55,7 @@ main() {
     echo ""
     echo "⚠️  경고: TURN 주소(${TURN_HOST})가 사설 IP입니다."
     echo "   외부(친구) 클라이언트는 이 TURN에 접근할 수 없어 통화 연결이 실패합니다."
-    echo "   공인 IP로 다시 실행하세요: TURN_HOST=<공인IP> ./setup-turn-mac.sh"
+    echo "   공인 IP로 다시 실행하세요: TURN_HOST=<공인IP> ./scripts/mac/setup-turn-mac.sh"
   fi
   echo ""
 
