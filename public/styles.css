@@ -1763,18 +1763,17 @@ body.draw-open .log-panel {
   accent-color: var(--blurple);
 }
 .markdown-body li.md-task-done > .md-task-text { color: var(--muted); text-decoration: line-through; }
-/* 접기/펼치기 — 자식이 있는 항목은 왼쪽 여백에 삼각형 토글을 둔다(불릿 대신) */
-.markdown-body li.md-foldable { position: relative; list-style: none; }
+/* 접기/펼치기 — 자식이 있는 항목은 번호/불릿을 그대로 두고 그 옆(내용 앞)에 삼각형 토글을 둔다 */
+.markdown-body li.md-foldable { position: relative; }
 .markdown-body .md-fold {
-  position: absolute;
-  left: -1.2em;
-  top: 0;
+  display: inline-block;
   width: 1em;
+  margin-right: 0.15em;
   text-align: center;
   color: var(--muted);
   cursor: pointer;
   user-select: none;
-  line-height: inherit;
+  vertical-align: baseline;
 }
 .markdown-body .md-fold::before {
   content: "▾";

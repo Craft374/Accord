@@ -149,6 +149,11 @@ const state = {
   memo: null, // { roomId, channelId, name, rev, remotePending, saveTimer, view }
   // 전역 로그
   activeLog: null, // { roomId, channelId, name, entries: [] }
+  // 로그방 검색·정렬·날짜접기 설정을 방별로 기억(닫았다 열어도, 앱 재시작해도 유지)
+  logPrefs: (() => {
+    try { const o = JSON.parse(localStorage.getItem("accordLogPrefs") || "{}"); return o && typeof o === "object" ? o : {}; }
+    catch { return {}; }
+  })(),
   // 다이렉트 메시지
   dm: {
     open: false, // DM 모드(메인 영역을 DM 패널로 전환)
@@ -10212,17 +10217,24 @@ function openLogRoom(roomId) {
     document.body.classList.add("log-open");
     return;
   }
+  // 이 방에 저장해 둔 검색·정렬·날짜접기 설정이 있으면 복원한다.
+  const saved = (state.logPrefs && state.logPrefs[roomId]) || null;
   state.activeLog = {
     roomId,
     channelId: found.channel.id,
     name: found.room.name,
     entries: [],
-    filter: { q: "", user: "", room: "", date: "" },
-    sort: state.activeLog?.sort === "desc" ? "desc" : "asc", // 오래된순(기본)/최신순
-    collapsedDays: new Set(),
+    filter: normalizeLogFilter(saved && saved.filter),
+    sort: saved && saved.sort === "desc" ? "desc" : "asc", // 오래된순(기본)/최신순
+    collapsedDays: new Set(Array.isArray(saved && saved.collapsedDays) ? saved.collapsedDays : []),
   };
-  clearLogFilterInputs();
+  applyLogFilterInputs();
   if (dom.logFilterSort) dom.logFilterSort.value = state.activeLog.sort;
+  // 저장된 검색 조건이 있으면 검색바를 자동으로 펼쳐 보여준다(포커스는 뺏지 않음).
+  if (logHasActiveFilter()) {
+    if (dom.logFilters) dom.logFilters.hidden = false;
+    dom.logSearchToggle?.classList.add("active");
+  }
   document.body.classList.add("log-open");
   if (dom.logRoomName) dom.logRoomName.textContent = found.room.name;
   if (dom.logSubtitle) dom.logSubtitle.textContent = found.channel.name;
@@ -10422,18 +10434,19 @@ function updateLogFilterOptions() {
     if (e.roomName) rooms.add(e.roomName);
   }
   const byKo = (a, b) => a.localeCompare(b, "ko");
-  fillLogSelect(dom.logFilterUser, [...users].sort(byKo), "모든 유저");
-  fillLogSelect(dom.logFilterRoom, [...rooms].sort(byKo), "모든 방");
-  // 선택했던 값이 사라졌으면 필터 상태도 동기화한다.
+  // 저장된 필터 값(log.filter)을 우선 반영해 셀렉트를 채운다(값이 아직 목록에 없으면 "").
+  fillLogSelect(dom.logFilterUser, [...users].sort(byKo), "모든 유저", log.filter?.user || "");
+  fillLogSelect(dom.logFilterRoom, [...rooms].sort(byKo), "모든 방", log.filter?.room || "");
+  // 선택했던 값이 목록에서 사라졌으면 필터 상태도 셀렉트에 맞춰 정리한다.
   if (log.filter) {
-    if (dom.logFilterUser && log.filter.user) log.filter.user = dom.logFilterUser.value;
-    if (dom.logFilterRoom && log.filter.room) log.filter.room = dom.logFilterRoom.value;
+    if (dom.logFilterUser) log.filter.user = dom.logFilterUser.value;
+    if (dom.logFilterRoom) log.filter.room = dom.logFilterRoom.value;
   }
 }
 
-function fillLogSelect(sel, values, allLabel) {
+function fillLogSelect(sel, values, allLabel, desired) {
   if (!sel) return;
-  const prev = sel.value;
+  const prev = desired != null ? desired : sel.value;
   sel.innerHTML = "";
   const opt0 = document.createElement("option");
   opt0.value = "";
@@ -10462,11 +10475,46 @@ function clearLogFilterInputs() {
   if (dom.logFilterCount) dom.logFilterCount.textContent = "";
 }
 
+// 저장된 필터 값을 입력창에 반영(유저/방 셀렉트는 옵션이 채워진 뒤 updateLogFilterOptions 가 마무리).
+function applyLogFilterInputs() {
+  const f = state.activeLog?.filter || { q: "", user: "", room: "", date: "" };
+  if (dom.logSearchInput) dom.logSearchInput.value = f.q || "";
+  if (dom.logSearchClear) dom.logSearchClear.hidden = !f.q;
+  if (dom.logFilterUser) dom.logFilterUser.value = f.user || "";
+  if (dom.logFilterRoom) dom.logFilterRoom.value = f.room || "";
+  if (dom.logFilterDate) dom.logFilterDate.value = f.date || "";
+  if (dom.logFilterCount) dom.logFilterCount.textContent = "";
+}
+
+// 저장된 값이 깨져 있어도 항상 온전한 필터 객체를 돌려준다.
+function normalizeLogFilter(f) {
+  return {
+    q: typeof f?.q === "string" ? f.q : "",
+    user: typeof f?.user === "string" ? f.user : "",
+    room: typeof f?.room === "string" ? f.room : "",
+    date: typeof f?.date === "string" ? f.date : "",
+  };
+}
+
+// 현재 로그방의 검색·정렬·날짜접기 상태를 방별로 저장(localStorage 영속).
+function persistActiveLog() {
+  const log = state.activeLog;
+  if (!log || !log.roomId) return;
+  const all = state.logPrefs || (state.logPrefs = {});
+  all[log.roomId] = {
+    filter: normalizeLogFilter(log.filter),
+    sort: log.sort === "desc" ? "desc" : "asc",
+    collapsedDays: [...(log.collapsedDays || [])],
+  };
+  try { localStorage.setItem("accordLogPrefs", JSON.stringify(all)); } catch {}
+}
+
 function setLogFilter(key, value) {
   const log = state.activeLog;
   if (!log) return;
   if (!log.filter) log.filter = { q: "", user: "", room: "", date: "" };
   log.filter[key] = value;
+  persistActiveLog();
   renderLogEntries();
 }
 
@@ -10483,6 +10531,7 @@ function resetLogFilters() {
   if (!log) return;
   log.filter = { q: "", user: "", room: "", date: "" };
   clearLogFilterInputs();
+  persistActiveLog();
   renderLogEntries();
 }
 
@@ -10505,6 +10554,7 @@ function bindLogEvents() {
   dom.logFilterSort?.addEventListener("change", () => {
     if (!state.activeLog) return;
     state.activeLog.sort = dom.logFilterSort.value === "desc" ? "desc" : "asc";
+    persistActiveLog();
     renderLogEntries();
     scrollLogToNewest();
   });
@@ -10518,6 +10568,7 @@ function bindLogEvents() {
     const set = state.activeLog.collapsedDays || (state.activeLog.collapsedDays = new Set());
     if (set.has(key)) set.delete(key);
     else set.add(key);
+    persistActiveLog();
     renderLogEntries();
   });
 }
