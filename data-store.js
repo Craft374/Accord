@@ -161,6 +161,13 @@ function cleanBanner(value) {
   return v;
 }
 
+// 배경 그라데이션 템플릿 키. 실제 그라데이션 CSS는 클라이언트가 키로 매핑한다.
+function cleanBannerGradient(value) {
+  const v = String(value || "").trim();
+  if (!v) return "";
+  return /^[a-z0-9]{1,20}$/.test(v) ? v : "";
+}
+
 // ---- 유저 조회/생성 ----
 function findByUsername(username) {
   const u = normalizeUsername(username);
@@ -194,6 +201,7 @@ function createUser({ username, password, displayName, email, avatar }) {
     emailVerified: false,
     avatar: cleanAvatar(avatar),
     banner: "",
+    bannerGradient: "",
     isAdmin: false,
     createdAt: Date.now(),
     lastLoginAt: 0,
@@ -227,12 +235,13 @@ function changePassword(userId, oldPassword, newPassword) {
   return { user };
 }
 
-function updateProfile(userId, { displayName, avatar, banner, email } = {}) {
+function updateProfile(userId, { displayName, avatar, banner, bannerGradient, email } = {}) {
   const user = findById(userId);
   if (!user) return { error: "계정을 찾을 수 없습니다." };
   if (displayName !== undefined) user.displayName = cleanDisplayName(displayName, user.username);
   if (avatar !== undefined) user.avatar = cleanAvatar(avatar);
   if (banner !== undefined) user.banner = cleanBanner(banner);
+  if (bannerGradient !== undefined) user.bannerGradient = cleanBannerGradient(bannerGradient);
   if (email !== undefined) user.email = String(email || "").trim().slice(0, 120);
   persistUsers();
   return { user };
@@ -294,6 +303,7 @@ function seedAdmin({ username, password, displayName }) {
     emailVerified: false,
     avatar: "",
     banner: "",
+    bannerGradient: "",
     isAdmin: true,
     createdAt: Date.now(),
     lastLoginAt: 0,
@@ -341,6 +351,7 @@ function sanitizeUser(user) {
     emailVerified: user.emailVerified,
     avatar: user.avatar,
     banner: user.banner || "",
+    bannerGradient: user.bannerGradient || "",
     isAdmin: Boolean(user.isAdmin),
     createdAt: user.createdAt,
   };

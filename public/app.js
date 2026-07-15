@@ -419,6 +419,8 @@ const dom = {
   profileEditCode: document.querySelector("#profileEditCode"),
   profileBannerInput: document.querySelector("#profileBannerInput"),
   profileBannerClear: document.querySelector("#profileBannerClear"),
+  profileGradientRow: document.querySelector("#profileGradientRow"),
+  accountAvatarClear: document.querySelector("#accountAvatarClear"),
   accountSection: document.querySelector("#accountSection"),
   accountAvatar: document.querySelector("#accountAvatar"),
   accountName: document.querySelector("#accountName"),
@@ -831,13 +833,16 @@ function bindAuthEvents() {
     const file = dom.accountAvatarInput.files?.[0];
     if (!file) return;
     openCropModal(file, (dataUrl) => {
-      state.auth.pendingProfileAvatar = dataUrl;
-      const preview = { avatar: dataUrl, displayName: dom.accountDisplayNameInput.value };
-      setAvatar(dom.accountAvatar, preview);
-      setAvatar(dom.profileEditAvatar, preview);
-      setAccountMessage("저장을 누르면 프로필 이미지가 적용됩니다.", true);
+      applyProfilePatch({ avatar: dataUrl }, "프로필 이미지를 적용하는 중...");
     });
     dom.accountAvatarInput.value = "";
+  });
+  dom.accountAvatarClear?.addEventListener("click", () => {
+    if (!state.auth.user?.avatar) {
+      setAccountMessage("제거할 프로필 이미지가 없습니다.");
+      return;
+    }
+    applyProfilePatch({ avatar: "" }, "프로필 이미지를 제거하는 중...");
   });
   dom.profileBannerInput?.addEventListener("change", () => {
     const file = dom.profileBannerInput.files?.[0];
@@ -845,18 +850,29 @@ function bindAuthEvents() {
     openCropModal(
       file,
       (dataUrl) => {
-        state.auth.pendingProfileBanner = dataUrl;
-        setBanner(dom.profileEditBanner, { banner: dataUrl, code: state.auth.user?.code });
-        setAccountMessage("저장을 누르면 배경 이미지가 적용됩니다.", true);
+        applyProfilePatch({ banner: dataUrl }, "배경 이미지를 적용하는 중...");
       },
       { w: BANNER_CROP.w, h: BANNER_CROP.h, title: "배경 이미지 자르기", hint: "드래그로 위치, 슬라이더로 확대해서 가로로 긴 영역을 맞추세요." },
     );
     dom.profileBannerInput.value = "";
   });
   dom.profileBannerClear?.addEventListener("click", () => {
-    state.auth.pendingProfileBanner = "";
-    setBanner(dom.profileEditBanner, { banner: "", code: state.auth.user?.code });
-    setAccountMessage("저장을 누르면 배경이 제거됩니다.", true);
+    if (!state.auth.user?.banner) {
+      setAccountMessage("제거할 배경 이미지가 없습니다.");
+      return;
+    }
+    applyProfilePatch({ banner: "" }, "배경 이미지를 제거하는 중...");
+  });
+  renderGradientSwatches();
+  dom.profileGradientRow?.addEventListener("click", (event) => {
+    const btn = event.target?.closest?.("button[data-gradient]");
+    if (!btn) return;
+    const key = btn.dataset.gradient || "";
+    // 그라데이션을 고르면 배경 이미지를 지워 그라데이션이 보이도록 한다.
+    applyProfilePatch(
+      { bannerGradient: key, banner: "" },
+      key ? "배경 그라데이션을 적용하는 중..." : "기본 배경으로 되돌리는 중...",
+    );
   });
 
   dom.adminPanelButton?.addEventListener("click", () => toggleAdminModal(true));
@@ -945,10 +961,8 @@ function onAuthOk(message) {
   }
   if (message.action === "update-profile") {
     state.auth.user = message.user;
-    state.auth.pendingProfileAvatar = undefined;
-    state.auth.pendingProfileBanner = undefined;
     applyAuthedUser(message.user);
-    setAccountMessage("프로필이 저장되었습니다.", true);
+    setAccountMessage("프로필이 적용되었습니다.", true);
     return;
   }
   // login / register / resume
@@ -995,6 +1009,7 @@ function applyAuthedUser(user) {
   if (dom.profileEditCode) dom.profileEditCode.textContent = `#${user.code || "----"}`;
   setAvatar(dom.profileEditAvatar, user);
   setBanner(dom.profileEditBanner, user);
+  updateGradientSelection(user.banner ? "" : (user.bannerGradient || ""));
   // 관리자 UI
   applyAdminVisibility();
   renderParticipants();
@@ -1056,10 +1071,15 @@ function saveProfile() {
     displayName: dom.accountDisplayNameInput.value.trim(),
     email: dom.accountEmailInput.value.trim(),
   };
-  if (state.auth.pendingProfileAvatar !== undefined) payload.avatar = state.auth.pendingProfileAvatar;
-  if (state.auth.pendingProfileBanner !== undefined) payload.banner = state.auth.pendingProfileBanner;
   setAccountMessage("저장 중...", true);
   sendSocket(payload);
+}
+
+// 이미지·배경·그라데이션 등 개별 항목만 즉시 서버에 반영(프로필 저장 버튼 없이 바로 적용).
+function applyProfilePatch(patch, pendingMessage) {
+  if (!state.auth.authed) return;
+  setAccountMessage(pendingMessage || "적용 중...", true);
+  sendSocket({ type: "update-profile", ...patch });
 }
 
 function changePassword() {
@@ -1304,12 +1324,29 @@ function setAvatar(el, user) {
   }
 }
 
-// 프로필 배경(배너). 이미지가 없으면 유저 코드 기반 그라데이션으로 채운다.
+// 프로필 배경 그라데이션 템플릿. 키는 서버에 저장되고, 실제 CSS는 여기서 매핑한다.
+const BANNER_GRADIENTS = [
+  { key: "aurora", label: "오로라", css: "linear-gradient(135deg, #5b3fd1, #2f6fed 55%, #21c1c9)" },
+  { key: "sunset", label: "노을", css: "linear-gradient(135deg, #ff7a59, #ff3d77 55%, #a83279)" },
+  { key: "ocean", label: "바다", css: "linear-gradient(135deg, #0f3d6e, #1f7bce 60%, #23c6b6)" },
+  { key: "forest", label: "숲", css: "linear-gradient(135deg, #1d5c3f, #3a8f4d 55%, #9fce4f)" },
+  { key: "grape", label: "포도", css: "linear-gradient(135deg, #3a1c71, #6d28d9 55%, #d76d9e)" },
+  { key: "ember", label: "잔불", css: "linear-gradient(135deg, #7a1e0f, #c8471f 55%, #f2b134)" },
+  { key: "mono", label: "모노", css: "linear-gradient(135deg, #2b2f3a, #3f4657 60%, #5a6377)" },
+  { key: "rosegold", label: "로즈골드", css: "linear-gradient(135deg, #b76e79, #e3a5a0 55%, #f6d5c0)" },
+];
+const BANNER_GRADIENT_MAP = Object.fromEntries(BANNER_GRADIENTS.map((g) => [g.key, g.css]));
+
+// 프로필 배경(배너). 이미지 → 선택한 그라데이션 → 코드 기반 기본 그라데이션 순으로 채운다.
 function setBanner(el, user) {
   if (!el) return;
   const banner = user?.banner || "";
+  const gradientCss = BANNER_GRADIENT_MAP[user?.bannerGradient || ""];
   if (banner) {
     el.style.backgroundImage = `url("${banner}")`;
+    el.classList.remove("empty");
+  } else if (gradientCss) {
+    el.style.backgroundImage = gradientCss;
     el.classList.remove("empty");
   } else {
     el.style.backgroundImage = "";
@@ -1323,6 +1360,34 @@ function bannerHue(user) {
   let sum = 0;
   for (let i = 0; i < seed.length; i += 1) sum = (sum * 31 + seed.charCodeAt(i)) % 360;
   return sum;
+}
+
+// 프로필 창의 그라데이션 선택 버튼들을 만든다("기본" + 템플릿들).
+function renderGradientSwatches() {
+  const row = dom.profileGradientRow;
+  if (!row || row.childElementCount) return;
+  const makeSwatch = (key, css, label) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "gradient-swatch";
+    btn.dataset.gradient = key;
+    btn.title = label;
+    btn.setAttribute("aria-label", label);
+    btn.style.backgroundImage = css;
+    row.append(btn);
+  };
+  // "기본"은 유저 코드 기반 기본 그라데이션(setBanner의 .empty와 동일 계열)
+  makeSwatch("", "linear-gradient(135deg, hsl(230 45% 32%), hsl(270 50% 22%))", "기본");
+  for (const g of BANNER_GRADIENTS) makeSwatch(g.key, g.css, g.label);
+}
+
+// 현재 선택된 그라데이션 버튼에 active 표시.
+function updateGradientSelection(activeKey) {
+  const row = dom.profileGradientRow;
+  if (!row) return;
+  for (const btn of row.querySelectorAll("button[data-gradient]")) {
+    btn.classList.toggle("active", (btn.dataset.gradient || "") === (activeKey || ""));
+  }
 }
 
 function formatTimestamp(ms) {
@@ -4428,9 +4493,7 @@ function toggleProfileModal(open) {
   if (!dom.profileModal) return;
   dom.profileModal.hidden = !open;
   if (open) {
-    // 이전에 취소한 임시 이미지를 지우고 저장된 프로필로 되돌린다.
-    state.auth.pendingProfileAvatar = undefined;
-    state.auth.pendingProfileBanner = undefined;
+    // 저장된 프로필 기준으로 미리보기(카드·그라데이션 선택)를 최신화한다.
     if (state.auth.user) applyAuthedUser(state.auth.user);
     setAccountMessage("");
   }

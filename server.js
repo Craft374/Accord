@@ -466,6 +466,7 @@ function handleAuthMessage(client, message) {
         displayName: message.displayName,
         avatar: message.avatar,
         banner: message.banner,
+        bannerGradient: message.bannerGradient,
         email: message.email,
       });
       if (result.error) {
@@ -1099,8 +1100,8 @@ function expandChannel(summary) {
     members: summary.memberIds.map((id) => {
       const u = store.findById(id);
       const base = u
-        ? { id: u.id, displayName: u.displayName || u.username || `유저#${u.code}`, code: u.code, avatar: u.avatar, banner: u.banner || "", isAdmin: Boolean(u.isAdmin) }
-        : { id, displayName: "(삭제된 계정)", code: "----", avatar: "", banner: "", isAdmin: false };
+        ? { id: u.id, displayName: u.displayName || u.username || `유저#${u.code}`, code: u.code, avatar: u.avatar, banner: u.banner || "", bannerGradient: u.bannerGradient || "", isAdmin: Boolean(u.isAdmin) }
+        : { id, displayName: "(삭제된 계정)", code: "----", avatar: "", banner: "", bannerGradient: "", isAdmin: false };
       base.isManager = managerSet.has(id);
       base.isCreator = id === summary.ownerId;
       return base;
@@ -1917,7 +1918,7 @@ const DM_TEXT_MAX = 4000;
 // DM 상대에게 보여줄 공개 정보(email 등 민감정보 제외).
 function dmUserView(user) {
   if (!user) return null;
-  return { id: user.id, displayName: user.displayName || user.username || `유저#${user.code}`, code: user.code, avatar: user.avatar || "", banner: user.banner || "" };
+  return { id: user.id, displayName: user.displayName || user.username || `유저#${user.code}`, code: user.code, avatar: user.avatar || "", banner: user.banner || "", bannerGradient: user.bannerGradient || "" };
 }
 
 // 특정 userId 로 로그인한 모든 접속에 전달(같은 계정 여러 탭 대응).
@@ -1934,7 +1935,7 @@ function dmThreadsFor(userId) {
     return {
       id: t.id,
       userId: otherId,
-      partner: other ? dmUserView(other) : { id: otherId, displayName: "(삭제된 계정)", code: "----", avatar: "", banner: "" },
+      partner: other ? dmUserView(other) : { id: otherId, displayName: "(삭제된 계정)", code: "----", avatar: "", banner: "", bannerGradient: "" },
       lastAt: t.lastAt || 0,
       lastText: t.lastText || "",
       lastFrom: t.lastFrom || "",
