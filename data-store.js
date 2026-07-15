@@ -1006,23 +1006,26 @@ function memoFile(roomId) {
 }
 
 function getMemo(roomId) {
-  if (!isSafeRoomId(roomId)) return { text: "", rev: 0, updatedBy: "", updatedAt: 0 };
+  if (!isSafeRoomId(roomId)) return { text: "", font: "", rev: 0, updatedBy: "", updatedAt: 0 };
   const memo = readJson(memoFile(roomId), null);
-  if (!memo || typeof memo !== "object") return { text: "", rev: 0, updatedBy: "", updatedAt: 0 };
+  if (!memo || typeof memo !== "object") return { text: "", font: "", rev: 0, updatedBy: "", updatedAt: 0 };
   return {
     text: String(memo.text || ""),
+    font: String(memo.font || ""),
     rev: Number(memo.rev) || 0,
     updatedBy: String(memo.updatedBy || ""),
     updatedAt: Number(memo.updatedAt) || 0,
   };
 }
 
-function saveMemo(roomId, text, userId) {
+// font 를 넘기지 않으면(undefined) 기존 값 유지 — 텍스트만 저장하는 호출과 글꼴 저장을 겸한다.
+function saveMemo(roomId, text, userId, font) {
   if (!isSafeRoomId(roomId)) return { error: "잘못된 방입니다." };
   fs.mkdirSync(MEMO_DIR, { recursive: true });
   const current = getMemo(roomId);
   const memo = {
     text: String(text || "").slice(0, MEMO_MAX_LEN),
+    font: font !== undefined ? String(font || "").slice(0, 32) : current.font,
     rev: current.rev + 1,
     updatedBy: String(userId || ""),
     updatedAt: Date.now(),

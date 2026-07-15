@@ -225,6 +225,18 @@
             </div>
             <div class="memo-head-actions">
               <span class="memo-status" id="memoStatus"></span>
+              <div class="memo-tools">
+                <select id="memoFontSelect" class="memo-font-select" title="모두에게 적용되는 글꼴" aria-label="글꼴"></select>
+                <div class="memo-color-tools" role="group" aria-label="글자 색">
+                  <button class="memo-color-btn" type="button" data-memo-color="#e03131" style="--sw:#e03131" title="빨강 글자"></button>
+                  <button class="memo-color-btn" type="button" data-memo-color="#1971c2" style="--sw:#1971c2" title="파랑 글자"></button>
+                  <button class="memo-color-btn" type="button" data-memo-color="#2f9e44" style="--sw:#2f9e44" title="초록 글자"></button>
+                  <label class="memo-color-btn custom" title="색 직접 선택">
+                    <span class="memo-color-custom-dot"></span>
+                    <input type="color" id="memoColorPick" value="#f0b232" />
+                  </label>
+                </div>
+              </div>
               <div class="memo-view-toggle" role="group" aria-label="보기 방식">
                 <button class="memo-view-btn active" id="memoViewSplit" type="button" data-memo-view="split">나란히</button>
                 <button class="memo-view-btn" id="memoViewEdit" type="button" data-memo-view="edit">편집</button>

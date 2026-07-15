@@ -3,7 +3,7 @@ const serverUrl = location.origin;
 
 // 클라이언트(앱) 버전. 서버 버전(server.js VERSION)과 따로 관리하며 package.json 의 version 과 같아야 한다.
 // (scripts/check-v2.js 가 둘이 어긋나지 않는지 검사한다)
-const CLIENT_VERSION = "1.0.0";
+const CLIENT_VERSION = "1.0.1";
 
 function getClientVersion() {
   return desktop.appVersion || CLIENT_VERSION;
@@ -210,6 +210,8 @@ const dom = {
   memoViewSplit: document.querySelector("#memoViewSplit"),
   memoViewEdit: document.querySelector("#memoViewEdit"),
   memoViewPreview: document.querySelector("#memoViewPreview"),
+  memoFontSelect: document.querySelector("#memoFontSelect"),
+  memoColorPick: document.querySelector("#memoColorPick"),
   drawPanel: document.querySelector("#drawPanel"),
   drawRoomName: document.querySelector("#drawRoomName"),
   drawStatus: document.querySelector("#drawStatus"),
@@ -1575,6 +1577,11 @@ async function handleSocketMessage(message) {
 
   if (message.type === "memo:op") {
     handleMemoOp(message);
+    return;
+  }
+
+  if (message.type === "memo:font") {
+    handleMemoFont(message);
     return;
   }
 
@@ -9247,8 +9254,65 @@ const MEMO_FONT_MAX = 32;
 const MEMO_FONT_DEFAULT = 13;
 let memoFontSize = clampMemoFont(Number(localStorage.getItem("accordMemoFontSize")) || MEMO_FONT_DEFAULT);
 
+// 메모방 글꼴(글자 크기와 달리 모든 참가자에게 공유되는 문서 속성).
+// key만 서버로 주고받고, 실제 폰트 스택은 각 클라이언트가 매핑한다(안전 + 플랫폼별 대체).
+const MEMO_FONTS = {
+  default: { label: "기본", stack: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace' },
+  sans: { label: "고딕", stack: '"Pretendard", "Apple SD Gothic Neo", "맑은 고딕", "Malgun Gothic", sans-serif' },
+  serif: { label: "명조", stack: '"Nanum Myeongjo", "Apple Myungjo", "바탕", Batang, serif' },
+  round: { label: "둥근고딕", stack: '"Nanum Gothic", "Apple SD Gothic Neo", "맑은 고딕", sans-serif' },
+  hand: { label: "손글씨", stack: '"Nanum Pen Script", "Gaegu", "Apple SD Gothic Neo", cursive' },
+};
+const MEMO_FONT_DEFAULT_KEY = "default";
+function memoFontStack(key) {
+  return (MEMO_FONTS[key] || MEMO_FONTS[MEMO_FONT_DEFAULT_KEY]).stack;
+}
+
+// 글꼴 <select> 옵션을 한 번만 채운다(bindMemoEvents 시점엔 MEMO_FONTS 가 TDZ 라 지연 호출).
+function populateMemoFonts() {
+  const sel = dom.memoFontSelect;
+  if (!sel || sel.options.length) return;
+  for (const [key, f] of Object.entries(MEMO_FONTS)) {
+    const opt = document.createElement("option");
+    opt.value = key;
+    opt.textContent = f.label;
+    sel.append(opt);
+  }
+}
+
 function clampMemoFont(px) {
   return Math.min(MEMO_FONT_MAX, Math.max(MEMO_FONT_MIN, Math.round(px)));
+}
+
+// 편집기·거터·미리보기의 글꼴을 바꾼다(공유 속성이므로 로컬 저장은 하지 않음).
+function applyMemoFont(key) {
+  const stack = memoFontStack(key);
+  if (dom.memoEditor) dom.memoEditor.style.fontFamily = stack;
+  if (dom.memoGutter) dom.memoGutter.style.fontFamily = stack;
+  if (dom.memoPreview) dom.memoPreview.style.fontFamily = stack;
+  if (dom.memoFontSelect && dom.memoFontSelect.value !== key) {
+    dom.memoFontSelect.value = MEMO_FONTS[key] ? key : MEMO_FONT_DEFAULT_KEY;
+  }
+  renderMemoCursors(); // 글꼴에 따라 줄바꿈·캐럿 좌표가 달라지므로 다시 그린다
+}
+
+// 편집기에서 선택한 텍스트(없으면 자리표시자)를 색 마크업 {색:#hex}…{/색} 으로 감싼다.
+// 마크업은 문서 텍스트에 그대로 들어가 OT 로 동기화되고, 미리보기에서 색으로 렌더된다.
+function applyMemoColor(color) {
+  const m = state.memo;
+  const el = dom.memoEditor;
+  if (!m || !m.writable || !el) return;
+  const hex = /^#[0-9a-fA-F]{3,8}$/.test(String(color || "")) ? color : "#f0b232";
+  const start = el.selectionStart;
+  const end = el.selectionEnd;
+  const selected = el.value.slice(start, end) || "색 글자";
+  const open = `{색:${hex}}`;
+  const close = "{/색}";
+  el.value = el.value.slice(0, start) + open + selected + close + el.value.slice(end);
+  el.selectionStart = start + open.length;
+  el.selectionEnd = start + open.length + selected.length; // 감싼 내용을 선택 상태로 둔다
+  el.focus();
+  onMemoInput();
 }
 
 // 편집기·미리보기 글자 크기를 함께 조절한다(Ctrl/Cmd+휠).
@@ -9275,6 +9339,7 @@ function openMemoRoom(roomId) {
     name: found.room.name,
     view: state.memo?.view || "split",
     doc: "",
+    font: MEMO_FONT_DEFAULT_KEY, // 공유 글꼴(memo:state 로 갱신됨)
     serverRev: 0,
     inflight: null, // 서버에 보내고 ack 대기 중인 op
     buffer: [], // inflight 이후 로컬 편집 op들
@@ -9288,6 +9353,9 @@ function openMemoRoom(roomId) {
   if (dom.memoEditor) { dom.memoEditor.value = ""; dom.memoEditor.disabled = true; }
   if (dom.memoPreview) dom.memoPreview.innerHTML = "";
   applyMemoFontSize(memoFontSize); // 저장된 글자 크기 반영
+  populateMemoFonts();
+  applyMemoFont(state.memo.font);
+  updateMemoToolsEnabled();
   clearMemoCursors();
   applyMemoView(state.memo.view);
   setMemoStatus("불러오는 중…", "muted");
@@ -9324,13 +9392,33 @@ function handleMemoState(message) {
   m.serverRev = message.rev || 0;
   m.inflight = null;
   m.buffer = [];
+  m.font = MEMO_FONTS[message.font] ? message.font : MEMO_FONT_DEFAULT_KEY;
   if (dom.memoEditor) { dom.memoEditor.disabled = !m.writable; dom.memoEditor.value = m.doc; }
+  applyMemoFont(m.font);
+  updateMemoToolsEnabled();
   renderMemoPreview();
   m.cursors.clear();
   for (const cur of message.cursors || []) setMemoCursor(cur);
   renderMemoCursors();
   if (!m.writable) setMemoStatus("읽기 전용 — 대표자만 편집", "muted");
   else setMemoStatus(m.doc ? "실시간 편집 중" : "빈 메모 — 함께 편집됩니다", "muted");
+}
+
+// 다른 참가자가 글꼴을 바꾸면 반영한다.
+function handleMemoFont(message) {
+  const m = state.memo;
+  if (!m || m.roomId !== message.roomId) return;
+  m.font = MEMO_FONTS[message.font] ? message.font : MEMO_FONT_DEFAULT_KEY;
+  applyMemoFont(m.font);
+}
+
+// 글꼴/색 도구는 편집 권한이 있을 때만 활성화(읽기 전용이면 잠금).
+function updateMemoToolsEnabled() {
+  const on = Boolean(state.memo?.writable);
+  if (dom.memoFontSelect) dom.memoFontSelect.disabled = !on;
+  document.querySelectorAll("#memoPanel [data-memo-color], #memoColorPick").forEach((el) => { el.disabled = !on; });
+  const tools = document.querySelector(".memo-tools");
+  if (tools) tools.classList.toggle("disabled", !on);
 }
 
 // 로컬 편집 → 변경분(op)을 만들어 서버로 보낸다.
@@ -9644,6 +9732,20 @@ function bindMemoEvents() {
   dom.memoViewSplit?.addEventListener("click", () => applyMemoView("split"));
   dom.memoViewEdit?.addEventListener("click", () => applyMemoView("edit"));
   dom.memoViewPreview?.addEventListener("click", () => applyMemoView("preview"));
+  // 글꼴 드롭다운 변경 시 모두에게 공유. (옵션 채우기는 openMemoRoom 에서 지연 — MEMO_FONTS TDZ 회피)
+  dom.memoFontSelect?.addEventListener("change", () => {
+    const m = state.memo;
+    if (!m || !m.writable) return;
+    const key = MEMO_FONTS[dom.memoFontSelect.value] ? dom.memoFontSelect.value : MEMO_FONT_DEFAULT_KEY;
+    m.font = key;
+    applyMemoFont(key);
+    sendSocket({ type: "memo:font", roomId: m.roomId, font: key });
+  });
+  // 색 버튼: 선택한 텍스트를 {색:#hex}…{/색} 로 감싼다.
+  dom.memoPanel?.querySelectorAll("[data-memo-color]").forEach((btn) => {
+    btn.addEventListener("click", () => applyMemoColor(btn.dataset.memoColor));
+  });
+  dom.memoColorPick?.addEventListener("input", () => applyMemoColor(dom.memoColorPick.value));
   // 커서 이동/선택 변경을 다른 사람에게 알린다.
   const cursorEvents = ["keyup", "mouseup", "click", "select", "focus"];
   for (const ev of cursorEvents) dom.memoEditor?.addEventListener(ev, sendMemoCursor);
@@ -10065,12 +10167,19 @@ function renderDmMessages() {
   dom.dmMessages.innerHTML = "";
   const myId = state.auth.user?.id;
   let prev = null;
+  let currentBody = null;
   for (const msg of state.dm.messages) {
     const grouped = prev && prev.userId === msg.userId && (msg.at - prev.at) < DM_GROUP_GAP;
-    const row = document.createElement("div");
-    row.className = "dm-msg" + (grouped ? " grouped" : "") + (msg.userId === myId ? " mine" : "");
-    row.dataset.msgId = msg.id;
+    // 묶이지 않은 첫 메시지마다 아바타 + 이름/시간 헤더를 가진 그룹을 새로 만든다(채팅과 동일한 형태).
     if (!grouped) {
+      const group = document.createElement("div");
+      group.className = "dm-group" + (msg.userId === myId ? " mine" : "");
+      const avatar = document.createElement("span");
+      avatar.className = "dm-avatar profile-link";
+      avatar.dataset.profileUser = msg.userId || "";
+      setAvatar(avatar, lookupUserProfile(msg.userId, { displayName: msg.name }));
+      currentBody = document.createElement("div");
+      currentBody.className = "dm-group-body";
       const head = document.createElement("div");
       head.className = "dm-msg-head";
       const nameEl = document.createElement("b");
@@ -10080,27 +10189,33 @@ function renderDmMessages() {
       const time = document.createElement("span");
       time.textContent = formatChatTime(msg.at);
       head.append(nameEl, time);
-      row.append(head);
+      currentBody.append(head);
+      group.append(avatar, currentBody);
+      dom.dmMessages.append(group);
     }
-    const line = document.createElement("div");
-    line.className = "dm-msg-line";
-    const text = document.createElement("span");
-    text.className = "dm-msg-text";
-    text.textContent = msg.text || "";
-    line.append(text);
-    if (msg.userId === myId) {
-      const del = document.createElement("button");
-      del.className = "dm-msg-del";
-      del.type = "button";
-      del.dataset.dmDelete = msg.id;
-      del.title = "삭제";
-      del.textContent = "🗑";
-      line.append(del);
-    }
-    row.append(line);
-    dom.dmMessages.append(row);
+    currentBody.append(renderDmMessageLine(msg, myId));
     prev = msg;
   }
+}
+
+function renderDmMessageLine(msg, myId) {
+  const line = document.createElement("div");
+  line.className = "dm-msg-line";
+  line.dataset.msgId = msg.id;
+  const text = document.createElement("span");
+  text.className = "dm-msg-text";
+  text.textContent = msg.text || "";
+  line.append(text);
+  if (msg.userId === myId) {
+    const del = document.createElement("button");
+    del.className = "dm-msg-del";
+    del.type = "button";
+    del.dataset.dmDelete = msg.id;
+    del.title = "삭제";
+    del.textContent = "🗑";
+    line.append(del);
+  }
+  return line;
 }
 
 function scrollDmToBottom() {
@@ -11360,10 +11475,13 @@ function escapeHtmlText(str) {
 }
 
 function renderMarkdown(src) {
-  // 1) 코드펜스(```)를 먼저 빼내 보호
+  // 1) 코드펜스(``` 또는 ```lang)를 먼저 빼내 보호. 언어 태그가 있으면 구문 강조에 쓴다.
   const codeBlocks = [];
-  let text = String(src || "").replace(/```([\s\S]*?)```/g, (m, code) => {
-    codeBlocks.push(code.replace(/^\n/, "").replace(/\n$/, ""));
+  let text = String(src || "").replace(
+    /```([a-zA-Z0-9+#._-]*)[ \t]*\n([\s\S]*?)```|```([\s\S]*?)```/g,
+    (m, lang, body, bare) => {
+      if (body !== undefined) codeBlocks.push({ lang: (lang || "").toLowerCase(), code: body.replace(/\n$/, "") });
+      else codeBlocks.push({ lang: "", code: (bare || "").replace(/^\n/, "").replace(/\n$/, "") });
     return `\u0000CODE${codeBlocks.length - 1}\u0000`;
   });
   // 2) 전체 HTML 이스케이프(이후 삽입되는 태그는 우리가 만든 안전한 것뿐)
@@ -11380,7 +11498,9 @@ function renderMarkdown(src) {
     const codeMatch = line.match(/^\u0000CODE(\d+)\u0000$/);
     if (codeMatch) {
       closeList(); closeQuote();
-      html.push(`<pre><code>${escapeHtmlText(codeBlocks[Number(codeMatch[1])])}</code></pre>`);
+      const blk = codeBlocks[Number(codeMatch[1])];
+      const langTag = blk.lang ? `<span class="md-code-lang">${escapeHtmlText(blk.lang)}</span>` : "";
+      html.push(`<pre class="md-code"${blk.lang ? ` data-lang="${escapeHtmlText(blk.lang)}"` : ""}>${langTag}<code>${highlightCode(blk.code, blk.lang)}</code></pre>`);
       continue;
     }
     if (/^\s*$/.test(line)) { closeList(); closeQuote(); continue; }
@@ -11433,6 +11553,10 @@ function inlineMarkdown(str) {
     links.push(`<a href="${url}" target="_blank" rel="noopener">${url}</a>`);
     return `\u0001L${links.length - 1}\u0001`;
   });
+  // 글자 색: {색:#hex}내용{/색} → 색 span. 값은 #hex 또는 영문 색이름만 허용해 CSS 주입을 막는다.
+  // 안쪽 내용은 이어지는 굵게/기울임 치환에도 계속 노출돼 서식이 함께 적용된다.
+  out = out.replace(/\{색:(#[0-9a-fA-F]{3,8}|[a-zA-Z]{1,20})\}([\s\S]*?)\{\/색\}/g,
+    (m, color, inner) => `<span style="color:${color}">${inner}</span>`);
   out = out.replace(/`([^`]+)`/g, "<code>$1</code>");
   out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   out = out.replace(/__([^_]+)__/g, "<strong>$1</strong>");

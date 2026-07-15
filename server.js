@@ -15,7 +15,7 @@ seedAdminAccount();
 // 서버 버전. 클라이언트(앱) 버전은 package.json 의 version 이며 따로 관리한다.
 // 규칙: 클라 코드가 바뀌면 서버가 그 코드를 배포하므로 서버·클라 둘 다 올리고,
 //       서버만 바뀌면 서버 버전만 올린다.
-const VERSION = "2.3.0";
+const VERSION = "2.3.1";
 const PORT = Number(process.env.PORT || 25565);
 const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_HOST = cleanHost(process.env.PUBLIC_HOST || "");
@@ -1335,11 +1335,17 @@ function broadcastChat(channel, payload) {
 const memoDocs = new Map(); // roomId -> { text, history:[], cursors:Map(clientId->cursor), saveTimer }
 const MEMO_PERSIST_DEBOUNCE = 1500;
 
+const MEMO_FONT_KEYS = new Set(["default", "sans", "serif", "round", "hand"]);
+function cleanMemoFont(font) {
+  const f = String(font || "");
+  return MEMO_FONT_KEYS.has(f) ? f : "default";
+}
+
 function getMemoDoc(roomId) {
   let d = memoDocs.get(roomId);
   if (!d) {
     const saved = store.getMemo(roomId);
-    d = { text: saved.text || "", history: [], cursors: new Map(), saveTimer: 0 };
+    d = { text: saved.text || "", font: cleanMemoFont(saved.font), history: [], cursors: new Map(), saveTimer: 0 };
     memoDocs.set(roomId, d);
   }
   return d;
@@ -1351,7 +1357,7 @@ function scheduleMemoPersist(roomId, userId) {
   if (d.saveTimer) clearTimeout(d.saveTimer);
   d.saveTimer = setTimeout(() => {
     d.saveTimer = 0;
-    store.saveMemo(roomId, d.text, userId);
+    store.saveMemo(roomId, d.text, userId, d.font);
   }, MEMO_PERSIST_DEBOUNCE);
 }
 
@@ -1359,7 +1365,7 @@ function flushMemoPersist(roomId, userId) {
   const d = memoDocs.get(roomId);
   if (!d) return;
   if (d.saveTimer) { clearTimeout(d.saveTimer); d.saveTimer = 0; }
-  store.saveMemo(roomId, d.text, userId || "");
+  store.saveMemo(roomId, d.text, userId || "", d.font);
 }
 
 function memoViewerCount(roomId) {
@@ -1400,11 +1406,27 @@ function handleMemoMessage(client, message) {
       client.memoRoomId = ctx.room.id;
       const d = getMemoDoc(ctx.room.id);
       const cursors = [...d.cursors.values()].filter((cur) => cur.clientId !== client.id);
-      send(client, { type: "memo:state", roomId: ctx.room.id, text: d.text, rev: d.history.length, cursors });
+      send(client, { type: "memo:state", roomId: ctx.room.id, text: d.text, rev: d.history.length, cursors, font: d.font });
       return true;
     }
     case "memo:close": {
       leaveMemo(client);
+      return true;
+    }
+    case "memo:font": {
+      const ctx = resolveMemoRoom(client, message.roomId);
+      if (!ctx) return true;
+      if (!isRoomWritable(ctx, client)) {
+        send(client, { type: "memo-error", message: "읽기 전용 메모입니다. 대표자만 편집할 수 있습니다." });
+        return true;
+      }
+      const d = getMemoDoc(ctx.room.id);
+      d.font = cleanMemoFont(message.font);
+      scheduleMemoPersist(ctx.room.id, client.userId);
+      const payload = { type: "memo:font", roomId: ctx.room.id, font: d.font, by: client.id };
+      for (const c of clients.values()) {
+        if (c.memoRoomId === ctx.room.id) send(c, payload);
+      }
       return true;
     }
     case "memo:op": {
