@@ -7893,9 +7893,12 @@ function scrollRoomTreeForPointer(clientY) {
 }
 
 function updateRoomTreePointerDrop(clientX, clientY) {
-  const point = document.elementFromPoint(clientX, clientY);
+  // 히트 테스트(elementFromPoint)와 위치 계산(getBoundingClientRect)이 반드시 같은 레이아웃을
+  // 보도록, 이전 프레임에서 꽂아 둔 인디케이터를 먼저 뗀다. 인디케이터가 남아 있으면 그 높이만큼
+  // 밀린 레이아웃에서 커서 밑 요소가 달라져 매 프레임 삽입 위치가 뒤집히며 파바박 떨린다.
   clearRoomTreeDropTargets();
   roomTreeDropIndicator?.remove();
+  const point = document.elementFromPoint(clientX, clientY);
   if (!point || (!dom.roomList?.contains(point) && point !== dom.roomList)) return false;
 
   let container = point.closest?.(".room-tree-children") || null;

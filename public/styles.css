@@ -4271,6 +4271,7 @@ audio,
   background: rgba(88, 101, 242, 0.14);
 }
 .room-item-head {
+  position: relative;
   width: 100%;
   display: flex;
   align-items: center;
@@ -4315,7 +4316,14 @@ audio,
   display: inline-grid;
   place-items: center;
 }
+/* 삭제(×) 버튼은 흐름에서 빼 절대배치한다. flex 자리(20px+gap)를 차지하면
+   대표자 모드에서만 방 이름이 그만큼 일찍 잘려 비대표자와 표시가 달라지던 문제가 생긴다. */
 .room-del {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1;
   flex: none;
   width: 20px;
   height: 20px;
@@ -4326,9 +4334,16 @@ audio,
   color: var(--muted);
   font-size: 15px;
   opacity: 0;
+  pointer-events: none;
 }
 .room-item-head:hover .room-del {
   opacity: 1;
+  pointer-events: auto;
+}
+/* 오른쪽 뱃지(인원수/안읽음)가 있으면 ×와 겹치지 않게 hover 시 살짝 왼쪽으로 밀어준다. */
+.room-item-head:hover .room-count,
+.room-item-head:hover .room-unread {
+  margin-right: 22px;
 }
 .room-del:hover {
   background: var(--danger);
