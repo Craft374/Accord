@@ -1,6 +1,6 @@
 {
   "name": "accord",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "private": true,
   "description": "Low-latency private voice chat",
   "main": "electron/main.js",
