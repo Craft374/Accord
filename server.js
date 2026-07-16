@@ -15,7 +15,7 @@ seedAdminAccount();
 // 서버 버전. 클라이언트(앱) 버전은 package.json 의 version 이며 따로 관리한다.
 // 규칙: 클라 코드가 바뀌면 서버가 그 코드를 배포하므로 서버·클라 둘 다 올리고,
 //       서버만 바뀌면 서버 버전만 올린다.
-const VERSION = "2.3.11";
+const VERSION = "2.3.12";
 const PORT = Number(process.env.PORT || 25565);
 const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_HOST = cleanHost(process.env.PUBLIC_HOST || "");
@@ -23,6 +23,28 @@ const PUBLIC_URL = cleanPublicUrl(process.env.PUBLIC_URL || "", PUBLIC_HOST, POR
 const REQUIRE_HTTPS = process.env.VOICE_CHAT_REQUIRE_HTTPS === "1" || process.env.HTTPS === "1";
 const MAX_ROOM_LIMIT = 8;
 const PUBLIC_DIR = path.join(__dirname, "public");
+
+// ─── 보안/남용 방지 상한 ─────────────────────────────────
+// 외부 공격(메모리 고갈·연결/메시지 폭주·브루트포스)에 대한 서버측 방어값.
+const MAX_MESSAGE_BYTES = 12 * 1024 * 1024; // WebSocket 단일 메시지 최대 크기(그림판 문서 8MB 여유 포함)
+const MAX_CONN_PER_IP = 24;                 // 같은 IP 동시 연결 상한(여러 탭/기기 허용, 폭주는 차단)
+const MAX_TOTAL_CLIENTS = 500;              // 전체 동시 연결 상한(백스톱)
+const MSG_BUCKET_CAP = 600;                 // 메시지 토큰버킷 용량(순간 폭주 허용치)
+const MSG_REFILL_PER_MS = 0.3;              // 초당 300개 리필(정상 실시간 사용은 최대 ~80/s)
+const MSG_FLOOD_CLOSE = 1500;              // 이 수치를 넘게 초과 전송하면 연결을 끊는다
+const AUTH_ATTEMPT_MAX = 20;               // IP당 창(window) 내 로그인/회원가입 시도 상한
+const AUTH_WINDOW_MS = 60 * 1000;          // 인증 시도 집계 창
+// 로그인 전(pre-auth)에 허용하는 메시지 타입. 그 외는 로그인해야 처리한다.
+const PRE_AUTH_TYPES = new Set(["register", "login", "auth-token", "logout", "client-log"]);
+// 로그인 브라우저 연결의 Origin 검증에 추가로 허용할 오리진(쉼표 구분, 예: 리버스 프록시 도메인).
+const EXTRA_WS_ORIGINS = new Set(
+  String(process.env.ALLOW_WS_ORIGINS || "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean)
+);
+const ipConnCounts = new Map(); // ip -> 동시 연결 수
+const authAttempts = new Map(); // ip -> { count, resetAt }
 const CERT_FILE = path.resolve(process.env.SSL_CERT_FILE || path.join(__dirname, ".cert", "cert.pem"));
 const KEY_FILE = path.resolve(process.env.SSL_KEY_FILE || path.join(__dirname, ".cert", "key.pem"));
 const CERT_DIR = path.dirname(CERT_FILE);
@@ -201,12 +223,49 @@ function serveUpload(res, pathname) {
       sendText(res, 404, "Not found");
       return;
     }
+    // 저장형 XSS 방어: 이미지/영상/오디오 등 안전한 매체만 인라인으로 제공하고,
+    // HTML/SVG/스크립트 등은 원래 콘텐츠타입으로 렌더되지 않도록 첨부(다운로드)로 강제한다.
+    // (업로드한 HTML/SVG 를 직접 열어 앱 오리진에서 스크립트를 실행 → 토큰 탈취하는 공격 차단)
+    const inlineSafe = isInlineSafeUpload(filePath);
     sendCors(res, 200, {
-      "content-type": getContentType(filePath),
+      "content-type": inlineSafe ? getContentType(filePath) : "application/octet-stream",
+      "content-disposition": inlineSafe ? "inline" : "attachment",
       "cache-control": "public, max-age=31536000, immutable",
     });
     res.end(data);
   });
+}
+
+// 브라우저가 인라인 렌더해도 안전한(스크립트 실행 불가) 업로드 확장자만 허용한다.
+// SVG 는 스크립트를 품을 수 있어 제외한다.
+const INLINE_SAFE_UPLOAD_EXT = new Set([
+  ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico",
+  ".mp4", ".webm", ".mov", ".mp3", ".wav", ".ogg", ".m4a",
+]);
+function isInlineSafeUpload(filePath) {
+  return INLINE_SAFE_UPLOAD_EXT.has(path.extname(filePath).toLowerCase());
+}
+
+// WebSocket 연결의 Origin 을 검증한다(브라우저발 교차 사이트 연결 차단).
+// - Origin 이 없거나 null(네이티브/파일 로드 클라이언트)은 허용한다.
+// - http(s) Origin 은 요청 Host 와 호스트가 같을 때만 허용한다(정상 클라는 항상 same-origin).
+// - 환경변수 ALLOW_WS_ORIGINS 로 추가 오리진을 허용할 수 있다.
+function isAllowedWsOrigin(req) {
+  const origin = String(req.headers.origin || "").trim();
+  if (!origin || origin === "null") return true; // 네이티브/Electron 파일 로드 등
+  let originHost = "";
+  try {
+    originHost = new URL(origin).host.toLowerCase();
+  } catch {
+    return false; // 파싱 불가한 Origin 은 거부
+  }
+  if (EXTRA_WS_ORIGINS.has(origin.toLowerCase())) return true;
+  const hostHeader = String(req.headers.host || "").toLowerCase();
+  if (originHost && originHost === hostHeader) return true;
+  if (PUBLIC_HOST && originHost === PUBLIC_HOST.toLowerCase()) return true;
+  const bareOriginHost = originHost.split(":")[0];
+  if (bareOriginHost === "localhost" || bareOriginHost === "127.0.0.1") return true;
+  return false;
 }
 
 function handleUpgrade(req, socket) {
@@ -219,6 +278,26 @@ function handleUpgrade(req, socket) {
 
   const key = req.headers["sec-websocket-key"];
   if (!key) {
+    socket.destroy();
+    return;
+  }
+
+  if (!isAllowedWsOrigin(req)) {
+    logServer(`ws upgrade blocked: origin=${String(req.headers.origin || "").slice(0, 120)}`);
+    socket.destroy();
+    return;
+  }
+
+  // 연결 폭주 방어: IP당 · 전체 동시 연결 상한.
+  const ip = cleanIp(req.socket.remoteAddress);
+  if (clients.size >= MAX_TOTAL_CLIENTS) {
+    logServer(`ws upgrade rejected: server full (${clients.size})`);
+    socket.destroy();
+    return;
+  }
+  const ipCount = ipConnCounts.get(ip) || 0;
+  if (ipCount >= MAX_CONN_PER_IP) {
+    logServer(`ws upgrade rejected: too many connections ip=${ip} count=${ipCount}`);
     socket.destroy();
     return;
   }
@@ -251,8 +330,12 @@ function handleUpgrade(req, socket) {
     buffer: Buffer.alloc(0),
     closed: false,
     fragments: null,
+    fragmentBytes: 0, // 조립 중인 메시지의 누적 바이트(과도 누적 시 연결 차단)
     fragmentOpcode: 0,
-    ip: cleanIp(req.socket.remoteAddress),
+    ip,
+    msgTokens: MSG_BUCKET_CAP, // 메시지 토큰버킷(플러드 방어)
+    msgTokenTs: Date.now(),
+    floodStrikes: 0,
     userId: "",
     isAdmin: false,
     chatRoomId: "", // 현재 보고 있는 채팅방(입력중 표시 대상 판별용)
@@ -264,6 +347,7 @@ function handleUpgrade(req, socket) {
   };
 
   clients.set(client.id, client);
+  ipConnCounts.set(ip, ipCount + 1);
   logServer("client connected", client);
   socket.on("data", (chunk) => readFrames(client, chunk));
   socket.on("close", () => removeClient(client));
@@ -276,6 +360,20 @@ function handleClientError(error, socket) {
   socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
 }
 
+// 메시지 폭주 방어: 토큰버킷. 정상 실시간 사용(최대 ~80/s)엔 걸리지 않고
+// 초당 수백~수천 개를 쏟아붓는 플러드만 차단한다. 남는 토큰이 없으면 false.
+function allowClientMessage(client) {
+  const now = Date.now();
+  client.msgTokens = Math.min(
+    MSG_BUCKET_CAP,
+    client.msgTokens + (now - client.msgTokenTs) * MSG_REFILL_PER_MS
+  );
+  client.msgTokenTs = now;
+  if (client.msgTokens < 1) return false;
+  client.msgTokens -= 1;
+  return true;
+}
+
 function readFrames(client, chunk) {
   client.buffer = Buffer.concat([client.buffer, chunk]);
 
@@ -286,6 +384,13 @@ function readFrames(client, chunk) {
     const masked = (second & 0x80) === 0x80;
     let length = second & 0x7f;
     let offset = 2;
+
+    // RFC 6455: 클라이언트→서버 프레임은 반드시 마스킹되어야 한다.
+    // 마스킹되지 않은 프레임은 비정상(비브라우저/공격) 클라이언트로 보고 연결을 끊는다.
+    if (!masked) {
+      closeClient(client);
+      return;
+    }
 
     if (length === 126) {
       if (client.buffer.length < 4) return;
@@ -300,6 +405,13 @@ function readFrames(client, chunk) {
       }
       length = Number(big);
       offset = 10;
+    }
+
+    // 메모리 고갈 방어: 상한을 넘는 프레임을 선언하면 버퍼링하지 않고 즉시 끊는다.
+    if (length > MAX_MESSAGE_BYTES) {
+      logServer(`frame too large: ${length} bytes`, client);
+      closeClient(client);
+      return;
     }
 
     const maskLength = masked ? 4 : 0;
@@ -325,11 +437,22 @@ function readFrames(client, chunk) {
     if (opcode === 0) {
       if (!Array.isArray(client.fragments)) continue; // 시작 없는 연속 프레임은 버린다.
       client.fragments.push(payload);
+      client.fragmentBytes += payload.length;
     } else if (opcode === 1 || opcode === 2) {
       client.fragments = [payload];
       client.fragmentOpcode = opcode;
+      client.fragmentBytes = payload.length;
     } else {
       continue;
+    }
+
+    // 연속 프레임 누적이 상한을 넘으면(조각내어 우회하는 메모리 고갈 시도) 끊는다.
+    if (client.fragmentBytes > MAX_MESSAGE_BYTES) {
+      logServer(`message too large: ${client.fragmentBytes} bytes`, client);
+      client.fragments = null;
+      client.fragmentBytes = 0;
+      closeClient(client);
+      return;
     }
 
     if (!fin) continue;
@@ -337,6 +460,21 @@ function readFrames(client, chunk) {
     const full = client.fragments.length === 1 ? client.fragments[0] : Buffer.concat(client.fragments);
     const op = client.fragmentOpcode;
     client.fragments = null;
+    client.fragmentBytes = 0;
+
+    // 메시지 폭주 방어: 완성된 데이터 메시지마다 속도를 검사한다(텍스트·바이너리 모두).
+    // 초과 시 파싱/처리 없이 버리고, 지속되면 연결을 끊는다.
+    if (!allowClientMessage(client)) {
+      client.floodStrikes += 1;
+      if (client.floodStrikes > MSG_FLOOD_CLOSE) {
+        logServer("message flood: closing connection", client);
+        closeClient(client);
+        return;
+      }
+      continue;
+    }
+    client.floodStrikes = 0;
+
     if (op !== 1) continue; // 텍스트 메시지만 처리
 
     try {
@@ -348,6 +486,16 @@ function readFrames(client, chunk) {
 }
 
 function handleMessage(client, message) {
+  // 방어: JSON 이 객체가 아니거나 type 이 문자열이 아니면 무시한다.
+  if (!message || typeof message !== "object" || Array.isArray(message) || typeof message.type !== "string") {
+    return;
+  }
+  // 로그인 전에는 인증/진단 메시지만 처리한다(pre-auth 공격 표면 축소).
+  if (!client.userId && !PRE_AUTH_TYPES.has(message.type)) {
+    send(client, { type: "error", message: "로그인이 필요합니다." });
+    return;
+  }
+
   if (handleAuthMessage(client, message)) return;
   if (handleAdminMessage(client, message)) return;
   if (handleChannelMessage(client, message)) return;
@@ -400,9 +548,25 @@ function handleMessage(client, message) {
   }
 }
 
+// 로그인/회원가입 브루트포스 + scrypt CPU 소진 방어: IP당 창(window) 내 시도 상한.
+function authRateLimited(client) {
+  const now = Date.now();
+  let rec = authAttempts.get(client.ip);
+  if (!rec || now > rec.resetAt) {
+    rec = { count: 0, resetAt: now + AUTH_WINDOW_MS };
+    authAttempts.set(client.ip, rec);
+  }
+  rec.count += 1;
+  return rec.count > AUTH_ATTEMPT_MAX;
+}
+
 function handleAuthMessage(client, message) {
   switch (message.type) {
     case "register": {
+      if (authRateLimited(client)) {
+        send(client, { type: "auth-error", action: "register", message: "시도가 너무 많습니다. 잠시 후 다시 시도해 주세요." });
+        return true;
+      }
       const result = store.createUser({
         username: message.username,
         password: message.password,
@@ -418,6 +582,10 @@ function handleAuthMessage(client, message) {
       return true;
     }
     case "login": {
+      if (authRateLimited(client)) {
+        send(client, { type: "auth-error", action: "login", message: "시도가 너무 많습니다. 잠시 후 다시 시도해 주세요." });
+        return true;
+      }
       const result = store.authenticate(message.username, message.password);
       if (result.error) {
         send(client, { type: "auth-error", action: "login", message: result.error });
@@ -706,6 +874,10 @@ function handleRoomModeration(client, message) {
 function removeClient(client) {
   if (client.closed) return;
   client.closed = true;
+  // IP 동시 연결 카운트 감소(폭주 방어용).
+  const ipCount = ipConnCounts.get(client.ip) || 0;
+  if (ipCount <= 1) ipConnCounts.delete(client.ip);
+  else ipConnCounts.set(client.ip, ipCount - 1);
   logServer("client disconnected", client);
   if (client.userId) store.recordConnection(client.userId, client.ip, "disconnect");
   leaveMemo(client);
@@ -778,6 +950,14 @@ setInterval(() => {
     }
   }
 }, 25000).unref();
+
+// 인증 시도 집계(authAttempts)의 만료 항목을 주기적으로 정리해 메모리 누수를 막는다.
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, rec] of authAttempts) {
+    if (now > rec.resetAt) authAttempts.delete(ip);
+  }
+}, AUTH_WINDOW_MS).unref();
 
 // 실시간 통화방 접속 현황 + 온라인 유저를 모든 로그인 클라이언트에 알린다.
 function broadcastPresence() {
@@ -2157,6 +2337,10 @@ function sendCors(res, status, headers = {}) {
     "access-control-allow-origin": "*",
     "access-control-allow-methods": "GET, POST, OPTIONS",
     "access-control-allow-headers": "content-type, x-file-name, x-auth-token",
+    // 기본 보안 헤더: MIME 스니핑 방지 · 클릭재킹(iframe 삽입) 방지 · 리퍼러 미전송.
+    "x-content-type-options": "nosniff",
+    "x-frame-options": "DENY",
+    "referrer-policy": "no-referrer",
     ...headers,
   });
 }

@@ -436,6 +436,14 @@ const dom = {
   profileChipName: document.querySelector("#profileChipName"),
   profileChipCode: document.querySelector("#profileChipCode"),
   settingsTabs: document.querySelector("#settingsTabs"),
+  layout: document.querySelector(".layout"),
+  toggleRoomsButton: document.querySelector("#toggleRoomsButton"),
+  toggleMembersButton: document.querySelector("#toggleMembersButton"),
+  roomsResizeHandle: document.querySelector("#roomsResizeHandle"),
+  membersResizeHandle: document.querySelector("#membersResizeHandle"),
+  roomsCollapseToggle: document.querySelector("#roomsCollapseToggle"),
+  membersCollapseToggle: document.querySelector("#membersCollapseToggle"),
+  resetLayoutButton: document.querySelector("#resetLayoutButton"),
   focusBar: document.querySelector("#focusBar"),
   focusBarTitle: document.querySelector("#focusBarTitle"),
   focusExitButton: document.querySelector("#focusExitButton"),
@@ -498,6 +506,7 @@ async function init() {
   restoreScreenShareSettings();
   state.outputSink.supported = supportsOutputSinkSelection();
   bindEvents();
+  initLayoutControls();
   bindClientDiagnostics();
   bindScreenTestDiagnostics();
   applyMicGainLabel();
@@ -4504,6 +4513,119 @@ function setSettingsTab(tab) {
     pane.classList.toggle("active", pane.dataset.settingsPane === name);
   }
   if (name === "log") renderClientLogs();
+}
+
+// ===== 사이드바 레이아웃(폭 조절 · 접기) =====
+// 방 목록/멤버 목록의 폭을 가장자리 드래그로 조절하고, 상단 버튼/설정으로 여닫는다.
+// 값은 localStorage 에 저장하며 설정의 "기본 폭으로 초기화" 로 되돌린다.
+// 상수는 함수 내부에 두어 init() 조기 호출로 인한 TDZ 를 피한다.
+function layoutSizingConfig() {
+  return {
+    rooms: { key: "accordRoomsWidth", def: 232, min: 168, max: 460 },
+    members: { key: "accordMembersWidth", def: 208, min: 150, max: 380 },
+  };
+}
+
+function clampLayoutWidth(kind, value) {
+  const c = layoutSizingConfig()[kind];
+  const n = Number(value);
+  if (!Number.isFinite(n)) return c.def;
+  return Math.min(c.max, Math.max(c.min, Math.round(n)));
+}
+
+function applyLayoutSizing() {
+  if (!dom.layout) return;
+  const cfg = layoutSizingConfig();
+  const roomsW = clampLayoutWidth("rooms", localStorage.getItem(cfg.rooms.key) || cfg.rooms.def);
+  const membersW = clampLayoutWidth("members", localStorage.getItem(cfg.members.key) || cfg.members.def);
+  dom.layout.style.setProperty("--rooms-w", `${roomsW}px`);
+  dom.layout.style.setProperty("--members-w", `${membersW}px`);
+  const roomsCollapsed = localStorage.getItem("accordRoomsCollapsed") === "1";
+  const membersCollapsed = localStorage.getItem("accordMembersCollapsed") === "1";
+  dom.layout.classList.toggle("rooms-collapsed", roomsCollapsed);
+  dom.layout.classList.toggle("members-collapsed", membersCollapsed);
+  if (dom.toggleRoomsButton) dom.toggleRoomsButton.setAttribute("aria-pressed", String(roomsCollapsed));
+  if (dom.toggleMembersButton) dom.toggleMembersButton.setAttribute("aria-pressed", String(membersCollapsed));
+  if (dom.roomsCollapseToggle) dom.roomsCollapseToggle.checked = roomsCollapsed;
+  if (dom.membersCollapseToggle) dom.membersCollapseToggle.checked = membersCollapsed;
+}
+
+function setLayoutCollapsed(kind, collapsed) {
+  localStorage.setItem(kind === "rooms" ? "accordRoomsCollapsed" : "accordMembersCollapsed", collapsed ? "1" : "0");
+  applyLayoutSizing();
+}
+
+function resetLayoutSizing() {
+  const cfg = layoutSizingConfig();
+  localStorage.removeItem(cfg.rooms.key);
+  localStorage.removeItem(cfg.members.key);
+  localStorage.setItem("accordRoomsCollapsed", "0");
+  localStorage.setItem("accordMembersCollapsed", "0");
+  applyLayoutSizing();
+}
+
+function bindLayoutResizeHandle(handle, kind) {
+  if (!handle || !dom.layout) return;
+  const cfg = layoutSizingConfig()[kind];
+  const cssVar = kind === "rooms" ? "--rooms-w" : "--members-w";
+  let startX = 0;
+  let startWidth = 0;
+  let pointerId = 0;
+
+  const onMove = (event) => {
+    const delta = event.clientX - startX;
+    // 방 목록 핸들은 오른쪽으로 끌면 넓어지고, 멤버 목록 핸들은 왼쪽으로 끌면 넓어진다.
+    const next = clampLayoutWidth(kind, kind === "rooms" ? startWidth + delta : startWidth - delta);
+    dom.layout.style.setProperty(cssVar, `${next}px`);
+  };
+  const onUp = () => {
+    handle.classList.remove("dragging");
+    document.body.classList.remove("resizing-layout");
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    try { handle.releasePointerCapture(pointerId); } catch {}
+    const current = parseInt(dom.layout.style.getPropertyValue(cssVar), 10);
+    if (Number.isFinite(current)) localStorage.setItem(cfg.key, String(current));
+  };
+
+  handle.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    pointerId = event.pointerId;
+    startX = event.clientX;
+    const cur = parseInt(getComputedStyle(dom.layout).getPropertyValue(cssVar), 10);
+    startWidth = Number.isFinite(cur) ? cur : cfg.def;
+    handle.classList.add("dragging");
+    document.body.classList.add("resizing-layout");
+    try { handle.setPointerCapture(pointerId); } catch {}
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  });
+
+  // 더블클릭하면 해당 목록 폭을 기본값으로 되돌린다.
+  handle.addEventListener("dblclick", () => {
+    localStorage.removeItem(cfg.key);
+    applyLayoutSizing();
+  });
+}
+
+function initLayoutControls() {
+  applyLayoutSizing();
+  bindLayoutResizeHandle(dom.roomsResizeHandle, "rooms");
+  bindLayoutResizeHandle(dom.membersResizeHandle, "members");
+  dom.toggleRoomsButton?.addEventListener("click", () => {
+    setLayoutCollapsed("rooms", !dom.layout?.classList.contains("rooms-collapsed"));
+  });
+  dom.toggleMembersButton?.addEventListener("click", () => {
+    setLayoutCollapsed("members", !dom.layout?.classList.contains("members-collapsed"));
+  });
+  dom.roomsCollapseToggle?.addEventListener("change", () => {
+    setLayoutCollapsed("rooms", dom.roomsCollapseToggle.checked);
+  });
+  dom.membersCollapseToggle?.addEventListener("change", () => {
+    setLayoutCollapsed("members", dom.membersCollapseToggle.checked);
+  });
+  dom.resetLayoutButton?.addEventListener("click", resetLayoutSizing);
 }
 
 function toggleProfileModal(open) {

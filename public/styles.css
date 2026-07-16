@@ -298,6 +298,26 @@ body.dm-open .app {
   font-size: 12px;
 }
 
+/* 상단 막대 아이콘 토글(방/멤버 목록 여닫기).
+   전역 button min-height:36px / padding:0 14px 상속을 리셋해 정사각 유지. */
+.icon-toggle {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  min-height: 0;
+  padding: 0;
+  flex: none;
+  border-radius: var(--radius-sm);
+}
+.icon-toggle svg {
+  display: block;
+}
+.icon-toggle[aria-pressed="true"] {
+  background: var(--bg-elevated);
+  color: var(--heading);
+}
+
 .danger {
   background: var(--danger);
   color: #fff;
@@ -312,15 +332,79 @@ body.dm-open .app {
 .layout {
   flex: 1;
   display: grid;
-  grid-template-columns: 56px 232px minmax(0, 1fr) 208px;
+  grid-template-columns: 56px var(--rooms-w, 232px) minmax(0, 1fr) var(--members-w, 208px);
   gap: 6px;
   align-items: stretch;
   min-height: 0;
+  position: relative;
 }
 
-/* 멤버 리스트가 숨겨지면(채널 없음) 4번째 열을 접는다 */
-.layout:has(.member-list[hidden]) {
-  grid-template-columns: 56px 232px minmax(0, 1fr);
+/* 멤버 리스트가 숨겨지거나(채널 없음) 사용자가 접으면 4번째 열을 접는다 */
+.layout:has(.member-list[hidden]),
+.layout.members-collapsed {
+  grid-template-columns: 56px var(--rooms-w, 232px) minmax(0, 1fr);
+}
+
+/* 방 목록을 접으면 2번째 열을 접는다 */
+.layout.rooms-collapsed {
+  grid-template-columns: 56px minmax(0, 1fr) var(--members-w, 208px);
+}
+.layout.rooms-collapsed:has(.member-list[hidden]),
+.layout.rooms-collapsed.members-collapsed {
+  grid-template-columns: 56px minmax(0, 1fr);
+}
+.layout.rooms-collapsed .channel-panel {
+  display: none;
+}
+.layout.members-collapsed .member-list {
+  display: none;
+}
+
+/* ─── 사이드바 폭 조절 핸들 ───────────────────────────── */
+.layout-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  z-index: 6;
+  cursor: col-resize;
+  touch-action: none;
+}
+.layout-resize-handle::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 2px;
+  border-radius: 2px;
+  background: transparent;
+  transition: background 0.12s ease;
+}
+.layout-resize-handle:hover::before,
+.layout-resize-handle.dragging::before {
+  background: var(--blurple, #5865f2);
+}
+body.resizing-layout {
+  cursor: col-resize;
+  user-select: none;
+}
+body.resizing-layout * {
+  cursor: col-resize !important;
+}
+.rooms-resize-handle {
+  left: calc(62px + var(--rooms-w, 232px) - 4px);
+}
+.members-resize-handle {
+  right: calc(var(--members-w, 208px) - 4px);
+}
+.layout.rooms-collapsed .rooms-resize-handle,
+.layout.members-collapsed .members-resize-handle,
+.layout:has(.member-list[hidden]) .members-resize-handle,
+body.dm-open .layout-resize-handle,
+body.focus-mode .layout-resize-handle {
+  display: none;
 }
 
 /* ─── 집중모드 ───────────────────────────── */
