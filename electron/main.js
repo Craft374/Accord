@@ -228,6 +228,17 @@ function setupDisplayMedia() {
 }
 
 function setupNavigation() {
+  // 텍스트 클립보드도 비보안(http) 앱 화면에서는 Web Clipboard API가 거부될 수 있어
+  // 네이티브 경로를 제공한다(초대 코드·채팅·진단 복사 공용).
+  ipcMain.handle("copy-text", (event, text) => {
+    try {
+      clipboard.writeText(String(text || ""));
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err?.message || "복사 실패" };
+    }
+  });
+
   // 이미지 클립보드 복사: 브라우저 clipboard API는 비보안(http) 컨텍스트에서 막히므로
   // 일렉트론 네이티브 clipboard로 처리한다(맥/윈도 앱에서 그림판·채팅 이미지 복사 실패 해결).
   ipcMain.handle("copy-image", (event, dataUrl) => {

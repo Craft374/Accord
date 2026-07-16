@@ -201,6 +201,7 @@
           </div>
           <div class="chat-typing" id="chatTyping" aria-live="polite"></div>
           <div class="chat-composer">
+            <div class="chat-mention-menu" id="chatMentionMenu" role="listbox" aria-label="맨션할 멤버" hidden></div>
             <div class="chat-attachments" id="chatAttachments" hidden></div>
             <div class="chat-input-preview" id="chatInputPreview" hidden></div>
             <div class="chat-composer-row">
@@ -748,6 +749,12 @@
           <label class="field">
             <span>방 이름</span>
             <input id="roomModalName" autocomplete="off" maxlength="32" placeholder="예: 잡담" />
+          </label>
+          <label class="field">
+            <span>위치</span>
+            <select id="roomModalParent">
+              <option value="">최상위</option>
+            </select>
           </label>
           <div class="field">
             <span>종류</span>

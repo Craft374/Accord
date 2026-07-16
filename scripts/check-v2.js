@@ -35,6 +35,7 @@ const worklet = fs.readFileSync("public/noise-gate-worklet.js", "utf8");
 const main = fs.readFileSync("electron/main.js", "utf8");
 const preload = fs.readFileSync("electron/preload.js", "utf8");
 const server = fs.readFileSync("server.js", "utf8");
+const dataStore = fs.readFileSync("data-store.js", "utf8");
 const programWorklet = fs.readFileSync("public/program-audio-worklet.js", "utf8");
 const helperSource = fs.readFileSync("native/windows-process-loopback/Program.cs", "utf8");
 const serverEnvExample = fs.readFileSync("server.env.example", "utf8");
@@ -130,6 +131,20 @@ const checks = [
   [app.includes("getProcessingHintText") && app.includes("Chromium"), "processing hint status exists"],
   [app.includes("testAudioSettings") && html.includes("testAudioButton"), "audio diagnostics button exists"],
   [html.includes("versionLabel") && app.includes("state.config.version"), "server version label exists"],
+  [html.includes("chatMentionMenu") && app.includes("updateChatMentionMenu") && server.includes("cleanChatMentions"), "chat mentions include autocomplete and validated delivery metadata"],
+  [app.includes("roomGroupModal") && app.includes("channel:reorder-room-layout") && server.includes("channel:reorder-room-layout") && dataStore.includes("function reorderRoomLayout"), "nested room layout changes are persisted atomically"],
+  [app.includes("function normalizedRoomLayout") && dataStore.includes("function legacyRoomLayout") && dataStore.includes("roomLayout"), "legacy flat room groups migrate to the recursive layout"],
+  [app.includes("function buildRoomTree") && app.includes("room-tree-children") && app.includes("countLayoutRooms"), "rooms and nested groups share one recursive sibling order"],
+  [app.includes("serializeRoomTreeContainer") && app.includes("ensureRoomTreeDropIndicator") && app.includes('window.addEventListener("pointermove"') && app.includes('window.addEventListener("mouseup"') && !app.includes('addEventListener("dragstart"'), "room tree drag uses deterministic pointer events and one stable indicator"],
+  [app.includes("canDropRoomTreeIn") && app.includes("drag.source?.contains(container)") && dataStore.includes("ROOM_LAYOUT_MAX_DEPTH"), "room groups cannot be moved into themselves or their descendants"],
+  [html.includes("roomModalParent") && app.includes("parentGroupId") && app.includes("fillRoomParentSelect"), "new rooms and groups can be created at a selected tree location"],
+  [css.includes(".room-tree-empty") && css.includes(".room-tree-root") && !css.includes(".room-root.empty-root"), "the root drop target stays in normal flow without covering a group heading"],
+  [css.includes(".room-group-head:hover .room-group-count") && css.includes("position: absolute"), "room group actions only shift the count on hover"],
+  [app.includes('execCommand?.("insertText"') && app.includes('inputType: "insertText"'), "memo color insertion uses undo-aware editing"],
+  [app.includes("colors.push({ color, inner })") && app.includes("inlineMarkdown(entry.inner)"), "memo color markup preserves nested markdown"],
+  [app.includes("unwrapMemoBlockColor") && app.includes("guard < 32") && app.includes("memoBlockStyle(it.color"), "memo block colors preserve list markers and nested colors"],
+  [main.includes('ipcMain.handle("copy-text"') && preload.includes('ipcRenderer.invoke("copy-text"') && app.includes("writeTextToClipboard(code)"), "invite code copy uses desktop clipboard fallback"],
+  [css.includes(".rolemgr-list") && css.includes("flex: 1; min-height: 0; overflow-y: auto"), "role creation row stays below the flexible role list"],
   [
     // 클라 버전은 단일 정수. package.json 은 semver("N.0.0")이고 그 major 가 CLIENT_VERSION 과 같아야 한다.
     app.includes(`const CLIENT_VERSION = "${String(parseInt(pkg.version, 10))}"`),

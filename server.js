@@ -15,7 +15,7 @@ seedAdminAccount();
 // 서버 버전. 클라이언트(앱) 버전은 package.json 의 version 이며 따로 관리한다.
 // 규칙: 클라 코드가 바뀌면 서버가 그 코드를 배포하므로 서버·클라 둘 다 올리고,
 //       서버만 바뀌면 서버 버전만 올린다.
-const VERSION = "2.3.9";
+const VERSION = "2.3.10";
 const PORT = Number(process.env.PORT || 25565);
 const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_HOST = cleanHost(process.env.PUBLIC_HOST || "");
@@ -884,16 +884,44 @@ function handleChannelMessage(client, message) {
       });
     case "channel:add-room":
       return ownerAction(client, message.channelId, () => {
-        const r = store.addRoom(message.channelId, message.name, message.roomType);
+        const r = store.addRoom(message.channelId, message.name, message.roomType, message.parentGroupId);
+        if (r.error) return channelError(client, r.error);
+        notifyChannelMembers(message.channelId);
+        return true;
+      });
+    case "channel:add-room-group":
+      return ownerAction(client, message.channelId, () => {
+        const r = store.addRoomGroup(message.channelId, message.name, message.parentGroupId);
+        if (r.error) return channelError(client, r.error);
+        notifyChannelMembers(message.channelId);
+        return true;
+      });
+    case "channel:rename-room-group":
+      return ownerAction(client, message.channelId, () => {
+        const r = store.renameRoomGroup(message.channelId, message.groupId, message.name);
+        if (r.error) return channelError(client, r.error);
+        notifyChannelMembers(message.channelId);
+        return true;
+      });
+    case "channel:remove-room-group":
+      return ownerAction(client, message.channelId, () => {
+        const r = store.removeRoomGroup(message.channelId, message.groupId);
+        if (r.error) return channelError(client, r.error);
+        notifyChannelMembers(message.channelId);
+        return true;
+      });
+    case "channel:reorder-room-layout":
+      return ownerAction(client, message.channelId, () => {
+        const r = store.reorderRoomLayout(message.channelId, message.layout);
         if (r.error) return channelError(client, r.error);
         notifyChannelMembers(message.channelId);
         return true;
       });
     case "channel:remove-room":
       return ownerAction(client, message.channelId, () => {
-        evictRoom(message.roomId);
         const r = store.removeRoom(message.channelId, message.roomId);
         if (r.error) return channelError(client, r.error);
+        evictRoom(message.roomId);
         notifyChannelMembers(message.channelId);
         return true;
       });
@@ -1228,6 +1256,7 @@ function handleChatMessage(client, message) {
       }
       const text = String(message.text || "").slice(0, CHAT_TEXT_MAX).replace(/\s+$/, "");
       const files = cleanChatFiles(message.files);
+      const mentions = cleanChatMentions(ctx.channel, message.mentions, text);
       if (!text && !files.length) {
         send(client, { type: "chat-error", message: "빈 메시지는 보낼 수 없습니다." });
         return true;
@@ -1253,6 +1282,7 @@ function handleChatMessage(client, message) {
         name: user ? user.displayName : client.name,
         code: user ? user.code : "",
         text,
+        mentions,
         files,
         at: Date.now(),
       };
@@ -1294,6 +1324,7 @@ function handleChatMessage(client, message) {
         return true;
       }
       const text = String(message.text || "").slice(0, CHAT_TEXT_MAX).replace(/\s+$/, "");
+      const mentions = cleanChatMentions(ctx.channel, message.mentions, text);
       if (!text) {
         send(client, { type: "chat-error", message: "빈 메시지로 수정할 수 없습니다." });
         return true;
@@ -1306,14 +1337,40 @@ function handleChatMessage(client, message) {
           return true;
         }
       }
-      const r = store.editMessage(ctx.room.id, message.msgId, client.userId, text);
+      const r = store.editMessage(ctx.room.id, message.msgId, client.userId, text, mentions);
       if (r.error) { send(client, { type: "chat-error", message: r.error }); return true; }
-      broadcastChat(ctx.channel, { type: "chat:edited", roomId: ctx.room.id, msgId: message.msgId, text: r.message.text, editedAt: r.message.editedAt });
+      broadcastChat(ctx.channel, {
+        type: "chat:edited",
+        roomId: ctx.room.id,
+        msgId: message.msgId,
+        text: r.message.text,
+        mentions: r.message.mentions || [],
+        editedAt: r.message.editedAt,
+      });
       return true;
     }
     default:
       return false;
   }
+}
+
+function cleanChatMentions(channel, value, text) {
+  if (!Array.isArray(value)) return [];
+  const members = new Set(Array.isArray(channel?.members) ? channel.members : []);
+  const result = [];
+  for (const raw of value) {
+    const id = String(raw || "");
+    const user = members.has(id) ? store.findById(id) : null;
+    const name = String(user?.displayName || "");
+    const appears = name && new RegExp(`(^|[\\s([{])@${escapeRegex(name)}(?=$|[\\s.,!?…:;)\\]}>])`, "u").test(String(text || ""));
+    if (appears && !result.includes(id)) result.push(id);
+    if (result.length >= 50) break;
+  }
+  return result;
+}
+
+function escapeRegex(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 // roomId 로 채팅방과 채널을 찾고 멤버십을 확인한다. 실패 시 에러 전송 후 null.

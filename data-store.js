@@ -33,6 +33,7 @@ const BANNER_MAX_LEN = 900000; // 프로필 배경 이미지 data URL 최대 길
 const ROOM_TYPES = ["voice", "chat", "memo", "draw", "log"];
 const DEFAULT_ROOM_LIMIT = 8; // 통화방 기본 정원
 const ROOM_LIMIT_MAX = 99;
+const ROOM_LAYOUT_MAX_DEPTH = 32;
 
 let db = { users: [], codeCounter: 0 };
 let sessions = {}; // token -> { userId, createdAt }
@@ -397,6 +398,8 @@ function newId() {
 
 function createChannel(ownerId, name) {
   if (!ownerId) return { error: "로그인이 필요합니다." };
+  const voiceRoom = { id: newId(), name: "일반", type: "voice", limit: DEFAULT_ROOM_LIMIT };
+  const chatRoom = { id: newId(), name: "공지", type: "chat" };
   const channel = {
     id: newId(),
     name: cleanChannelName(name),
@@ -408,9 +411,11 @@ function createChannel(ownerId, name) {
     roles: [], // 권한 역할 목록 [{ id, name, color, memberIds:[], manageEmoji }]
     emojis: [], // 커스텀 이모지 [{ id, name, url, by, at }]
     fonts: [], // 업로드한 공유 글꼴 [{ id, name, url, by, at }]
-    rooms: [
-      { id: newId(), name: "일반", type: "voice", limit: DEFAULT_ROOM_LIMIT },
-      { id: newId(), name: "공지", type: "chat" },
+    roomGroups: [], // 방 목록 그룹 메타데이터. 중첩·혼합 순서는 roomLayout에 저장한다.
+    rooms: [voiceRoom, chatRoom],
+    roomLayout: [
+      { kind: "room", id: voiceRoom.id },
+      { kind: "room", id: chatRoom.id },
     ],
     createdAt: Date.now(),
   };
@@ -510,13 +515,226 @@ function removeMember(channelId, userId) {
   return { channel };
 }
 
-function addRoom(channelId, name, type) {
+function cleanRoomGroupName(value) {
+  return String(value || "").trim().slice(0, 32) || "새 그룹";
+}
+
+function roomGroupsOf(channel) {
+  return Array.isArray(channel?.roomGroups) ? channel.roomGroups : [];
+}
+
+// 기존 평면 데이터는 현재 화면 순서(루트 방 -> 그룹별 방) 그대로 트리로 해석한다.
+// 새 형식의 layout만 손상된 경우에는 legacy 부모 필드라도 살려 중첩 구조를 최대한 보존한다.
+function legacyRoomLayout(channel) {
+  const rooms = Array.isArray(channel?.rooms) ? channel.rooms : [];
+  const groups = roomGroupsOf(channel);
+  const validGroupIds = new Set(groups.map((group) => group.id));
+  // 이미 손상돼 ID가 중복된 데이터에서는 같은 객체를 여러 부모에 연결하지 않는다.
+  if (validGroupIds.size !== groups.length) {
+    const flat = rooms
+      .filter((room) => !validGroupIds.has(room.groupId))
+      .map((room) => ({ kind: "room", id: room.id }));
+    for (const group of groups) {
+      flat.push({
+        kind: "group",
+        id: group.id,
+        children: rooms
+          .filter((room) => room.groupId === group.id)
+          .map((room) => ({ kind: "room", id: room.id })),
+      });
+    }
+    return flat;
+  }
+  const groupsById = new Map(groups.map((group) => [group.id, group]));
+  const groupNodes = new Map(groups.map((group) => [group.id, { kind: "group", id: group.id, children: [] }]));
+  const layout = rooms
+    .filter((room) => !validGroupIds.has(room.groupId))
+    .map((room) => ({ kind: "room", id: room.id }));
+
+  for (const group of groups) {
+    const node = groupNodes.get(group.id);
+    node.children.push(...rooms
+      .filter((room) => room.groupId === group.id)
+      .map((room) => ({ kind: "room", id: room.id })));
+  }
+
+  const safeParentId = (group) => {
+    const parentId = String(group?.parentGroupId || "");
+    if (!validGroupIds.has(parentId) || parentId === group.id) return "";
+    const seen = new Set([group.id]);
+    let currentId = parentId;
+    while (currentId) {
+      if (seen.has(currentId)) return "";
+      seen.add(currentId);
+      const nextId = String(groupsById.get(currentId)?.parentGroupId || "");
+      currentId = validGroupIds.has(nextId) ? nextId : "";
+    }
+    return parentId;
+  };
+
+  for (const group of groups) {
+    const parentId = safeParentId(group);
+    const target = parentId ? groupNodes.get(parentId)?.children : layout;
+    (target || layout).push(groupNodes.get(group.id));
+  }
+  return layout;
+}
+
+// 클라이언트가 보낸 구조는 기존 방과 그룹을 정확히 한 번씩 포함해야 한다.
+// 검증 중에는 원본이나 채널 데이터를 건드리지 않고 정규화된 새 배열만 만든다.
+function validateRoomLayout(channel, value) {
+  if (!Array.isArray(value)) return { error: "방 목록 구조가 올바르지 않습니다." };
+  const rooms = Array.isArray(channel?.rooms) ? channel.rooms : [];
+  const groups = roomGroupsOf(channel);
+  const roomIds = new Set(rooms.map((room) => room.id));
+  const groupIds = new Set(groups.map((group) => group.id));
+  if (roomIds.size !== rooms.length || groupIds.size !== groups.length) {
+    return { error: "방 또는 그룹 ID가 중복되어 있습니다." };
+  }
+  const seenRooms = new Set();
+  const seenGroups = new Set();
+
+  const walk = (nodes, depth, ancestors) => {
+    if (!Array.isArray(nodes)) return { error: "그룹의 하위 목록이 올바르지 않습니다." };
+    if (depth > ROOM_LAYOUT_MAX_DEPTH) {
+      return { error: `그룹은 최대 ${ROOM_LAYOUT_MAX_DEPTH}단계까지 중첩할 수 있습니다.` };
+    }
+    const normalized = [];
+    for (const raw of nodes) {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+        return { error: "방 목록 항목이 올바르지 않습니다." };
+      }
+      const id = String(raw.id || "");
+      if (raw.kind === "room") {
+        if (!roomIds.has(id)) return { error: "존재하지 않는 방이 포함되어 있습니다." };
+        if (seenRooms.has(id)) return { error: "같은 방이 두 번 이상 포함되어 있습니다." };
+        if (raw.children !== undefined) return { error: "방에는 하위 항목을 둘 수 없습니다." };
+        seenRooms.add(id);
+        normalized.push({ kind: "room", id });
+        continue;
+      }
+      if (raw.kind !== "group") return { error: "방 목록 항목 종류가 올바르지 않습니다." };
+      if (!groupIds.has(id)) return { error: "존재하지 않는 그룹이 포함되어 있습니다." };
+      if (ancestors.has(id)) return { error: "그룹을 자기 하위에 둘 수 없습니다." };
+      if (seenGroups.has(id)) return { error: "같은 그룹이 두 번 이상 포함되어 있습니다." };
+      if (!Array.isArray(raw.children)) return { error: "그룹의 하위 목록이 올바르지 않습니다." };
+      seenGroups.add(id);
+      const nextAncestors = new Set(ancestors);
+      nextAncestors.add(id);
+      const children = walk(raw.children, depth + 1, nextAncestors);
+      if (children.error) return children;
+      normalized.push({ kind: "group", id, children: children.layout });
+    }
+    return { layout: normalized };
+  };
+
+  const result = walk(value, 0, new Set());
+  if (result.error) return result;
+  if (seenRooms.size !== roomIds.size || seenGroups.size !== groupIds.size) {
+    return { error: "방 목록에 누락된 방 또는 그룹이 있습니다." };
+  }
+  return result;
+}
+
+function canonicalRoomLayout(channel) {
+  if (Array.isArray(channel?.roomLayout)) {
+    const current = validateRoomLayout(channel, channel.roomLayout);
+    if (!current.error) return current.layout;
+  }
+  return legacyRoomLayout(channel);
+}
+
+function findRoomLayoutGroupChildren(nodes, groupId) {
+  for (const node of nodes) {
+    if (node.kind !== "group") continue;
+    if (node.id === groupId) return node.children;
+    const nested = findRoomLayoutGroupChildren(node.children, groupId);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+function removeRoomLayoutNode(nodes, kind, id, promoteChildren = false) {
+  for (let index = 0; index < nodes.length; index += 1) {
+    const node = nodes[index];
+    if (node.kind === kind && node.id === id) {
+      const replacement = promoteChildren && node.kind === "group" ? node.children : [];
+      nodes.splice(index, 1, ...replacement);
+      return true;
+    }
+    if (node.kind === "group" && removeRoomLayoutNode(node.children, kind, id, promoteChildren)) return true;
+  }
+  return false;
+}
+
+function indexRoomLayout(layout) {
+  const roomIds = [];
+  const groupIds = [];
+  const roomParents = new Map();
+  const groupParents = new Map();
+  const walk = (nodes, parentGroupId) => {
+    for (const node of nodes) {
+      if (node.kind === "room") {
+        roomIds.push(node.id);
+        roomParents.set(node.id, parentGroupId);
+      } else {
+        groupIds.push(node.id);
+        groupParents.set(node.id, parentGroupId);
+        walk(node.children, node.id);
+      }
+    }
+  };
+  walk(layout, "");
+  return { roomIds, groupIds, roomParents, groupParents };
+}
+
+// canonical 트리를 저장할 때 legacy 배열과 부모 필드도 같은 preorder로 맞춘다.
+function syncRoomLayout(channel, layout) {
+  const indexed = indexRoomLayout(layout);
+  const roomById = new Map(channel.rooms.map((room) => [room.id, room]));
+  const groupById = new Map(roomGroupsOf(channel).map((group) => [group.id, group]));
+  channel.rooms = indexed.roomIds.map((id) => {
+    const room = roomById.get(id);
+    const parentGroupId = indexed.roomParents.get(id);
+    if (parentGroupId) room.groupId = parentGroupId;
+    else delete room.groupId;
+    return room;
+  });
+  channel.roomGroups = indexed.groupIds.map((id) => {
+    const group = groupById.get(id);
+    const parentGroupId = indexed.groupParents.get(id);
+    if (parentGroupId) group.parentGroupId = parentGroupId;
+    else delete group.parentGroupId;
+    return group;
+  });
+  channel.roomLayout = layout;
+}
+
+function applyRoomLayout(channel, layout) {
+  const checked = validateRoomLayout(channel, layout);
+  if (checked.error) return checked;
+  syncRoomLayout(channel, checked.layout);
+  return { layout: checked.layout };
+}
+
+function addRoom(channelId, name, type, parentGroupId = "") {
   const channel = getChannel(channelId);
   if (!channel) return { error: "채널을 찾을 수 없습니다." };
+  const layout = canonicalRoomLayout(channel);
+  const parentId = String(parentGroupId || "");
+  const target = parentId ? findRoomLayoutGroupChildren(layout, parentId) : layout;
+  if (!target) return { error: "상위 그룹을 찾을 수 없습니다." };
   const roomType = ROOM_TYPES.includes(type) ? type : "voice";
   const room = { id: newId(), name: cleanRoomTypeName(name, roomType), type: roomType };
   if (roomType === "voice") room.limit = DEFAULT_ROOM_LIMIT;
-  channel.rooms.push(room);
+  const previousRooms = channel.rooms;
+  channel.rooms = [...channel.rooms, room];
+  target.push({ kind: "room", id: room.id });
+  const applied = applyRoomLayout(channel, layout);
+  if (applied.error) {
+    channel.rooms = previousRooms;
+    return applied;
+  }
   persistChannels();
   return { channel, room };
 }
@@ -524,7 +742,16 @@ function addRoom(channelId, name, type) {
 function removeRoom(channelId, roomId) {
   const channel = getChannel(channelId);
   if (!channel) return { error: "채널을 찾을 수 없습니다." };
-  channel.rooms = channel.rooms.filter((r) => r.id !== roomId);
+  if (!channel.rooms.some((room) => room.id === roomId)) return { error: "방을 찾을 수 없습니다." };
+  const layout = canonicalRoomLayout(channel);
+  if (!removeRoomLayoutNode(layout, "room", roomId)) return { error: "방 목록에서 방을 찾을 수 없습니다." };
+  const previousRooms = channel.rooms;
+  channel.rooms = channel.rooms.filter((room) => room.id !== roomId);
+  const applied = applyRoomLayout(channel, layout);
+  if (applied.error) {
+    channel.rooms = previousRooms;
+    return applied;
+  }
   persistChannels();
   deleteRoomMessages(roomId); // 방 삭제 시 저장된 채팅도 정리
   deleteRoomMemo(roomId);
@@ -540,6 +767,62 @@ function renameRoom(channelId, roomId, name) {
   room.name = cleanRoomTypeName(name, room.type);
   persistChannels();
   return { channel, room };
+}
+
+function addRoomGroup(channelId, name, parentGroupId = "") {
+  const channel = getChannel(channelId);
+  if (!channel) return { error: "채널을 찾을 수 없습니다." };
+  const layout = canonicalRoomLayout(channel);
+  const parentId = String(parentGroupId || "");
+  const target = parentId ? findRoomLayoutGroupChildren(layout, parentId) : layout;
+  if (!target) return { error: "상위 그룹을 찾을 수 없습니다." };
+  const group = { id: newId(), name: cleanRoomGroupName(name) };
+  const previousGroups = channel.roomGroups;
+  channel.roomGroups = [...roomGroupsOf(channel), group];
+  target.push({ kind: "group", id: group.id, children: [] });
+  const applied = applyRoomLayout(channel, layout);
+  if (applied.error) {
+    channel.roomGroups = previousGroups;
+    return applied;
+  }
+  persistChannels();
+  return { channel, group };
+}
+
+function renameRoomGroup(channelId, groupId, name) {
+  const channel = getChannel(channelId);
+  if (!channel) return { error: "채널을 찾을 수 없습니다." };
+  const group = roomGroupsOf(channel).find((g) => g.id === groupId);
+  if (!group) return { error: "그룹을 찾을 수 없습니다." };
+  group.name = cleanRoomGroupName(name);
+  persistChannels();
+  return { channel, group };
+}
+
+function removeRoomGroup(channelId, groupId) {
+  const channel = getChannel(channelId);
+  if (!channel) return { error: "채널을 찾을 수 없습니다." };
+  if (!roomGroupsOf(channel).some((group) => group.id === groupId)) return { error: "그룹을 찾을 수 없습니다." };
+  const layout = canonicalRoomLayout(channel);
+  if (!removeRoomLayoutNode(layout, "group", groupId, true)) return { error: "방 목록에서 그룹을 찾을 수 없습니다." };
+  const previousGroups = channel.roomGroups;
+  channel.roomGroups = roomGroupsOf(channel).filter((group) => group.id !== groupId);
+  const applied = applyRoomLayout(channel, layout);
+  if (applied.error) {
+    channel.roomGroups = previousGroups;
+    return applied;
+  }
+  persistChannels();
+  return { channel };
+}
+
+function reorderRoomLayout(channelId, layout) {
+  const channel = getChannel(channelId);
+  if (!channel) return { error: "채널을 찾을 수 없습니다." };
+  const applied = applyRoomLayout(channel, layout);
+  if (applied.error) return applied;
+  persistChannels();
+  return { channel };
 }
 
 // 읽기 전용 토글(채팅/메모/그림만). 통화방은 P2P라 서버가 발언을 막을 수 없어 제외.
@@ -942,6 +1225,12 @@ function findRoom(roomId) {
 }
 
 function channelSummary(channel) {
+  const roomLayout = canonicalRoomLayout(channel);
+  const layoutIndex = indexRoomLayout(roomLayout);
+  const groupById = new Map(roomGroupsOf(channel).map((group) => [group.id, group]));
+  const roomById = new Map(channel.rooms.map((room) => [room.id, room]));
+  const orderedGroups = layoutIndex.groupIds.map((id) => groupById.get(id));
+  const orderedRooms = layoutIndex.roomIds.map((id) => roomById.get(id));
   return {
     id: channel.id,
     name: channel.name,
@@ -962,13 +1251,20 @@ function channelSummary(channel) {
     userPerms: Object.fromEntries(Object.entries(channel.userPerms || {}).map(([k, v]) => [k, { ...v }])),
     emojis: emojisOf(channel).map((e) => ({ id: e.id, name: e.name, url: e.url })),
     fonts: fontsOf(channel).map((f) => ({ id: f.id, name: f.name, url: f.url })),
-    rooms: channel.rooms.map((r) => ({
+    roomLayout,
+    roomGroups: orderedGroups.map((g) => ({
+      id: g.id,
+      name: g.name,
+      ...(layoutIndex.groupParents.get(g.id) ? { parentGroupId: layoutIndex.groupParents.get(g.id) } : {}),
+    })),
+    rooms: orderedRooms.map((r) => ({
       id: r.id,
       name: r.name,
       type: r.type,
       ...(r.type === "voice" ? { limit: r.limit || DEFAULT_ROOM_LIMIT } : {}),
       ...(r.readOnly ? { readOnly: true } : {}),
       ...(r.perms ? { perms: r.perms } : {}),
+      ...(layoutIndex.roomParents.get(r.id) ? { groupId: layoutIndex.roomParents.get(r.id) } : {}),
     })),
     createdAt: channel.createdAt,
   };
@@ -1017,7 +1313,7 @@ function deleteRoomMessages(roomId) {
 }
 
 // 본인 메시지의 텍스트를 수정한다. { message } 또는 { error }.
-function editMessage(roomId, msgId, userId, text) {
+function editMessage(roomId, msgId, userId, text, mentions = []) {
   if (!isSafeRoomId(roomId)) return { error: "잘못된 방입니다." };
   const list = readJson(messagesFile(roomId), []);
   if (!Array.isArray(list)) return { error: "메시지를 찾을 수 없습니다." };
@@ -1025,6 +1321,7 @@ function editMessage(roomId, msgId, userId, text) {
   if (!msg) return { error: "메시지를 찾을 수 없습니다." };
   if (msg.userId !== userId) return { error: "본인 메시지만 수정할 수 있습니다." };
   msg.text = text;
+  msg.mentions = Array.isArray(mentions) ? mentions.slice(0, 50) : [];
   msg.editedAt = Date.now();
   writeJsonAtomic(messagesFile(roomId), list);
   return { message: msg };
@@ -1354,6 +1651,10 @@ module.exports = {
   addRoom,
   removeRoom,
   renameRoom,
+  addRoomGroup,
+  renameRoomGroup,
+  removeRoomGroup,
+  reorderRoomLayout,
   setRoomLimit,
   setRoomReadOnly,
   // 권한 역할

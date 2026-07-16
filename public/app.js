@@ -33,6 +33,15 @@ const ROOM_TYPE_META = {
   log: { icon: "📜", label: "전역 로그" },
 };
 
+function readCollapsedRoomGroups() {
+  try {
+    const list = JSON.parse(localStorage.getItem("accordCollapsedRoomGroups") || "[]");
+    return new Set(Array.isArray(list) ? list.filter((v) => typeof v === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
 const state = {
   config: { iceServers: [], maxRoomLimit: 8, version: "0.2.42", secure: false, protocol: "https" },
   settingsTab: "audio",
@@ -143,8 +152,10 @@ const state = {
   chatMessages: [],
   chatPendingFiles: [], // 업로드 완료돼 전송 대기 중인 파일 메타
   chatUnread: {}, // roomId -> 안 읽은 메시지 수
+  chatMentions: {}, // roomId -> 나를 맨션한 안 읽은 메시지 수
   chatTypers: new Map(), // userId -> { name, timer }
   chatTypingSentAt: 0,
+  collapsedRoomGroups: readCollapsedRoomGroups(), // channelId:groupId 형태의 사용자별 접기 상태
   // 메모장
   memo: null, // { roomId, channelId, name, rev, remotePending, saveTimer, view }
   // 전역 로그
@@ -193,6 +204,7 @@ const dom = {
   roomModal: document.querySelector("#roomModal"),
   roomModalClose: document.querySelector("#roomModalClose"),
   roomModalName: document.querySelector("#roomModalName"),
+  roomModalParent: document.querySelector("#roomModalParent"),
   roomModalConfirm: document.querySelector("#roomModalConfirm"),
   roomModalMessage: document.querySelector("#roomModalMessage"),
   roomRenameModal: document.querySelector("#roomRenameModal"),
@@ -216,6 +228,7 @@ const dom = {
   chatFileInput: document.querySelector("#chatFileInput"),
   chatInput: document.querySelector("#chatInput"),
   chatInputPreview: document.querySelector("#chatInputPreview"),
+  chatMentionMenu: document.querySelector("#chatMentionMenu"),
   chatEmojiButton: document.querySelector("#chatEmojiButton"),
   chatSendButton: document.querySelector("#chatSendButton"),
   chatComposerHint: document.querySelector("#chatComposerHint"),
@@ -1645,7 +1658,7 @@ async function handleSocketMessage(message) {
   if (message.type === "chat:edited") {
     if (state.activeChat?.roomId === message.roomId) {
       const m = state.chatMessages.find((x) => x.id === message.msgId);
-      if (m) { m.text = message.text; m.editedAt = message.editedAt; }
+      if (m) { m.text = message.text; m.mentions = message.mentions || []; m.editedAt = message.editedAt; }
       if (chatEditingId === message.msgId) chatEditingId = "";
       renderChatMessages();
     }
@@ -6547,78 +6560,286 @@ function renderRooms() {
   // 미리보기 배너(대표가 특정 역할/유저 관점을 확인 중)
   if (rolePreview.active) dom.roomList.append(buildPreviewBanner(channel));
 
-  for (const room of channel.rooms) {
-    // 접근 권한이 없는 방은 목록에서 숨긴다(미리보기 중이면 그 관점 기준).
-    if (!canSeeRoom(channel, room)) continue;
-    const meta = ROOM_TYPE_META[room.type] || ROOM_TYPE_META.voice;
-    const item = document.createElement("div");
-    item.className = "room-item";
-    if (state.currentRoom?.id === room.id) item.classList.add("active");
-    if (state.activeChat?.roomId === room.id) item.classList.add("active");
-    if (state.memo?.roomId === room.id) item.classList.add("active");
-    if (state.draw?.roomId === room.id) item.classList.add("active");
-    if (state.activeLog?.roomId === room.id) item.classList.add("active");
-
-    const head = document.createElement("button");
-    head.className = "room-item-head";
-    head.dataset.roomId = room.id;
-    head.dataset.roomType = room.type;
-    const icon = document.createElement("span");
-    icon.className = "room-icon";
-    icon.textContent = meta.icon;
-    const name = document.createElement("span");
-    name.className = "room-name";
-    name.textContent = room.name;
-    head.append(icon, name);
-
-    const occupants = room.type === "voice" ? (state.presence[room.id] || []) : [];
-    if (occupants.length) {
-      const count = document.createElement("span");
-      count.className = "room-count";
-      count.textContent = String(occupants.length);
-      head.append(count);
-    }
-    const unread = room.type === "chat" ? (state.chatUnread[room.id] || 0) : 0;
-    if (unread > 0 && state.activeChat?.roomId !== room.id) {
-      const badge = document.createElement("span");
-      badge.className = "room-unread";
-      badge.textContent = unread > 99 ? "99+" : String(unread);
-      head.append(badge);
-    }
-    if (owner) {
-      const del = document.createElement("button");
-      del.className = "room-del";
-      del.dataset.roomDelete = room.id;
-      del.dataset.channelId = channel.id;
-      del.title = "방 삭제";
-      del.textContent = "×";
-      head.append(del);
-    }
-    item.append(head);
-
-    if (occupants.length) {
-      const occList = document.createElement("div");
-      occList.className = "room-occupants";
-      for (const occ of occupants) {
-        const row = document.createElement("div");
-        row.className = "room-occupant";
-        const dot = document.createElement("span");
-        dot.className = "occupant-dot";
-        row.append(dot, document.createTextNode(occ.name));
-        occList.append(row);
-      }
-      item.append(occList);
-    }
-    dom.roomList.append(item);
-  }
+  const layout = visibleRoomLayout(channel, normalizedRoomLayout(channel), owner);
+  dom.roomList.append(buildRoomTree(channel, layout, owner, "", true));
 
   if (owner) {
-    const add = document.createElement("button");
-    add.className = "room-add-button";
-    add.dataset.roomAdd = "1";
-    add.textContent = "+ 방 추가";
-    dom.roomList.append(add);
+    const actions = document.createElement("div");
+    actions.className = "room-list-actions";
+    const addRoom = document.createElement("button");
+    addRoom.className = "room-add-button";
+    addRoom.dataset.roomAdd = "1";
+    addRoom.textContent = "+ 방";
+    const addGroup = document.createElement("button");
+    addGroup.className = "room-add-button";
+    addGroup.dataset.roomGroupAdd = "1";
+    addGroup.textContent = "+ 그룹";
+    actions.append(addRoom, addGroup);
+    dom.roomList.append(actions);
   }
+}
+
+function legacyRoomLayout(channel) {
+  const groups = Array.isArray(channel.roomGroups) ? channel.roomGroups : [];
+  const groupIds = new Set(groups.map((group) => group.id));
+  const groupedRooms = new Map(groups.map((group) => [group.id, []]));
+  const root = [];
+  for (const room of channel.rooms || []) {
+    if (groupIds.has(room.groupId)) groupedRooms.get(room.groupId).push({ kind: "room", id: room.id });
+    else root.push({ kind: "room", id: room.id });
+  }
+  for (const group of groups) {
+    root.push({ kind: "group", id: group.id, children: groupedRooms.get(group.id) || [] });
+  }
+  return root;
+}
+
+// roomLayout 이 없는 기존 채널은 예전 groupId 배열 순서를 그대로 트리로 바꿔 보여 준다.
+// 잘못되거나 일부만 들어온 layout 때문에 방/그룹이 사라지지 않도록 누락 항목은 루트에 보충한다.
+function normalizedRoomLayout(channel) {
+  const rooms = Array.isArray(channel.rooms) ? channel.rooms : [];
+  const groups = Array.isArray(channel.roomGroups) ? channel.roomGroups : [];
+  const raw = channel.roomLayout;
+  if (!Array.isArray(raw) || (!raw.length && (rooms.length || groups.length))) return legacyRoomLayout(channel);
+
+  const roomIds = new Set(rooms.map((room) => room.id));
+  const groupIds = new Set(groups.map((group) => group.id));
+  const seenRooms = new Set();
+  const seenGroups = new Set();
+  const groupNodes = new Map();
+  const normalize = (nodes, ancestors = new Set()) => {
+    const result = [];
+    for (const node of Array.isArray(nodes) ? nodes : []) {
+      if (node?.kind === "room" && roomIds.has(node.id) && !seenRooms.has(node.id)) {
+        seenRooms.add(node.id);
+        result.push({ kind: "room", id: node.id });
+      } else if (node?.kind === "group" && groupIds.has(node.id) && !seenGroups.has(node.id) && !ancestors.has(node.id)) {
+        seenGroups.add(node.id);
+        const nextAncestors = new Set(ancestors);
+        nextAncestors.add(node.id);
+        const normalized = { kind: "group", id: node.id, children: normalize(node.children, nextAncestors) };
+        groupNodes.set(node.id, normalized);
+        result.push(normalized);
+      }
+    }
+    return result;
+  };
+  const layout = normalize(raw);
+
+  // 서버 갱신 중 생긴 부분 layout도 안전하게 표시한다. 기존 그룹 관계는 가능한 한 유지한다.
+  for (const group of groups) {
+    if (seenGroups.has(group.id)) continue;
+    const node = { kind: "group", id: group.id, children: [] };
+    seenGroups.add(group.id);
+    groupNodes.set(group.id, node);
+    layout.push(node);
+  }
+  for (const room of rooms) {
+    if (seenRooms.has(room.id)) continue;
+    const node = { kind: "room", id: room.id };
+    const parent = groupNodes.get(room.groupId);
+    if (parent) parent.children.push(node);
+    else layout.push(node);
+    seenRooms.add(room.id);
+  }
+  return layout;
+}
+
+function visibleRoomLayout(channel, layout, owner) {
+  const roomsById = new Map((channel.rooms || []).map((room) => [room.id, room]));
+  const filter = (nodes) => {
+    const result = [];
+    for (const node of nodes || []) {
+      if (node.kind === "room") {
+        const room = roomsById.get(node.id);
+        if (room && canSeeRoom(channel, room)) result.push(node);
+      } else if (node.kind === "group") {
+        const children = filter(node.children);
+        // 일반 멤버에게는 보이는 자손 방이 없는 그룹 전체를 숨긴다.
+        if (owner || children.length) result.push({ kind: "group", id: node.id, children });
+      }
+    }
+    return result;
+  };
+  return filter(layout);
+}
+
+function countLayoutRooms(nodes) {
+  let count = 0;
+  for (const node of nodes || []) count += node.kind === "room" ? 1 : countLayoutRooms(node.children);
+  return count;
+}
+
+function fillRoomParentSelect(select, channel, selectedId = "") {
+  if (!select || !channel) return;
+  select.innerHTML = "";
+  const root = document.createElement("option");
+  root.value = "";
+  root.textContent = "최상위";
+  select.append(root);
+  const groupsById = new Map((channel.roomGroups || []).map((group) => [group.id, group]));
+  const appendGroups = (nodes, depth = 0) => {
+    for (const node of nodes || []) {
+      if (node.kind !== "group") continue;
+      const group = groupsById.get(node.id);
+      if (!group) continue;
+      const option = document.createElement("option");
+      option.value = group.id;
+      option.textContent = `${"\u00a0\u00a0".repeat(depth)}${depth ? "↳ " : ""}${group.name}`;
+      select.append(option);
+      appendGroups(node.children, depth + 1);
+    }
+  };
+  appendGroups(normalizedRoomLayout(channel));
+  select.value = [...select.options].some((option) => option.value === selectedId) ? selectedId : "";
+}
+
+function buildRoomTree(channel, nodes, owner, parentGroupId, root = false) {
+  const body = document.createElement("div");
+  body.className = `room-group-rooms room-tree-children${root ? " room-tree-root" : ""}`;
+  body.dataset.roomTreeParent = parentGroupId || "";
+  const roomsById = new Map((channel.rooms || []).map((room) => [room.id, room]));
+  const groupsById = new Map((channel.roomGroups || []).map((group) => [group.id, group]));
+  for (const node of nodes || []) {
+    if (node.kind === "room") {
+      const room = roomsById.get(node.id);
+      if (room) body.append(buildRoomItem(channel, room, owner));
+    } else if (node.kind === "group") {
+      const group = groupsById.get(node.id);
+      if (group) body.append(buildRoomGroup(channel, group, node.children || [], owner));
+    }
+  }
+  if (owner && !(nodes || []).length) {
+    body.append(el("div", `room-group-empty room-tree-empty${root ? " room-root-empty" : ""}`,
+      root ? "그룹 없이 두기" : "여기로 방이나 그룹을 끌어오세요"));
+  }
+  return body;
+}
+
+function roomGroupCollapseKey(channelId, groupId) {
+  return `${channelId}:${groupId}`;
+}
+
+function isRoomGroupCollapsed(channelId, groupId) {
+  return state.collapsedRoomGroups.has(roomGroupCollapseKey(channelId, groupId));
+}
+
+function toggleRoomGroup(channelId, groupId) {
+  const key = roomGroupCollapseKey(channelId, groupId);
+  if (state.collapsedRoomGroups.has(key)) state.collapsedRoomGroups.delete(key);
+  else state.collapsedRoomGroups.add(key);
+  try { localStorage.setItem("accordCollapsedRoomGroups", JSON.stringify([...state.collapsedRoomGroups])); } catch {}
+  renderRooms();
+}
+
+function buildRoomGroup(channel, group, children, owner) {
+  const section = document.createElement("section");
+  section.className = "room-group room-tree-node";
+  section.dataset.roomGroupId = group.id;
+  section.dataset.roomNodeKind = "group";
+  section.dataset.roomNodeId = group.id;
+  if (owner) section.classList.add("room-group-draggable");
+  const collapsed = isRoomGroupCollapsed(channel.id, group.id);
+  if (collapsed) section.classList.add("collapsed");
+
+  const head = document.createElement("div");
+  head.className = "room-group-head";
+  const toggle = document.createElement("button");
+  toggle.className = "room-group-toggle";
+  toggle.dataset.roomGroupToggle = group.id;
+  toggle.dataset.channelId = channel.id;
+  toggle.setAttribute("aria-expanded", String(!collapsed));
+  if (owner) toggle.title = "드래그해 그룹 위치 변경";
+  toggle.innerHTML = `<span class="room-group-caret" aria-hidden="true">▾</span><span class="room-group-name"></span><span class="room-group-count">${countLayoutRooms(children)}</span>`;
+  toggle.querySelector(".room-group-name").textContent = group.name;
+  head.append(toggle);
+  if (owner) {
+    const rename = document.createElement("button");
+    rename.className = "room-group-action";
+    rename.dataset.roomGroupRename = group.id;
+    rename.title = "그룹 이름 변경";
+    rename.textContent = "✎";
+    const del = document.createElement("button");
+    del.className = "room-group-action danger";
+    del.dataset.roomGroupDelete = group.id;
+    del.title = "그룹 삭제 (내용은 상위 위치로 이동)";
+    del.textContent = "×";
+    head.append(rename, del);
+  }
+  section.append(head);
+
+  const body = buildRoomTree(channel, children, owner, group.id);
+  body.hidden = collapsed;
+  section.append(body);
+  return section;
+}
+
+function buildRoomItem(channel, room, owner) {
+  const meta = ROOM_TYPE_META[room.type] || ROOM_TYPE_META.voice;
+  const item = document.createElement("div");
+  item.className = "room-item room-tree-node";
+  item.dataset.roomNodeKind = "room";
+  item.dataset.roomNodeId = room.id;
+  if (owner) item.classList.add("room-draggable");
+  if (state.currentRoom?.id === room.id) item.classList.add("active");
+  if (state.activeChat?.roomId === room.id) item.classList.add("active");
+  if (state.memo?.roomId === room.id) item.classList.add("active");
+  if (state.draw?.roomId === room.id) item.classList.add("active");
+  if (state.activeLog?.roomId === room.id) item.classList.add("active");
+
+  const head = document.createElement("button");
+  head.className = "room-item-head";
+  head.dataset.roomId = room.id;
+  head.dataset.roomType = room.type;
+  const icon = document.createElement("span");
+  icon.className = "room-icon";
+  icon.textContent = meta.icon;
+  const name = document.createElement("span");
+  name.className = "room-name";
+  name.textContent = room.name;
+  head.append(icon, name);
+
+  const occupants = room.type === "voice" ? (state.presence[room.id] || []) : [];
+  if (occupants.length) {
+    const count = document.createElement("span");
+    count.className = "room-count";
+    count.textContent = String(occupants.length);
+    head.append(count);
+  }
+  const unread = room.type === "chat" ? (state.chatUnread[room.id] || 0) : 0;
+  const mentions = room.type === "chat" ? (state.chatMentions[room.id] || 0) : 0;
+  if (unread > 0 && state.activeChat?.roomId !== room.id) {
+    const badge = document.createElement("span");
+    badge.className = "room-unread" + (mentions > 0 ? " mention" : "");
+    badge.textContent = mentions > 0 ? "@" : (unread > 99 ? "99+" : String(unread));
+    badge.title = mentions > 0 ? `나를 맨션한 메시지 ${mentions}개` : `읽지 않은 메시지 ${unread}개`;
+    head.append(badge);
+  }
+  if (owner) {
+    const del = document.createElement("button");
+    del.className = "room-del";
+    del.dataset.roomDelete = room.id;
+    del.dataset.channelId = channel.id;
+    del.title = "방 삭제";
+    del.textContent = "×";
+    head.append(del);
+  }
+  item.append(head);
+
+  if (occupants.length) {
+    const occList = document.createElement("div");
+    occList.className = "room-occupants";
+    for (const occ of occupants) {
+      const row = document.createElement("div");
+      row.className = "room-occupant";
+      const dot = document.createElement("span");
+      dot.className = "occupant-dot";
+      row.append(dot, document.createTextNode(occ.name));
+      occList.append(row);
+    }
+    item.append(occList);
+  }
+  return item;
 }
 
 function renderMemberList() {
@@ -7538,8 +7759,301 @@ function onPermsModalChange(event) {
 }
 
 // ===== 채널 이벤트 · 모달 =====
+let roomGroupModalEl = null;
+let roomGroupEditId = "";
+
+function closeRoomGroupModal() {
+  roomGroupModalEl?.remove();
+  roomGroupModalEl = null;
+  roomGroupEditId = "";
+}
+
+function openRoomGroupModal(groupId = "", parentGroupId = "") {
+  const channel = currentChannel();
+  if (!channel || !isChannelOwner(channel)) return;
+  closeRoomGroupModal();
+  const group = (channel.roomGroups || []).find((g) => g.id === groupId) || null;
+  roomGroupEditId = group?.id || "";
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop";
+  backdrop.innerHTML = `
+    <div class="modal room-group-modal" role="dialog" aria-modal="true" aria-labelledby="roomGroupModalTitle">
+      <header class="modal-head">
+        <h2 id="roomGroupModalTitle">${group ? "그룹 이름 변경" : "방 그룹 만들기"}</h2>
+        <button class="ghost small" data-room-group-close="1" type="button">닫기</button>
+      </header>
+      <div class="modal-body">
+        <label class="field"><span>그룹 이름</span><input data-room-group-name maxlength="32" autocomplete="off" placeholder="예: 프로젝트" /></label>
+        ${group ? "" : '<label class="field"><span>위치</span><select data-room-group-parent></select></label>'}
+        <p class="account-message" data-room-group-message aria-live="polite"></p>
+        <div class="modal-actions"><button class="primary" data-room-group-save="1" type="button">${group ? "저장" : "만들기"}</button></div>
+      </div>
+    </div>`;
+  document.body.append(backdrop);
+  roomGroupModalEl = backdrop;
+  const input = backdrop.querySelector("[data-room-group-name]");
+  const parentSelect = backdrop.querySelector("[data-room-group-parent]");
+  input.value = group?.name || "";
+  if (parentSelect) fillRoomParentSelect(parentSelect, channel, parentGroupId);
+  const submit = () => {
+    const activeChannel = currentChannel();
+    const name = input.value.trim();
+    if (!activeChannel || !name) {
+      backdrop.querySelector("[data-room-group-message]").textContent = "그룹 이름을 입력해 주세요.";
+      input.focus();
+      return;
+    }
+    sendSocket({
+      type: roomGroupEditId ? "channel:rename-room-group" : "channel:add-room-group",
+      channelId: activeChannel.id,
+      ...(roomGroupEditId ? { groupId: roomGroupEditId } : { parentGroupId: parentSelect?.value || "" }),
+      name,
+    });
+    closeRoomGroupModal();
+  };
+  backdrop.addEventListener("click", (event) => {
+    if (event.target === backdrop || event.target.closest?.("[data-room-group-close]")) closeRoomGroupModal();
+    else if (event.target.closest?.("[data-room-group-save]")) submit();
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); submit(); }
+    else if (event.key === "Escape") closeRoomGroupModal();
+  });
+  window.setTimeout(() => { input.focus(); input.select(); }, 0);
+}
+
+let roomTreeDropIndicator = null;
+let roomPointerDrag = null;
+let suppressRoomClickUntil = 0;
+
+function ensureRoomTreeDropIndicator() {
+  if (!roomTreeDropIndicator) roomTreeDropIndicator = el("div", "room-tree-drop-indicator");
+  return roomTreeDropIndicator;
+}
+
+function clearRoomTreeDropTargets() {
+  dom.roomList?.querySelectorAll(".room-tree-children.drop-target").forEach((node) => node.classList.remove("drop-target"));
+}
+
+function directRoomGroupBody(section) {
+  return section?.querySelector?.(":scope > .room-tree-children") || null;
+}
+
+function canDropRoomTreeIn(container) {
+  if (!container?.matches?.(".room-tree-children") || !dom.roomList?.contains(container)) return false;
+  const drag = roomPointerDrag;
+  // 그룹을 자기 자신 또는 자신의 자손 그룹 안으로 넣으면 순환 구조가 된다.
+  return !(drag?.kind === "group" && drag.source?.contains(container));
+}
+
+function placeRoomTreeDropIndicator(container, before = null) {
+  if (!canDropRoomTreeIn(container)) return false;
+  const indicator = ensureRoomTreeDropIndicator();
+  const empty = [...container.children].find((child) => child.classList?.contains("room-tree-empty")) || null;
+  container.insertBefore(indicator, before?.parentElement === container ? before : empty);
+  container.classList.add("drop-target");
+  return true;
+}
+
+function expandRoomGroupForDrop(section) {
+  const body = directRoomGroupBody(section);
+  if (!body) return null;
+  if (!body.hidden || !section.dataset.roomGroupId) return;
+  body.hidden = false;
+  section.classList.remove("collapsed");
+  section.querySelector(":scope > .room-group-head [data-room-group-toggle]")?.setAttribute("aria-expanded", "true");
+  const channel = currentChannel();
+  if (channel) {
+    state.collapsedRoomGroups.delete(roomGroupCollapseKey(channel.id, section.dataset.roomGroupId));
+    try { localStorage.setItem("accordCollapsedRoomGroups", JSON.stringify([...state.collapsedRoomGroups])); } catch {}
+  }
+  return body;
+}
+
+function roomTreeBeforeNodeAt(container, clientY) {
+  for (const child of container.children) {
+    if (!child.matches?.(".room-tree-node") || child === roomTreeDropIndicator) continue;
+    const rect = child.dataset.roomNodeKind === "group"
+      ? (child.querySelector(":scope > .room-group-head") || child).getBoundingClientRect()
+      : child.getBoundingClientRect();
+    if (clientY < rect.top + rect.height / 2) return child;
+  }
+  return null;
+}
+
+function scrollRoomTreeForPointer(clientY) {
+  const list = dom.roomList;
+  if (!list) return;
+  const rect = list.getBoundingClientRect();
+  const edge = Math.min(56, rect.height / 4);
+  let delta = 0;
+  if (clientY < rect.top + edge) delta = -Math.ceil((rect.top + edge - clientY) / 4);
+  else if (clientY > rect.bottom - edge) delta = Math.ceil((clientY - (rect.bottom - edge)) / 4);
+  if (delta) list.scrollTop += Math.max(-18, Math.min(18, delta));
+}
+
+function updateRoomTreePointerDrop(clientX, clientY) {
+  const point = document.elementFromPoint(clientX, clientY);
+  clearRoomTreeDropTargets();
+  roomTreeDropIndicator?.remove();
+  if (!point || (!dom.roomList?.contains(point) && point !== dom.roomList)) return false;
+
+  let container = point.closest?.(".room-tree-children") || null;
+  let over = point.closest?.(".room-tree-node") || null;
+  // 빈 그룹 영역에서는 closest 노드가 그 영역을 소유한 그룹이므로 형제가 아니라 내부 드롭으로 본다.
+  if (over?.parentElement !== container) over = null;
+
+  if (over?.dataset.roomNodeKind === "group") {
+    const head = point.closest?.(".room-group-head");
+    if (head?.parentElement === over) {
+      const rect = head.getBoundingClientRect();
+      const ratio = rect.height ? (clientY - rect.top) / rect.height : 0;
+      if (ratio >= 0.25 && ratio <= 0.75) {
+        const body = directRoomGroupBody(over);
+        if (canDropRoomTreeIn(body)) {
+          expandRoomGroupForDrop(over);
+          return placeRoomTreeDropIndicator(body);
+        }
+      }
+    }
+  }
+
+  if (over && canDropRoomTreeIn(container)) {
+    const target = over.dataset.roomNodeKind === "group" ? (over.querySelector(":scope > .room-group-head") || over) : over;
+    const rect = target.getBoundingClientRect();
+    return placeRoomTreeDropIndicator(container, clientY > rect.top + rect.height / 2 ? over.nextSibling : over);
+  }
+
+  if (container && !canDropRoomTreeIn(container)) return false;
+  if (container && canDropRoomTreeIn(container)) {
+    return placeRoomTreeDropIndicator(container, roomTreeBeforeNodeAt(container, clientY));
+  }
+
+  // 트리 아래의 빈 영역(고정 추가 버튼 위 포함)은 루트 마지막 위치로 취급한다.
+  const root = dom.roomList.querySelector(".room-tree-root");
+  return root ? placeRoomTreeDropIndicator(root, roomTreeBeforeNodeAt(root, clientY)) : false;
+}
+
+function serializeRoomTreeNode(element, drag) {
+  const kind = element?.dataset.roomNodeKind;
+  const id = element?.dataset.roomNodeId;
+  if (kind === "room" && id) return { kind, id };
+  if (kind === "group" && id) {
+    return { kind, id, children: serializeRoomTreeContainer(directRoomGroupBody(element), drag) };
+  }
+  return null;
+}
+
+function serializeRoomTreeContainer(container, drag) {
+  const layout = [];
+  for (const child of container?.children || []) {
+    if (child === roomTreeDropIndicator) {
+      const moved = serializeRoomTreeNode(drag.source, drag);
+      if (moved) layout.push(moved);
+    } else if (child === drag.source) {
+      continue;
+    } else if (child.matches?.(".room-tree-node")) {
+      const node = serializeRoomTreeNode(child, drag);
+      if (node) layout.push(node);
+    }
+  }
+  return layout;
+}
+
+function roomLayoutContainsEveryNode(layout, channel) {
+  const expectedRooms = new Set((channel.rooms || []).map((room) => room.id));
+  const expectedGroups = new Set((channel.roomGroups || []).map((group) => group.id));
+  const seenRooms = new Set();
+  const seenGroups = new Set();
+  const visit = (nodes) => {
+    for (const node of nodes || []) {
+      if (node.kind === "room") {
+        if (!expectedRooms.has(node.id) || seenRooms.has(node.id)) return false;
+        seenRooms.add(node.id);
+      } else if (node.kind === "group") {
+        if (!expectedGroups.has(node.id) || seenGroups.has(node.id)) return false;
+        seenGroups.add(node.id);
+        if (!visit(node.children)) return false;
+      } else return false;
+    }
+    return true;
+  };
+  return visit(layout) && seenRooms.size === expectedRooms.size && seenGroups.size === expectedGroups.size;
+}
+
+function clearRoomPointerDrag() {
+  dom.roomList?.classList.remove("room-tree-drag-active", "room-pointer-drag-active");
+  dom.roomList?.querySelectorAll(".dragging, .dragging-group, .drop-target").forEach((node) => node.classList.remove("dragging", "dragging-group", "drop-target"));
+  roomTreeDropIndicator?.remove();
+  roomPointerDrag = null;
+}
+
+function finishRoomPointerDrag(event, commit) {
+  const drag = roomPointerDrag;
+  if (!drag) return;
+  if (drag.active) {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    suppressRoomClickUntil = Date.now() + 400;
+    const channel = currentChannel();
+    if (commit && drag.hasTarget && channel && isChannelOwner(channel)) {
+      const root = dom.roomList.querySelector(".room-tree-root");
+      const layout = serializeRoomTreeContainer(root, drag);
+      if (roomLayoutContainsEveryNode(layout, channel)) {
+        sendSocket({ type: "channel:reorder-room-layout", channelId: channel.id, layout });
+      }
+    }
+  }
+  clearRoomPointerDrag();
+}
+
+function bindRoomDragEvents() {
+  dom.roomList?.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || roomPointerDrag) return;
+    const channel = currentChannel();
+    if (!channel || !isChannelOwner(channel) || rolePreview.active) return;
+    const item = event.target?.closest?.('.room-item.room-draggable[data-room-node-kind="room"]');
+    if (item && !event.target?.closest?.("[data-room-delete]")) {
+      roomPointerDrag = { kind: "room", id: item.dataset.roomNodeId, source: item, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, active: false, hasTarget: false };
+    } else {
+      const group = event.target?.closest?.('.room-group.room-group-draggable[data-room-node-kind="group"]');
+      const head = event.target?.closest?.(".room-group-head");
+      if (!group || head?.parentElement !== group || event.target?.closest?.(".room-group-action")) return;
+      roomPointerDrag = { kind: "group", id: group.dataset.roomNodeId, source: group, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, active: false, hasTarget: false };
+    }
+  });
+
+  window.addEventListener("pointermove", (event) => {
+    const drag = roomPointerDrag;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!drag.active) {
+      if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 6) return;
+      drag.active = true;
+      roomTreeDropIndicator?.remove();
+      dom.roomList.classList.add("room-pointer-drag-active", "room-tree-drag-active");
+      drag.source.classList.add(drag.kind === "room" ? "dragging" : "dragging-group");
+    }
+    event.preventDefault();
+    scrollRoomTreeForPointer(event.clientY);
+    drag.hasTarget = updateRoomTreePointerDrop(event.clientX, event.clientY);
+  });
+
+  window.addEventListener("pointerup", (event) => {
+    if (roomPointerDrag?.pointerId === event.pointerId) finishRoomPointerDrag(event, true);
+  });
+  window.addEventListener("pointercancel", (event) => {
+    if (roomPointerDrag?.pointerId === event.pointerId) finishRoomPointerDrag(event, false);
+  });
+  // 일부 Chromium 드래그 경로에서 pointerup 없이 mouseup만 오는 경우도 종료를 보장한다.
+  window.addEventListener("mouseup", (event) => {
+    if (roomPointerDrag && event.button === 0) finishRoomPointerDrag(event, true);
+  });
+  window.addEventListener("blur", () => finishRoomPointerDrag(null, false));
+}
+
 function bindChannelEvents() {
   bindCropEvents();
+  bindRoomDragEvents();
   dom.channelIconInput?.addEventListener("change", () => {
     const file = dom.channelIconInput.files?.[0];
     const channel = currentChannel();
@@ -7568,6 +8082,11 @@ function bindChannelEvents() {
   });
 
   dom.roomList?.addEventListener("click", (event) => {
+    if (Date.now() < suppressRoomClickUntil) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     const del = event.target?.closest?.("[data-room-delete]");
     if (del) {
       event.stopPropagation();
@@ -7578,6 +8097,23 @@ function bindChannelEvents() {
     }
     const previewStop = event.target?.closest?.("[data-preview-stop]");
     if (previewStop) { stopRolePreview(); return; }
+    const groupToggle = event.target?.closest?.("[data-room-group-toggle]");
+    if (groupToggle) {
+      toggleRoomGroup(groupToggle.dataset.channelId, groupToggle.dataset.roomGroupToggle);
+      return;
+    }
+    const groupAdd = event.target?.closest?.("[data-room-group-add]");
+    if (groupAdd) { openRoomGroupModal(); return; }
+    const groupRename = event.target?.closest?.("[data-room-group-rename]");
+    if (groupRename) { openRoomGroupModal(groupRename.dataset.roomGroupRename); return; }
+    const groupDelete = event.target?.closest?.("[data-room-group-delete]");
+    if (groupDelete) {
+      const channel = currentChannel();
+      if (channel && window.confirm("이 그룹을 삭제할까요? 내부 방과 하위 그룹은 상위 위치로 이동합니다.")) {
+        sendSocket({ type: "channel:remove-room-group", channelId: channel.id, groupId: groupDelete.dataset.roomGroupDelete });
+      }
+      return;
+    }
     const add = event.target?.closest?.("[data-room-add]");
     if (add) { openRoomModal(); return; }
     const head = event.target?.closest?.(".room-item-head");
@@ -7657,19 +8193,27 @@ function bindChannelEvents() {
     const type = document.querySelector('input[name="roomType"]:checked')?.value || "voice";
     if (!name) { setRoomModalMessage("방 이름을 입력해 주세요."); return; }
     setRoomModalMessage("추가 중...", true);
-    sendSocket({ type: "channel:add-room", channelId: channel.id, name, roomType: type });
+    sendSocket({
+      type: "channel:add-room",
+      channelId: channel.id,
+      name,
+      roomType: type,
+      parentGroupId: dom.roomModalParent?.value || "",
+    });
     closeRoomModal();
   });
 
   // 채널 관리 모달
   dom.channelMenuClose?.addEventListener("click", closeChannelMenu);
   dom.channelMenuModal?.addEventListener("click", (e) => { if (e.target === dom.channelMenuModal) closeChannelMenu(); });
-  dom.copyInviteButton?.addEventListener("click", () => {
+  dom.copyInviteButton?.addEventListener("click", async () => {
     const code = dom.channelInviteCode.textContent || "";
-    navigator.clipboard?.writeText(code).then(
-      () => setChannelMenuMessage("초대 코드를 복사했습니다.", true),
-      () => setChannelMenuMessage("복사에 실패했습니다."),
-    );
+    try {
+      await writeTextToClipboard(code);
+      setChannelMenuMessage("초대 코드를 복사했습니다.", true);
+    } catch {
+      setChannelMenuMessage("복사에 실패했습니다.");
+    }
   });
   dom.channelRenameButton?.addEventListener("click", () => {
     const channel = currentChannel();
@@ -7778,6 +8322,7 @@ function openChatRoom(roomId) {
   state.chatPendingFiles = [];
   clearChatTypers();
   delete state.chatUnread[roomId];
+  delete state.chatMentions[roomId];
   document.body.classList.add("chat-open");
   if (dom.chatRoomName) dom.chatRoomName.textContent = found.room.name;
   if (dom.chatSubtitle) dom.chatSubtitle.textContent = found.channel.name;
@@ -7786,6 +8331,7 @@ function openChatRoom(roomId) {
   setChatHint("");
   if (dom.chatInput) { dom.chatInput.value = ""; autoResizeChatInput(); }
   clearChatInputPreview();
+  closeChatMentionMenu();
   closeEmojiPicker();
   applyChatReadOnly(found);
   sendSocket({ type: "chat:open", roomId });
@@ -7817,6 +8363,7 @@ function closeChatView() {
   state.activeChat = null;
   state.chatPendingFiles = [];
   clearChatTypers();
+  closeChatMentionMenu();
   closeEmojiPicker();
   clearChatInputPreview();
   document.body.classList.remove("chat-open");
@@ -7848,6 +8395,10 @@ function handleIncomingChat(msg) {
     if (nearBottom || msg.userId === state.auth.user?.id) scrollChatToBottom();
   } else {
     state.chatUnread[msg.roomId] = (state.chatUnread[msg.roomId] || 0) + 1;
+    if (Array.isArray(msg.mentions) && msg.mentions.includes(state.auth.user?.id)) {
+      state.chatMentions[msg.roomId] = (state.chatMentions[msg.roomId] || 0) + 1;
+      setMessage(`${msg.name || "누군가"}님이 회원님을 맨션했습니다.`);
+    }
     renderRooms();
   }
 }
@@ -7904,6 +8455,7 @@ function renderChatMessages() {
 function renderChatMessageBody(msg) {
   const wrap = document.createElement("div");
   wrap.className = "chat-msg";
+  if (Array.isArray(msg.mentions) && msg.mentions.includes(state.auth.user?.id)) wrap.classList.add("mentioned");
   // 편집 중이면 텍스트 대신 인라인 편집기를 보여준다.
   if (chatEditingId === msg.id) {
     wrap.append(buildChatEditor(msg));
@@ -7915,7 +8467,7 @@ function renderChatMessageBody(msg) {
     // 이모지만 보낸 메시지는 크게(점보) 표시한다.
     if (chatEmojiOnly(msg.text)) text.classList.add("jumbo");
     // 사용자가 입력한 텍스트를 이스케이프한 뒤 일부 마크다운(코드블록/인라인코드/굵게 등)만 허용
-    text.innerHTML = renderChatText(msg.text);
+    text.innerHTML = renderChatText(msg.text, undefined, msg.mentions);
     if (msg.editedAt) {
       const edited = document.createElement("span");
       edited.className = "chat-msg-edited";
@@ -7994,7 +8546,13 @@ function saveEditChatMessage(msgId, text) {
   const msg = state.chatMessages.find((m) => m.id === msgId);
   if (!trimmed) { setChatHint("빈 메시지로 수정할 수 없습니다. (지우려면 삭제를 쓰세요)"); return; }
   if (msg && trimmed === msg.text) { cancelEditChatMessage(); return; } // 변경 없음
-  sendSocket({ type: "chat:edit", roomId: state.activeChat.roomId, msgId, text: trimmed });
+  sendSocket({
+    type: "chat:edit",
+    roomId: state.activeChat.roomId,
+    msgId,
+    text: trimmed,
+    mentions: collectChatMentionIds(trimmed),
+  });
   chatEditingId = "";
   renderChatMessages();
 }
@@ -8099,8 +8657,7 @@ function closeChatContextMenu() {
 async function copyTextToClipboard(text) {
   // 일렉트론 앱은 비보안(http) 컨텍스트라 navigator.clipboard 가 없거나 거부됨 → execCommand 폴백.
   try {
-    if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
-    else copyTextWithFallback(text);
+    await writeTextToClipboard(text);
     setChatHint("복사했습니다.");
     setTimeout(() => setChatHint(""), 1500);
   } catch {
@@ -8497,7 +9054,7 @@ function highlightCode(code, lang) {
 
 // 채팅 메시지 텍스트: 이스케이프 후 코드블록/헤딩/인용/리스트/인라인 서식만 허용(XSS 안전).
 // 언어 태그(```cs 등)와 # 헤딩, > 인용, - / 1. 리스트, --- 구분선, :이모지: 를 지원한다.
-function renderChatText(src, emojiMap) {
+function renderChatText(src, emojiMap, mentionIds) {
   const map = emojiMap || activeChatEmojiMap();
   const str = String(src || "");
   // 1) 코드펜스(``` 또는 ```lang)를 먼저 분리해 블록으로 보호한다.
@@ -8521,13 +9078,13 @@ function renderChatText(src, emojiMap) {
       out.push(`<pre class="chat-code"${seg.lang ? ` data-lang="${escapeHtmlText(seg.lang)}"` : ""}>${langTag}<code>${highlightCode(seg.value, seg.lang)}</code></pre>`);
       continue;
     }
-    out.push(renderChatBlocks(seg.value.replace(/^\n+/, "").replace(/\n+$/, ""), map));
+    out.push(renderChatBlocks(seg.value.replace(/^\n+/, "").replace(/\n+$/, ""), map, mentionIds));
   }
   return out.join("");
 }
 
 // 코드펜스 사이의 일반 텍스트를 블록(헤딩/인용/리스트/문단) 단위로 렌더한다.
-function renderChatBlocks(text, map) {
+function renderChatBlocks(text, map, mentionIds) {
   if (!text) return "";
   const lines = text.split("\n");
   const html = [];
@@ -8535,7 +9092,7 @@ function renderChatBlocks(text, map) {
   let para = [];        // 연속된 일반 줄(문단) 버퍼
   const flushList = () => { if (list) { html.push(`</${list}>`); list = null; } };
   const flushPara = () => {
-    if (para.length) { html.push(`<p>${para.map((l) => inlineChat(l, map)).join("<br>")}</p>`); para = []; }
+    if (para.length) { html.push(`<p>${para.map((l) => inlineChat(l, map, mentionIds)).join("<br>")}</p>`); para = []; }
   };
   for (const line of lines) {
     const heading = line.match(/^(#{1,6})\s+(.*)$/);
@@ -8546,20 +9103,20 @@ function renderChatBlocks(text, map) {
     if (heading) {
       flushPara(); flushList();
       const lv = heading[1].length;
-      html.push(`<h${lv} class="chat-h">${inlineChat(heading[2], map)}</h${lv}>`);
+      html.push(`<h${lv} class="chat-h">${inlineChat(heading[2], map, mentionIds)}</h${lv}>`);
     } else if (hr) {
       flushPara(); flushList(); html.push('<hr class="chat-hr" />');
     } else if (quote) {
       flushPara(); flushList();
-      html.push(`<blockquote class="chat-quote">${inlineChat(quote[1], map)}</blockquote>`);
+      html.push(`<blockquote class="chat-quote">${inlineChat(quote[1], map, mentionIds)}</blockquote>`);
     } else if (ul) {
       flushPara();
       if (list !== "ul") { flushList(); html.push('<ul class="chat-list">'); list = "ul"; }
-      html.push(`<li>${inlineChat(ul[1], map)}</li>`);
+      html.push(`<li>${inlineChat(ul[1], map, mentionIds)}</li>`);
     } else if (ol) {
       flushPara();
       if (list !== "ol") { flushList(); html.push('<ol class="chat-list">'); list = "ol"; }
-      html.push(`<li>${inlineChat(ol[1], map)}</li>`);
+      html.push(`<li>${inlineChat(ol[1], map, mentionIds)}</li>`);
     } else {
       flushList();
       para.push(line);
@@ -8571,10 +9128,154 @@ function renderChatBlocks(text, map) {
 
 // 채팅용 인라인 서식(굵게/기울임/취소선/인라인코드/링크/커스텀 이모지).
 // inlineMarkdown 은 이미 이스케이프된 문자열을 받도록 설계돼 있어 먼저 escape 한다(XSS 안전).
-function inlineChat(str, map) {
-  let out = inlineMarkdown(escapeHtmlText(str));
+function inlineChat(str, map, mentionIds) {
+  const protectedMentions = protectChatMentions(str, mentionIds);
+  let out = inlineMarkdown(escapeHtmlText(protectedMentions.text));
   out = replaceCustomEmoji(out, map);
+  out = out.replace(/\u0002MENTION(\d+)\u0002/g, (whole, index) => protectedMentions.html[Number(index)] || whole);
   return out;
+}
+
+function regexEscape(text) {
+  return String(text || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function activeChatMentionMembers(mentionIds) {
+  const channel = activeChatChannel();
+  const allowed = Array.isArray(mentionIds) ? new Set(mentionIds) : null;
+  return (channel?.members || [])
+    .filter((member) => member?.id && member.displayName && (!allowed || allowed.has(member.id)))
+    .slice()
+    .sort((a, b) => String(b.displayName).length - String(a.displayName).length);
+}
+
+// 맨션을 마크다운 파싱 전에 자리표시자로 보호해 닉네임 안의 *, _, [] 등이 문법으로 해석되지 않게 한다.
+function protectChatMentions(value, mentionIds) {
+  let text = String(value || "");
+  const html = [];
+  for (const member of activeChatMentionMembers(mentionIds)) {
+    const name = String(member.displayName || "");
+    if (!name) continue;
+    const re = new RegExp(`(^|[\\s([{])@${regexEscape(name)}(?=$|[\\s.,!?…:;)\\]}>])`, "gu");
+    text = text.replace(re, (whole, prefix) => {
+      const index = html.length;
+      html.push(`<span class="chat-mention" data-profile-user="${escapeHtmlText(member.id)}">@${escapeHtmlText(name)}</span>`);
+      return `${prefix}\u0002MENTION${index}\u0002`;
+    });
+  }
+  return { text, html };
+}
+
+function collectChatMentionIds(value) {
+  const found = [];
+  const text = String(value || "");
+  for (const member of activeChatMentionMembers()) {
+    const name = String(member.displayName || "");
+    if (!name) continue;
+    const re = new RegExp(`(^|[\\s([{])@${regexEscape(name)}(?=$|[\\s.,!?…:;)\\]}>])`, "u");
+    if (re.test(text) && !found.includes(member.id)) found.push(member.id);
+  }
+  return found;
+}
+
+const chatMentionState = { items: [], index: 0, start: -1, end: -1 };
+
+function closeChatMentionMenu() {
+  chatMentionState.items = [];
+  chatMentionState.index = 0;
+  chatMentionState.start = -1;
+  chatMentionState.end = -1;
+  if (dom.chatMentionMenu) {
+    dom.chatMentionMenu.hidden = true;
+    dom.chatMentionMenu.innerHTML = "";
+  }
+}
+
+function updateChatMentionMenu() {
+  const input = dom.chatInput;
+  const menu = dom.chatMentionMenu;
+  if (!input || !menu || input.disabled || !state.activeChat) { closeChatMentionMenu(); return; }
+  const caret = input.selectionStart ?? input.value.length;
+  if (caret !== (input.selectionEnd ?? caret)) { closeChatMentionMenu(); return; }
+  const before = input.value.slice(0, caret);
+  const match = before.match(/(?:^|\s)@([^\s@]{0,24})$/u);
+  if (!match) { closeChatMentionMenu(); return; }
+  const query = (match[1] || "").toLocaleLowerCase("ko");
+  const items = activeChatMentionMembers()
+    .filter((member) => {
+      const name = String(member.displayName || "").toLocaleLowerCase("ko");
+      const code = String(member.code || "").toLocaleLowerCase("ko");
+      return !query || name.includes(query) || code.startsWith(query.replace(/^#/, ""));
+    })
+    .slice(0, 8);
+  if (!items.length) { closeChatMentionMenu(); return; }
+  chatMentionState.items = items;
+  chatMentionState.index = Math.min(chatMentionState.index, items.length - 1);
+  chatMentionState.start = caret - match[1].length - 1;
+  chatMentionState.end = caret;
+  renderChatMentionMenu();
+}
+
+function renderChatMentionMenu() {
+  const menu = dom.chatMentionMenu;
+  if (!menu || !chatMentionState.items.length) { closeChatMentionMenu(); return; }
+  menu.innerHTML = "";
+  chatMentionState.items.forEach((member, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "chat-mention-option" + (index === chatMentionState.index ? " active" : "");
+    button.dataset.mentionIndex = String(index);
+    button.setAttribute("role", "option");
+    button.setAttribute("aria-selected", String(index === chatMentionState.index));
+    const avatar = document.createElement("span");
+    avatar.className = "account-avatar small";
+    setAvatar(avatar, member);
+    const label = document.createElement("span");
+    label.className = "chat-mention-option-label";
+    const name = document.createElement("b");
+    name.textContent = member.displayName || "이름없음";
+    const code = document.createElement("em");
+    code.textContent = `#${member.code || "----"}`;
+    label.append(name, code);
+    button.append(avatar, label);
+    menu.append(button);
+  });
+  menu.hidden = false;
+}
+
+function insertChatMention(index = chatMentionState.index) {
+  const input = dom.chatInput;
+  const member = chatMentionState.items[index];
+  if (!input || !member || chatMentionState.start < 0) return;
+  const mention = `@${member.displayName} `;
+  const start = chatMentionState.start;
+  const end = chatMentionState.end;
+  input.setRangeText(mention, start, end, "end");
+  input.focus();
+  closeChatMentionMenu();
+  onChatInput();
+}
+
+function handleChatMentionKeydown(event) {
+  if (!chatMentionState.items.length || dom.chatMentionMenu?.hidden) return false;
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    const step = event.key === "ArrowDown" ? 1 : -1;
+    chatMentionState.index = (chatMentionState.index + step + chatMentionState.items.length) % chatMentionState.items.length;
+    renderChatMentionMenu();
+    return true;
+  }
+  if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") {
+    event.preventDefault();
+    insertChatMention();
+    return true;
+  }
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeChatMentionMenu();
+    return true;
+  }
+  return false;
 }
 
 // :name: 토큰을 커스텀 이모지 이미지로 치환(코드/링크 자리표시자는 건드리지 않음).
@@ -8756,8 +9457,9 @@ function sendChatMessage() {
     .filter((f) => f.url)
     .map((f) => ({ url: f.url, name: f.name, size: f.size, mime: f.mime, kind: f.kind }));
   if (!text && !files.length) return;
-  sendSocket({ type: "chat:send", roomId: state.activeChat.roomId, text, files });
+  sendSocket({ type: "chat:send", roomId: state.activeChat.roomId, text, files, mentions: collectChatMentionIds(text) });
   if (dom.chatInput) { dom.chatInput.value = ""; autoResizeChatInput(); }
+  closeChatMentionMenu();
   clearChatInputPreview();
   for (const f of state.chatPendingFiles) if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
   state.chatPendingFiles = [];
@@ -8769,6 +9471,7 @@ function sendChatMessage() {
 
 function onChatInput() {
   autoResizeChatInput();
+  updateChatMentionMenu();
   updateChatInputPreview();
   const now = Date.now();
   if (state.activeChat && now - state.chatTypingSentAt > 2500) {
@@ -8786,12 +9489,13 @@ function updateChatInputPreview() {
   const raw = dom.chatInput?.value || "";
   const map = activeChatEmojiMap();
   const hasEmoji = /:([a-zA-Z0-9_+-]{1,32}):/.test(raw) && Object.keys(map).length > 0;
-  if (!raw.trim() || (!CHAT_MD_HINT.test(raw) && !hasEmoji)) {
+  const mentions = collectChatMentionIds(raw);
+  if (!raw.trim() || (!CHAT_MD_HINT.test(raw) && !hasEmoji && !mentions.length)) {
     box.hidden = true;
     box.innerHTML = "";
     return;
   }
-  box.innerHTML = renderChatText(raw, map);
+  box.innerHTML = renderChatText(raw, map, mentions);
   box.classList.toggle("jumbo", chatEmojiOnly(raw, map));
   box.hidden = false;
 }
@@ -9221,10 +9925,22 @@ function bindChatEvents() {
   });
   dom.chatInput?.addEventListener("input", onChatInput);
   dom.chatInput?.addEventListener("keydown", (event) => {
+    if (handleChatMentionKeydown(event)) return;
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
       sendChatMessage();
     }
+  });
+  for (const eventName of ["click", "keyup"]) {
+    dom.chatInput?.addEventListener(eventName, (event) => {
+      if (eventName === "keyup" && ["ArrowDown", "ArrowUp", "Enter", "Tab", "Escape"].includes(event.key)) return;
+      updateChatMentionMenu();
+    });
+  }
+  dom.chatMentionMenu?.addEventListener("pointerdown", (event) => event.preventDefault());
+  dom.chatMentionMenu?.addEventListener("click", (event) => {
+    const option = event.target?.closest?.("[data-mention-index]");
+    if (option) insertChatMention(Number(option.dataset.mentionIndex));
   });
   dom.chatInput?.addEventListener("paste", (event) => {
     const items = event.clipboardData?.items;
@@ -9444,11 +10160,22 @@ function applyMemoColor(color) {
   const selected = el.value.slice(start, end) || "색 글자";
   const open = `{색:${hex}}`;
   const close = "{/색}";
-  el.value = el.value.slice(0, start) + open + selected + close + el.value.slice(end);
+  const replacement = open + selected + close;
+  // execCommand(insertText)는 Chromium/Electron의 textarea 실행취소 스택에 들어간다.
+  // 실패하는 브라우저에서는 setRangeText로 폴백하고 input 이벤트를 직접 보낸다.
+  el.focus();
+  el.setSelectionRange(start, end);
+  const inserted = document.execCommand?.("insertText", false, replacement) === true;
+  if (!inserted) {
+    el.setRangeText(replacement, start, end, "select");
+    el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: replacement }));
+  } else if (m.doc !== el.value) {
+    // 일부 WebView는 값은 바꾸지만 input 이벤트를 보내지 않는다.
+    onMemoInput();
+  }
   el.selectionStart = start + open.length;
   el.selectionEnd = start + open.length + selected.length; // 감싼 내용을 선택 상태로 둔다
-  el.focus();
-  onMemoInput();
+  sendMemoCursor();
 }
 
 // 편집기·미리보기 글자 크기를 함께 조절한다(Ctrl/Cmd+휠).
@@ -10063,7 +10790,7 @@ function bindMemoEvents() {
   dom.memoPanel?.querySelectorAll("[data-memo-color]").forEach((btn) => {
     btn.addEventListener("click", () => applyMemoColor(btn.dataset.memoColor));
   });
-  dom.memoColorPick?.addEventListener("input", () => applyMemoColor(dom.memoColorPick.value));
+  dom.memoColorPick?.addEventListener("change", () => applyMemoColor(dom.memoColorPick.value));
   // 미리보기의 체크박스/접기 버튼 클릭 처리(문서 원문을 직접 갱신).
   dom.memoPreview?.addEventListener("click", (event) => {
     const check = event.target?.closest?.("input.md-check");
@@ -12141,6 +12868,8 @@ function renderMarkdown(src) {
   });
   // 2) 전체 HTML 이스케이프(이후 삽입되는 태그는 우리가 만든 안전한 것뿐)
   text = escapeHtmlText(text);
+  // 여러 줄을 한 번에 색칠해도 각 줄의 목록·제목·인용 문법을 먼저 읽을 수 있게 한다.
+  text = expandMemoMultilineColors(text);
 
   const lines = text.split("\n");
   const html = [];
@@ -12152,7 +12881,9 @@ function renderMarkdown(src) {
   const foldSet = (state.memo && state.memo.folds) || null;
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
+    const coloredLine = unwrapMemoBlockColor(lines[i]);
+    const line = coloredLine.text;
+    const blockColor = coloredLine.color;
     const codeMatch = line.match(/^\u0000CODE(\d+)\u0000$/);
     if (codeMatch) {
       closeQuote();
@@ -12167,18 +12898,18 @@ function renderMarkdown(src) {
     const heading = line.match(/^(#{1,6})\s+(.*)$/);
     if (heading) {
       closeQuote();
-      html.push(`<h${heading[1].length}>${inlineMarkdown(heading[2])}</h${heading[1].length}>`);
+      html.push(`<h${heading[1].length}${memoBlockStyle(blockColor)}>${inlineMarkdown(heading[2])}</h${heading[1].length}>`);
       continue;
     }
     const quote = line.match(/^&gt;\s?(.*)$/); // '>' 는 이미 이스케이프됨
     if (quote) {
       if (!inQuote) { html.push("<blockquote>"); inQuote = true; }
-      html.push(`<p>${inlineMarkdown(quote[1])}</p>`);
+      html.push(`<p${memoBlockStyle(blockColor)}>${inlineMarkdown(quote[1])}</p>`);
       continue;
     }
     // 목록: 연속된 목록 줄을 한 블록으로 모아 들여쓰기(탭) 기준 중첩 트리로 렌더한다.
     // 그래야 '- 로 찍은 점을 탭으로 층 나누기', 체크박스, 접기가 모두 동작한다.
-    if (parseMemoListLine(line)) {
+    if (parseMemoListLine(lines[i])) {
       closeQuote();
       const items = [];
       let j = i;
@@ -12197,13 +12928,44 @@ function renderMarkdown(src) {
     const indented = line.match(/^([ \t]+)(\S[\s\S]*)$/);
     if (indented) {
       const level = memoIndentLevel(indented[1]);
-      html.push(`<p style="margin-left:${(level * 1.6).toFixed(2)}em">${inlineMarkdown(indented[2])}</p>`);
+      html.push(`<p${memoBlockStyle(blockColor, `margin-left:${(level * 1.6).toFixed(2)}em`)}>${inlineMarkdown(indented[2])}</p>`);
     } else {
-      html.push(`<p>${inlineMarkdown(line)}</p>`);
+      html.push(`<p${memoBlockStyle(blockColor)}>${inlineMarkdown(line)}</p>`);
     }
   }
   closeQuote();
   return html.join("\n");
+}
+
+function expandMemoMultilineColors(text) {
+  return String(text).replace(
+    /\{색:(#[0-9a-fA-F]{3,8}|[a-zA-Z]{1,20})\}([\s\S]*?)\{\/색\}/g,
+    (whole, color, inner) => inner.includes("\n")
+      ? inner.split("\n").map((line) => `{색:${color}}${line}{/색}`).join("\n")
+      : whole,
+  );
+}
+
+// 줄 전체(들여쓰기 제외)를 감싼 색 태그는 블록 문법보다 먼저 벗긴다.
+// 목록 항목은 li 자체에 색을 적용해 숫자·글머리까지 함께 색칠한다.
+function unwrapMemoBlockColor(line) {
+  let text = String(line);
+  let color = "";
+  // 같은 범위를 여러 번 색칠해 태그가 겹쳐도 유한 횟수 안에서 모두 벗겨낸다.
+  for (let guard = 0; guard < 32; guard++) {
+    const match = text.match(/^([ \t]*)\{색:(#[0-9a-fA-F]{3,8}|[a-zA-Z]{1,20})\}([\s\S]*)\{\/색\}$/);
+    if (!match) break;
+    text = match[1] + match[3];
+    color = match[2];
+  }
+  return { text, color };
+}
+
+function memoBlockStyle(color, extra = "") {
+  const styles = [];
+  if (extra) styles.push(extra);
+  if (color) styles.push(`color:${color}`);
+  return styles.length ? ` style="${styles.join(";")}"` : "";
 }
 
 // 앞쪽 공백/탭을 들여쓰기 층 수로 환산. 탭 1개 = 공백 2칸 = 1층(편집기 tab-size 와 동일).
@@ -12220,7 +12982,8 @@ function memoIndentLevel(ws) {
 // 한 줄이 목록 항목이면 {level, ordered, checkbox, content} 를 돌려준다(아니면 null).
 // line 은 이미 HTML 이스케이프된 상태라 대괄호·별표는 그대로 남아 있다.
 function parseMemoListLine(line) {
-  const m = line.match(/^([ \t]*)([-*+]|\d+[.)])[ \t]+([\s\S]*)$/);
+  const coloredLine = unwrapMemoBlockColor(line);
+  const m = coloredLine.text.match(/^([ \t]*)([-*+]|\d+[.)])[ \t]+([\s\S]*)$/);
   if (!m) return null;
   const ordered = /\d/.test(m[2]);
   let content = m[3];
@@ -12230,7 +12993,7 @@ function parseMemoListLine(line) {
     const cb = content.match(/^\[([ xX])\](?:[ \t]+([\s\S]*)|\s*)$/);
     if (cb) { checkbox = cb[1].toLowerCase() === "x" ? "checked" : "unchecked"; content = cb[2] || ""; }
   }
-  return { level: memoIndentLevel(m[1]), ordered, checkbox, content };
+  return { level: memoIndentLevel(m[1]), ordered, checkbox, content, color: coloredLine.color };
 }
 
 // 평탄한 목록 항목 배열을 상대 들여쓰기로 중첩 트리로 만든 뒤 HTML 로 렌더.
@@ -12273,7 +13036,10 @@ function renderMemoListNodes(nodes, counters, foldSet) {
       inner += `<span class="md-li-text">${inlineMarkdown(it.content)}</span>`;
     }
     if (hasChildren) inner += renderMemoListNodes(node.children, counters, foldSet);
-    parts.push(`<li${cls.length ? ` class="${cls.join(" ")}"` : ""}>${inner}</li>`);
+    const classAttr = cls.length ? ` class="${cls.join(" ")}"` : "";
+    // 모든 항목에 기본색을 명시해 색칠한 부모의 색이 중첩 목록 자식까지 새지 않게 한다.
+    const colorAttr = memoBlockStyle(it.color || "var(--text)");
+    parts.push(`<li${classAttr}${colorAttr}>${inner}</li>`);
   }
   parts.push(`</${tag}>`);
   return parts.join("");
@@ -12281,7 +13047,14 @@ function renderMemoListNodes(nodes, counters, foldSet) {
 
 function inlineMarkdown(str) {
   const links = [];
-  let out = str;
+  const colors = [];
+  // 색 구문을 링크·강조보다 먼저 자리표시자로 보호한다. URL 뒤의 {/색}이 링크 주소에
+  // 붙거나, 색 태그 사이의 **굵게** 같은 마크다운이 태그 경계를 깨는 문제를 막는다.
+  let out = str.replace(/\{색:(#[0-9a-fA-F]{3,8}|[a-zA-Z]{1,20})\}([\s\S]*?)\{\/색\}/g,
+    (m, color, inner) => {
+      colors.push({ color, inner });
+      return `\u0001C${colors.length - 1}\u0001`;
+    });
   // 명시적 링크 [text](http…)를 먼저 자리표시자로 보호
   out = out.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (m, label, url) => {
     links.push(`<a href="${url}" target="_blank" rel="noopener">${label}</a>`);
@@ -12292,10 +13065,6 @@ function inlineMarkdown(str) {
     links.push(`<a href="${url}" target="_blank" rel="noopener">${url}</a>`);
     return `\u0001L${links.length - 1}\u0001`;
   });
-  // 글자 색: {색:#hex}내용{/색} → 색 span. 값은 #hex 또는 영문 색이름만 허용해 CSS 주입을 막는다.
-  // 안쪽 내용은 이어지는 굵게/기울임 치환에도 계속 노출돼 서식이 함께 적용된다.
-  out = out.replace(/\{색:(#[0-9a-fA-F]{3,8}|[a-zA-Z]{1,20})\}([\s\S]*?)\{\/색\}/g,
-    (m, color, inner) => `<span style="color:${color}">${inner}</span>`);
   out = out.replace(/`([^`]+)`/g, "<code>$1</code>");
   out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   out = out.replace(/__([^_]+)__/g, "<strong>$1</strong>");
@@ -12303,6 +13072,10 @@ function inlineMarkdown(str) {
   out = out.replace(/(^|[^a-zA-Z0-9])_([^_\s][^_]*?)_(?=[^a-zA-Z0-9]|$)/g, "$1<em>$2</em>");
   out = out.replace(/~~([^~]+)~~/g, "<del>$1</del>");
   out = out.replace(/\u0001L(\d+)\u0001/g, (m, i) => links[Number(i)]);
+  out = out.replace(/\u0001C(\d+)\u0001/g, (m, i) => {
+    const entry = colors[Number(i)];
+    return entry ? `<span style="color:${entry.color}">${inlineMarkdown(entry.inner)}</span>` : m;
+  });
   return out;
 }
 
@@ -12330,9 +13103,11 @@ function setChannelModalMessage(text, ok = false) {
   dom.channelModalMessage.classList.toggle("ok", Boolean(ok));
 }
 
-function openRoomModal() {
+function openRoomModal(parentGroupId = "") {
   if (!dom.roomModal) return;
+  const channel = currentChannel();
   dom.roomModalName.value = "";
+  if (channel) fillRoomParentSelect(dom.roomModalParent, channel, parentGroupId);
   setRoomModalMessage("");
   const voice = document.querySelector('input[name="roomType"][value="voice"]');
   if (voice) voice.checked = true;
@@ -13422,8 +14197,21 @@ function copyTextWithFallback(text) {
   textarea.style.left = "-9999px";
   document.body.append(textarea);
   textarea.select();
-  document.execCommand("copy");
+  const copied = document.execCommand("copy");
   textarea.remove();
+  return copied;
+}
+
+async function writeTextToClipboard(text) {
+  if (window.voiceDesktop?.copyText) {
+    const result = await window.voiceDesktop.copyText(String(text || ""));
+    if (result?.ok) return;
+  }
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(String(text || ""));
+    return;
+  }
+  if (!copyTextWithFallback(String(text || ""))) throw new Error("copy failed");
 }
 
 function buildDiagnosticsText() {
