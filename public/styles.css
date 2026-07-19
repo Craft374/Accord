@@ -4354,6 +4354,32 @@ audio,
 .room-item.active {
   background: rgba(88, 101, 242, 0.14);
 }
+/* 지금 접속해 있는 방: 왼쪽 얇은 초록선 + 작은 '여기' 칩으로 거슬리지 않게 표시.
+   보는 방(파란 active)과 접속한 방(초록)을 구분한다. */
+.room-item.here .room-item-head::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 15px;
+  border-radius: 0 3px 3px 0;
+  background: var(--green);
+}
+.room-here {
+  flex: none;
+  height: 16px;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--green);
+  background: rgba(35, 165, 89, 0.16);
+  display: inline-grid;
+  place-items: center;
+}
 .room-item-head {
   position: relative;
   width: 100%;
@@ -4426,7 +4452,8 @@ audio,
 }
 /* 오른쪽 뱃지(인원수/안읽음)가 있으면 ×와 겹치지 않게 hover 시 살짝 왼쪽으로 밀어준다. */
 .room-item-head:hover .room-count,
-.room-item-head:hover .room-unread {
+.room-item-head:hover .room-unread,
+.room-item-head:hover .room-here:last-child {
   margin-right: 22px;
 }
 .room-del:hover {

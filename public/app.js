@@ -6921,6 +6921,18 @@ function buildRoomItem(channel, room, owner) {
   name.textContent = room.name;
   head.append(icon, name);
 
+  // 지금 내가 실제로 접속(음성)해 있는 방을 거슬리지 않게 표시한다.
+  // 채팅·메모 등 다른 방을 열어 봐도 음성방 접속은 유지되므로, 파란 active(=보는 방)와
+  // 구분해 초록 '여기' 칩으로 어디에 있는지 한눈에 알 수 있게 한다.
+  if (state.currentRoom?.id === room.id) {
+    item.classList.add("here");
+    const here = document.createElement("span");
+    here.className = "room-here";
+    here.textContent = "여기";
+    here.title = "지금 이 방에 접속해 있습니다";
+    head.append(here);
+  }
+
   const occupants = room.type === "voice" ? (state.presence[room.id] || []) : [];
   if (occupants.length) {
     const count = document.createElement("span");
