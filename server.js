@@ -15,7 +15,7 @@ seedAdminAccount();
 // 서버 버전. 클라이언트(앱) 버전은 package.json 의 version 이며 따로 관리한다.
 // 규칙: 클라 코드가 바뀌면 서버가 그 코드를 배포하므로 서버·클라 둘 다 올리고,
 //       서버만 바뀌면 서버 버전만 올린다.
-const VERSION = "2.3.13";
+const VERSION = "2.3.14";
 const PORT = Number(process.env.PORT || 25565);
 const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_HOST = cleanHost(process.env.PUBLIC_HOST || "");
@@ -882,11 +882,15 @@ function removeClient(client) {
   if (client.userId) store.recordConnection(client.userId, client.ip, "disconnect");
   leaveMemo(client);
   leaveDraw(client);
+  client.chatRoomId = "";
   client.logRoomId = "";
   client.logChannelId = "";
   client.dmUserId = "";
-  leaveRoom(client, false);
+  const wasInVoice = !!client.roomId;
+  leaveRoom(client, false); // 통화방에 있었다면 여기서 presence 재전송
   clients.delete(client.id);
+  // 통화방엔 없고 채팅·메모 등만 보던 사람이 나갈 때도 방 옆 표시가 사라지도록 알린다.
+  if (!wasInVoice) broadcastPresence();
   client.socket.destroy();
 }
 
@@ -969,6 +973,16 @@ function broadcastPresence() {
       return { clientId: id, userId: c?.userId || "", name: c?.name || "Guest" };
     });
     roomsMeta[room.id] = { startedAt: room.startedAt || 0 };
+  }
+  // 통화방 외에 채팅·메모·그림판·로그방을 지금 열어 보고 있는 사람도 함께 알려,
+  // 다른 사람이 어느 방에 있는지 방 옆에 표시할 수 있게 한다. (방 id는 전역 고유라 통화방과 겹치지 않음)
+  for (const client of clients.values()) {
+    if (!client.userId) continue;
+    for (const rid of [client.chatRoomId, client.memoRoomId, client.drawRoomId, client.logRoomId]) {
+      if (!rid) continue;
+      if (!presence[rid]) presence[rid] = [];
+      presence[rid].push({ clientId: client.id, userId: client.userId, name: client.name || "Guest" });
+    }
   }
   const online = onlineUserIds();
   const payload = { type: "presence", rooms: presence, roomsMeta, online };
@@ -1421,10 +1435,12 @@ function handleChatMessage(client, message) {
         roomId: ctx.room.id,
         messages: store.getMessages(ctx.room.id),
       });
+      broadcastPresence(); // 이 방을 보고 있다고 다른 사람에게 알림
       return true;
     }
     case "chat:close": {
       client.chatRoomId = "";
+      broadcastPresence();
       return true;
     }
     case "chat:send": {
@@ -1679,10 +1695,12 @@ function handleMemoMessage(client, message) {
       const d = getMemoDoc(ctx.room.id);
       const cursors = [...d.cursors.values()].filter((cur) => cur.clientId !== client.id);
       send(client, { type: "memo:state", roomId: ctx.room.id, text: d.text, rev: d.history.length, cursors, font: d.font });
+      broadcastPresence(); // 이 방을 보고 있다고 다른 사람에게 알림
       return true;
     }
     case "memo:close": {
       leaveMemo(client);
+      broadcastPresence();
       return true;
     }
     case "memo:font": {
@@ -1917,10 +1935,12 @@ function handleDrawMessage(client, message) {
       if (!wasViewing && logThrottleOk(`draw-join:${ctx.room.id}:${client.userId}`, 30000)) {
         logChannelEvent(ctx.channel.id, client, "draw-join", { roomName: ctx.room.name });
       }
+      if (!wasViewing) broadcastPresence(); // 이 방을 보고 있다고 다른 사람에게 알림
       return true;
     }
     case "draw:close": {
       leaveDraw(client);
+      broadcastPresence();
       return true;
     }
     case "draw:stroke": {
@@ -2170,11 +2190,13 @@ function handleLogMessage(client, message) {
         channelId: ctx.channel.id,
         entries: store.getChannelLog(ctx.channel.id),
       });
+      broadcastPresence(); // 이 방을 보고 있다고 다른 사람에게 알림
       return true;
     }
     case "log:close": {
       client.logRoomId = "";
       client.logChannelId = "";
+      broadcastPresence();
       return true;
     }
     default:

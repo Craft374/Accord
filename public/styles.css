@@ -4480,6 +4480,17 @@ audio,
   background: var(--green);
   flex: none;
 }
+/* 통화 접속이 아니라 '지금 이 방을 열람 중'인 사람은 빈 점으로 은은하게 구분한다. */
+.occupant-dot.viewing {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--muted);
+}
+.room-occupant.room-occupant-more {
+  color: var(--muted);
+  font-size: 11px;
+  padding-left: 14px;
+  cursor: default;
+}
 .room-add-button {
   margin-top: 0;
   background: transparent;

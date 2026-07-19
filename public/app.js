@@ -6933,11 +6933,13 @@ function buildRoomItem(channel, room, owner) {
     head.append(here);
   }
 
-  const occupants = room.type === "voice" ? (state.presence[room.id] || []) : [];
+  // 통화방뿐 아니라 채팅·메모·그림판·로그방을 지금 보고 있는 사람도 방 옆에 표시해
+  // 다른 사람이 어디에 있는지 알 수 있게 한다.
+  const occupants = state.presence[room.id] || [];
   if (occupants.length) {
     const count = document.createElement("span");
     count.className = "room-count";
-    count.textContent = String(occupants.length);
+    count.textContent = occupants.length > 99 ? "99+" : String(occupants.length);
     head.append(count);
   }
   const unread = room.type === "chat" ? (state.chatUnread[room.id] || 0) : 0;
@@ -6963,13 +6965,22 @@ function buildRoomItem(channel, room, owner) {
   if (occupants.length) {
     const occList = document.createElement("div");
     occList.className = "room-occupants";
-    for (const occ of occupants) {
+    const OCC_MAX = 8; // 사람이 아주 많은 방은 앞 몇 명만 이름을 보이고 나머지는 "+N명 더"로 요약
+    for (const occ of occupants.slice(0, OCC_MAX)) {
       const row = document.createElement("div");
       row.className = "room-occupant";
       const dot = document.createElement("span");
-      dot.className = "occupant-dot";
+      // 통화방 = 실제 통화 접속(꽉 찬 초록점), 그 외 = 지금 열람 중(빈 점)으로 구분
+      dot.className = "occupant-dot" + (room.type === "voice" ? "" : " viewing");
       row.append(dot, document.createTextNode(occ.name));
       occList.append(row);
+    }
+    if (occupants.length > OCC_MAX) {
+      const more = document.createElement("div");
+      more.className = "room-occupant room-occupant-more";
+      more.textContent = `+${occupants.length - OCC_MAX}명 더`;
+      more.title = occupants.slice(OCC_MAX).map((o) => o.name).join(", ");
+      occList.append(more);
     }
     item.append(occList);
   }
