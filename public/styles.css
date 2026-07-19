@@ -3170,6 +3170,42 @@ summary:hover {
   background: #000;
 }
 
+/* ─── 화면 공유 PIP(플로팅 작은 창) ─────────── */
+body.screen-pip .screen-stage:not([hidden]) {
+  position: fixed;
+  z-index: 500;
+  min-width: 240px;
+  min-height: 150px;
+  max-width: 96vw;
+  max-height: 92vh;
+  border-radius: 10px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+  outline: 1px solid rgba(255, 255, 255, 0.08);
+  resize: both;
+  overflow: hidden;
+}
+body.screen-pip .screen-stage #screenViewer {
+  width: 100%;
+  height: 100%;
+}
+body.screen-pip .screen-stage-head {
+  cursor: move;
+}
+/* PIP에서는 헤더를 항상 보이게 유지해 드래그·버튼 접근을 막지 않는다. */
+body.screen-pip .screen-stage.screen-controls-hidden .screen-stage-head {
+  opacity: 1;
+  pointer-events: auto;
+}
+body.screen-pip .screen-stage.screen-controls-hidden {
+  cursor: default;
+}
+body.screen-pip-dragging {
+  user-select: none;
+}
+body.screen-pip-dragging .screen-stage-head {
+  cursor: grabbing;
+}
+
 .screen-share-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
@@ -3356,6 +3392,7 @@ summary:hover {
 }
 
 .modal-head {
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -3369,6 +3406,8 @@ summary:hover {
 }
 
 .modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
   display: grid;
   gap: 18px;
   padding: 16px;
@@ -3411,6 +3450,7 @@ summary:hover {
 }
 
 .settings-tabs {
+  flex: none;
   display: flex;
   gap: 4px;
   padding: 8px 10px 0;
@@ -4254,6 +4294,10 @@ audio,
 }
 .room-group {
   border-radius: var(--radius-sm);
+  /* 그룹을 살짝 눌러 들어간 상자로 만들어 안의 방들과 묶어 보이게 한다. */
+  background: rgba(0, 0, 0, 0.14);
+  border: 1px solid var(--line);
+  padding: 2px 4px 4px;
 }
 .room-group-head {
   position: relative;
@@ -4321,7 +4365,7 @@ audio,
 }
 .room-group-rooms[hidden] { display: none; }
 .room-group > .room-group-rooms {
-  margin-left: 10px;
+  margin-left: 4px;
   padding-left: 6px;
   border-left: 1px solid var(--line);
 }
@@ -4352,7 +4396,7 @@ audio,
 .room-list.room-pointer-drag-active { user-select: none; cursor: grabbing; }
 .room-item.dragging { opacity: 0.35; }
 .room-item.active {
-  background: rgba(88, 101, 242, 0.14);
+  background: transparent;
 }
 /* 지금 접속해 있는 방: 왼쪽 얇은 초록선 + 작은 '여기' 칩으로 거슬리지 않게 표시.
    보는 방(파란 active)과 접속한 방(초록)을 구분한다. */
@@ -4388,16 +4432,22 @@ audio,
   gap: 8px;
   min-height: 34px;
   padding: 0 8px;
-  background: transparent;
+  /* 각 방을 '떠 있는 글자'가 아니라 경계가 있는 버튼 상자로 보이게 한다. */
+  background: var(--bg-base);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
   color: var(--muted);
   font-weight: 500;
   justify-content: flex-start;
 }
 .room-item-head:hover:not(:disabled) {
   background: var(--bg-elevated);
+  border-color: var(--line-strong);
   color: var(--text);
 }
 .room-item.active .room-item-head {
+  background: rgba(88, 101, 242, 0.16);
+  border-color: rgba(88, 101, 242, 0.5);
   color: var(--heading);
 }
 .room-icon {
@@ -5261,6 +5311,7 @@ input.perm-switch:checked::after { transform: translateX(16px); }
 /* ===== 공유 글꼴 관리 모달 ===== */
 .font-manager-backdrop { z-index: 260; }
 .font-manager {
+  position: relative;
   width: min(94vw, 460px);
   max-height: 84vh;
 }
@@ -5316,6 +5367,60 @@ input.perm-switch:checked::after { transform: translateX(16px); }
 .font-manager-foot { margin-top: 10px; }
 .font-manager-msg { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
 .font-manager-msg.ok { color: var(--green); }
+/* 글꼴 파일 드래그&드롭 오버레이 */
+.font-drop-hint {
+  position: absolute;
+  inset: 8px;
+  z-index: 3;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--blurple);
+  border-radius: var(--radius-sm);
+  background: rgba(88, 101, 242, 0.14);
+  color: var(--heading);
+  font-size: 15px;
+  font-weight: 700;
+  pointer-events: none;
+}
+.font-manager.font-dragging .font-drop-hint { display: flex; }
+
+/* ─── 모니터 선택(듀얼모니터 화면 공유) ─────── */
+.monitor-picker-backdrop { z-index: 260; }
+.monitor-picker { width: min(94vw, 460px); }
+.monitor-map {
+  position: relative;
+  margin: 6px auto 2px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-deepest);
+  border: 1px solid var(--line);
+}
+.monitor-tile {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 2px;
+  border: 2px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  cursor: pointer;
+  overflow: hidden;
+  transition: border-color 0.12s ease, background 0.12s ease, transform 0.08s ease;
+}
+.monitor-tile:hover {
+  border-color: var(--blurple);
+  background: rgba(88, 101, 242, 0.22);
+  color: var(--heading);
+  transform: translateY(-1px);
+}
+.monitor-tile-cursor { border-color: var(--green); }
+.monitor-tile-num { font-size: 18px; font-weight: 800; line-height: 1; }
+.monitor-tile-meta { font-size: 10px; line-height: 1.15; text-align: center; color: var(--muted); }
+.monitor-tile:hover .monitor-tile-meta { color: var(--text); }
 .img-viewer {
   display: flex;
   flex-direction: column;

@@ -72,6 +72,7 @@ const state = {
   screenPreviewEnabled: localStorage.getItem("voiceChatScreenPreview") !== "off",
   screenProbeEnabled: localStorage.getItem("voiceChatScreenProbe") !== "off",
   screenFitMode: localStorage.getItem("voiceChatScreenFitMode") === "cover" ? "cover" : "contain",
+  screenPip: false, // 화면 공유를 작은 플로팅 창(PIP)으로 띄웠는지
   screenControlsHideTimer: 0,
   screenStats: { capture: "", sender: "", receiver: "", bottleneck: "" },
   screenCaptureMethod: "",
@@ -261,6 +262,7 @@ const dom = {
   drawZoomOut: document.querySelector("#drawZoomOut"),
   drawZoomReset: document.querySelector("#drawZoomReset"),
   drawUndo: document.querySelector("#drawUndo"),
+  drawRedo: document.querySelector("#drawRedo"),
   drawClear: document.querySelector("#drawClear"),
   drawResize: document.querySelector("#drawResize"),
   drawResizePop: document.querySelector("#drawResizePop"),
@@ -361,6 +363,7 @@ const dom = {
   screenViewer: document.querySelector("#screenViewer"),
   screenViewerTitle: document.querySelector("#screenViewerTitle"),
   screenFitButton: document.querySelector("#screenFitButton"),
+  screenPipButton: document.querySelector("#screenPipButton"),
   screenFullscreenButton: document.querySelector("#screenFullscreenButton"),
   screenViewerCloseButton: document.querySelector("#screenViewerCloseButton"),
   screenShareList: document.querySelector("#screenShareList"),
@@ -558,7 +561,9 @@ function bindEvents() {
     closeScreenViewer();
   });
   dom.screenFitButton.addEventListener("click", toggleScreenFitMode);
+  dom.screenPipButton?.addEventListener("click", toggleScreenPip);
   dom.screenFullscreenButton.addEventListener("click", enterScreenFullscreen);
+  bindScreenPipDrag();
   dom.screenStage.addEventListener("mousemove", revealScreenControls);
   dom.screenStage.addEventListener("pointermove", revealScreenControls);
   dom.screenStage.addEventListener("touchstart", revealScreenControls, { passive: true });
@@ -2603,6 +2608,135 @@ async function toggleScreenShare() {
   if (state.screenSharing) {
     await stopScreenShare();
     return;
+  }
+  await requestScreenShare();
+}
+
+// 화면 공유 시작 진입점: 모니터가 여러 개면 어떤 모니터를 공유할지 먼저 고르게 한다.
+async function requestScreenShare() {
+  if (state.screenSharing) return;
+  if (!state.currentRoom) {
+    setMessage("방에 들어가면 화면 공유를 켤 수 있습니다.");
+    return;
+  }
+  if (!isScreenShareSendSupported()) {
+    setMessage("이 환경에서는 화면 공유 송출을 지원하지 않습니다.");
+    updateControls();
+    return;
+  }
+  if (screenMonitorPickerSupported()) {
+    try {
+      const diag = await desktop.getScreenDiagnostics();
+      const displays = Array.isArray(diag?.displays) ? diag.displays : [];
+      if (displays.length > 1) { openMonitorPicker(displays); return; }
+    } catch (error) {
+      recordClientError("monitor-picker-list-failed", getErrorDetail(error));
+    }
+  }
+  await startScreenShare();
+}
+
+// 모니터 선택 UI는 윈도우 앱의 데스크톱 캡처 경로에서만 의미가 있다.
+// (맥/브라우저 기본 캡처는 OS 자체 화면 선택 창을 띄우므로 우리 창은 건너뛴다.)
+function screenMonitorPickerSupported() {
+  return desktop.isDesktop && desktop.platform === "win32"
+    && typeof desktop.getScreenDiagnostics === "function"
+    && typeof desktop.setScreenCaptureConfig === "function"
+    && state.screenCaptureMode !== "browser";
+}
+
+let monitorPickerEl = null;
+function closeMonitorPicker() {
+  if (monitorPickerEl) { monitorPickerEl.remove(); monitorPickerEl = null; }
+  document.removeEventListener("keydown", onMonitorPickerKey, true);
+}
+function onMonitorPickerKey(e) {
+  if (e.key === "Escape") { e.preventDefault(); closeMonitorPicker(); }
+}
+
+// 윈도우 디스플레이 설정처럼 모니터들을 실제 배치(bounds)대로 그려서 어떤 화면을 공유할지 직접 고른다.
+function openMonitorPicker(displays) {
+  closeMonitorPicker();
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop monitor-picker-backdrop";
+  backdrop.addEventListener("click", (e) => { if (e.target === backdrop) closeMonitorPicker(); });
+  const panel = document.createElement("div");
+  panel.className = "modal monitor-picker";
+  panel.innerHTML = `
+    <header class="modal-head">
+      <h2>공유할 모니터 선택</h2>
+      <button class="ghost small" data-mp-close="1" type="button">닫기</button>
+    </header>
+    <div class="modal-body">
+      <p class="modal-hint">공유할 모니터를 누르세요. 배치는 실제 모니터 위치와 같아요.</p>
+      <div class="monitor-map" data-mp-map></div>
+      <div class="modal-actions">
+        <button class="secondary" data-mp-auto="1" type="button">커서가 있는 모니터로 자동 선택</button>
+      </div>
+    </div>`;
+  backdrop.append(panel);
+  document.body.append(backdrop);
+  monitorPickerEl = backdrop;
+  panel.querySelector("[data-mp-close]").addEventListener("click", closeMonitorPicker);
+  panel.querySelector("[data-mp-auto]").addEventListener("click", () => chooseMonitorAndShare(""));
+  renderMonitorMap(panel.querySelector("[data-mp-map]"), displays);
+  document.addEventListener("keydown", onMonitorPickerKey, true);
+}
+
+function renderMonitorMap(map, displays) {
+  if (!map) return;
+  // 전체 가상 데스크톱의 경계 상자를 구해 미리보기 영역에 비례 축소해 배치한다.
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const d of displays) {
+    const b = d.bounds || {};
+    minX = Math.min(minX, b.x || 0);
+    minY = Math.min(minY, b.y || 0);
+    maxX = Math.max(maxX, (b.x || 0) + (b.width || 0));
+    maxY = Math.max(maxY, (b.y || 0) + (b.height || 0));
+  }
+  const spanW = Math.max(1, maxX - minX);
+  const spanH = Math.max(1, maxY - minY);
+  const BOX_W = 360, BOX_H = 200, PAD = 6;
+  const scale = Math.min((BOX_W - PAD * 2) / spanW, (BOX_H - PAD * 2) / spanH);
+  const mapW = spanW * scale + PAD * 2;
+  const mapH = spanH * scale + PAD * 2;
+  map.style.width = `${Math.round(mapW)}px`;
+  map.style.height = `${Math.round(mapH)}px`;
+  map.innerHTML = "";
+  const cursorId = String(getCursorDisplayGuess(displays));
+  displays.forEach((d, i) => {
+    const b = d.bounds || {};
+    const el = document.createElement("button");
+    el.type = "button";
+    el.className = "monitor-tile";
+    el.style.left = `${Math.round(((b.x || 0) - minX) * scale + PAD)}px`;
+    el.style.top = `${Math.round(((b.y || 0) - minY) * scale + PAD)}px`;
+    el.style.width = `${Math.max(28, Math.round((b.width || 0) * scale))}px`;
+    el.style.height = `${Math.max(20, Math.round((b.height || 0) * scale))}px`;
+    const sf = d.scaleFactor || 1;
+    const pxW = Math.round((b.width || 0) * sf);
+    const pxH = Math.round((b.height || 0) * sf);
+    const label = d.internal ? "노트북 화면" : `모니터 ${i + 1}`;
+    el.innerHTML = `<span class="monitor-tile-num">${i + 1}</span><span class="monitor-tile-meta">${escapeHtmlText(label)}<br>${pxW}×${pxH}</span>`;
+    if (String(d.id) === cursorId) el.classList.add("monitor-tile-cursor");
+    el.title = `${label} · ${pxW}×${pxH}`;
+    el.addEventListener("click", () => chooseMonitorAndShare(String(d.id)));
+    map.append(el);
+  });
+}
+
+// bounds 상 (0,0)에 가까운 모니터를 대략 주 모니터로 보고 표시만 강조한다(정확한 커서 위치는 캡처 시 결정).
+function getCursorDisplayGuess(displays) {
+  const primary = displays.find((d) => (d.bounds?.x || 0) === 0 && (d.bounds?.y || 0) === 0);
+  return primary ? primary.id : (displays[0]?.id ?? "");
+}
+
+async function chooseMonitorAndShare(displayId) {
+  closeMonitorPicker();
+  try {
+    await desktop.setScreenCaptureConfig({ displayId: String(displayId || ""), mode: "screen-share" });
+  } catch (error) {
+    recordClientError("monitor-picker-config-failed", getErrorDetail(error));
   }
   await startScreenShare();
 }
@@ -10475,12 +10609,13 @@ function openFontManager() {
       <button class="ghost small" data-font-close="1" type="button">닫기</button>
     </header>
     <div class="modal-body">
-      <p class="modal-hint">올린 글꼴은 이 채널의 모든 메모장에서 함께 쓸 수 있어요. (ttf·otf·woff·woff2)</p>
+      <p class="modal-hint">올린 글꼴은 이 채널의 모든 메모장에서 함께 쓸 수 있어요. 파일을 이 창으로 끌어다 놓아도 올라가요. (ttf·otf·woff·woff2)</p>
       <div class="font-list" data-font-list></div>
       <div class="font-manager-foot">
         <button class="primary small" data-font-upload="1" type="button">＋ 글꼴 올리기</button>
       </div>
       <p class="font-manager-msg" data-font-msg aria-live="polite"></p>
+      <div class="font-drop-hint" data-font-drop-hint>글꼴 파일을 놓으세요</div>
     </div>`;
   backdrop.append(panel);
   document.body.append(backdrop);
@@ -10491,8 +10626,42 @@ function openFontManager() {
     const del = e.target?.closest?.("[data-font-del]");
     if (del) deleteFont(del.dataset.fontDel);
   });
+  bindFontDropZone(panel);
   document.addEventListener("keydown", onFontManagerKey, true);
   renderFontManagerList();
+}
+
+// 글꼴 파일을 창으로 끌어다 놓으면 바로 업로드한다(파일 선택 버튼과 동일 경로).
+function bindFontDropZone(panel) {
+  let depth = 0;
+  const setActive = (on) => panel.classList.toggle("font-dragging", on);
+  panel.addEventListener("dragenter", (e) => {
+    if (![...(e.dataTransfer?.types || [])].includes("Files")) return;
+    e.preventDefault();
+    depth++;
+    setActive(true);
+  });
+  panel.addEventListener("dragover", (e) => {
+    if (![...(e.dataTransfer?.types || [])].includes("Files")) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  });
+  panel.addEventListener("dragleave", () => {
+    depth = Math.max(0, depth - 1);
+    if (!depth) setActive(false);
+  });
+  panel.addEventListener("drop", async (e) => {
+    e.preventDefault();
+    depth = 0;
+    setActive(false);
+    const files = [...(e.dataTransfer?.files || [])];
+    const fonts = files.filter((f) => /\.(ttf|otf|woff|woff2)$/i.test(f.name));
+    if (!fonts.length) {
+      setFontManagerMsg("ttf·otf·woff·woff2 글꼴 파일만 올릴 수 있습니다.");
+      return;
+    }
+    for (const file of fonts) await uploadFont(file); // 여러 개면 순서대로 올린다.
+  });
 }
 function setFontManagerMsg(text, ok = false) {
   const el = fontManagerEl?.querySelector("[data-font-msg]");
@@ -11000,6 +11169,23 @@ function bindMemoEvents() {
     }
     onMemoInput();
   });
+  // 엔터를 누르면 크로미움이 캐럿을 화면 맨 위로 끌어올리며 스크롤을 확 내리는 버그가 종종 생긴다.
+  // 일반 메모장처럼 스크롤이 튀지 않도록, 줄바꿈 뒤 캐럿이 화면 밖으로 벗어날 때만 최소한으로 보정한다.
+  dom.memoEditor?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return;
+    const el = dom.memoEditor;
+    const before = el.scrollTop;
+    // 기본 줄바꿈(+브라우저 자동 스크롤)이 끝난 다음 프레임에 스크롤을 제자리로 되돌린다.
+    requestAnimationFrame(() => {
+      if (dom.memoEditor !== el) return;
+      const caret = getCaretCoordinates(el, el.selectionStart);
+      const view = el.clientHeight;
+      let next = before;
+      if (caret.top + caret.height > before + view) next = caret.top + caret.height - view + 6; // 아래로 벗어나면 최소만 내림
+      else if (caret.top < before) next = Math.max(0, caret.top - 6);                              // 위로 벗어나면 최소만 올림
+      if (Math.abs(next - el.scrollTop) > 1) el.scrollTop = next;
+    });
+  });
   // Ctrl(⌘)+휠 로 글자 크기 조절 — 편집기/미리보기 어느 쪽 위에서든 동작.
   dom.memoBody?.addEventListener("wheel", (event) => {
     if (!event.ctrlKey && !event.metaKey) return;
@@ -11037,6 +11223,7 @@ function openDrawRoom(roomId) {
     strokeCounter: 0,
     drawing: null,
     myStrokes: [], // 내가 그린 획 스택(실행취소용) { layerId, strokeId }
+    myRedo: [], // 실행취소한 획 스택(다시실행용) { layerId, stroke }
     imageCache: new Map(),
     loaded: false,
     writable: canWriteRoom(found.channel, found.room),
@@ -12020,6 +12207,7 @@ function onDrawPointerUp(event) {
   d.drawing = null;
   layer.strokes.push(stroke);
   d.myStrokes.push({ layerId: layer.id, strokeId: stroke.id });
+  d.myRedo.length = 0; // 새 획을 그리면 다시실행 기록은 무효화한다.
   renderLayer(layer);
   compositeDraw();
   sendSocket({ type: "draw:stroke", roomId: d.roomId, layerId: layer.id, stroke });
@@ -12115,6 +12303,7 @@ function floodFillAt(pt, layer) {
   const stroke = { id: nextDrawStrokeId(), tool: "image", src: out.toDataURL("image/png"), x: minX, y: minY, w: bw, h: bh };
   layer.strokes.push(stroke);
   d.myStrokes.push({ layerId: layer.id, strokeId: stroke.id });
+  d.myRedo.length = 0; // 새 획을 그리면 다시실행 기록은 무효화한다.
   renderLayer(layer);
   compositeDraw();
   sendSocket({ type: "draw:stroke", roomId: d.roomId, layerId: layer.id, stroke });
@@ -12469,11 +12658,28 @@ function undoMyLastStroke() {
   const entry = d.myStrokes.pop();
   const layer = findDrawLayer(entry.layerId);
   if (layer) {
+    // 되돌린 획 원본을 보관해 두면 다시실행(Ctrl+Shift+Z)에서 그대로 되살릴 수 있다.
+    const removed = layer.strokes.find((s) => s.id === entry.strokeId);
+    if (removed) d.myRedo.push({ layerId: entry.layerId, stroke: removed });
     layer.strokes = layer.strokes.filter((s) => s.id !== entry.strokeId);
     renderLayer(layer);
     compositeDraw();
   }
   sendSocket({ type: "draw:undo", roomId: d.roomId, strokeId: entry.strokeId });
+}
+
+// 다시실행: 마지막으로 되돌린 내 획을 같은 레이어에 되살린다(서버엔 draw:stroke 로 재전송).
+function redoMyLastStroke() {
+  const d = state.draw;
+  if (!d || !d.myRedo.length) return;
+  const entry = d.myRedo.pop();
+  const layer = findDrawLayer(entry.layerId);
+  if (!layer) return;
+  layer.strokes.push(entry.stroke);
+  d.myStrokes.push({ layerId: layer.id, strokeId: entry.stroke.id });
+  renderLayer(layer);
+  compositeDraw();
+  sendSocket({ type: "draw:stroke", roomId: d.roomId, layerId: layer.id, stroke: entry.stroke });
 }
 
 function clearActiveLayer() {
@@ -12484,6 +12690,7 @@ function clearActiveLayer() {
   if (!confirm(`'${layer.name}' 레이어를 지울까요?`)) return;
   layer.strokes = [];
   d.myStrokes = d.myStrokes.filter((e) => e.layerId !== layer.id);
+  d.myRedo = d.myRedo.filter((e) => e.layerId !== layer.id);
   renderLayer(layer);
   compositeDraw();
   sendSocket({ type: "draw:clear", roomId: d.roomId, layerId: layer.id });
@@ -12533,6 +12740,7 @@ function insertDrawImageFile(file) {
       const stroke = { id: nextDrawStrokeId(), tool: "image", src, x, y, w, h };
       layer.strokes.push(stroke);
       d.myStrokes.push({ layerId: layer.id, strokeId: stroke.id });
+      d.myRedo.length = 0; // 새 획을 그리면 다시실행 기록은 무효화한다.
       renderLayer(layer);
       compositeDraw();
       sendSocket({ type: "draw:stroke", roomId: d.roomId, layerId: layer.id, stroke });
@@ -12927,6 +13135,7 @@ function bindDrawEvents() {
   dom.drawZoomOut?.addEventListener("click", () => zoomStep(-1));
   dom.drawZoomReset?.addEventListener("click", () => setDrawZoom(1));
   dom.drawUndo?.addEventListener("click", undoMyLastStroke);
+  dom.drawRedo?.addEventListener("click", redoMyLastStroke);
   dom.drawClear?.addEventListener("click", clearActiveLayer);
   dom.drawResize?.addEventListener("click", () => { closeDrawMore(); toggleResizePop(); });
   dom.drawResizeApply?.addEventListener("click", applyResize);
@@ -12961,7 +13170,13 @@ function drawTypingTarget(e) {
 
 function onDrawKeyDown(e) {
   if (!state.draw || !document.body.classList.contains("draw-open")) return;
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); undoMyLastStroke(); return; }
+  // 포토샵식 실행취소/다시실행: Ctrl+Z(취소), Ctrl+Shift+Z · Ctrl+Y(다시실행)
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+    e.preventDefault();
+    if (e.shiftKey) redoMyLastStroke(); else undoMyLastStroke();
+    return;
+  }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") { e.preventDefault(); redoMyLastStroke(); return; }
   if (drawTypingTarget(e)) return;
   // 스페이스: 화면 이동(팬) 준비
   if (e.code === "Space" || e.key === " ") {
@@ -12980,9 +13195,25 @@ function onDrawKeyDown(e) {
   else if (k === "e") setDrawTool("eraser");
   else if (k === "g") setDrawTool("fill");
   else if (k === "v") setDrawTool("move");
+  else if (k === "[") { e.preventDefault(); adjustDrawSize(-1); }   // 포토샵식: 브러시 작게
+  else if (k === "]") { e.preventDefault(); adjustDrawSize(1); }    // 포토샵식: 브러시 크게
   else if (k === "=" || k === "+") { e.preventDefault(); zoomStep(1); }
   else if (k === "-" || k === "_") { e.preventDefault(); zoomStep(-1); }
   else if (k === "0") { e.preventDefault(); setDrawZoom(1); }
+}
+
+// 브러시 굵기를 단축키([ ])로 조절 — 슬라이더·라벨·미리보기를 함께 갱신한다.
+function adjustDrawSize(delta) {
+  const d = state.draw;
+  if (!d || !dom.drawSize) return;
+  const min = Number(dom.drawSize.min) || 1;
+  const max = Number(dom.drawSize.max) || 60;
+  const v = Math.max(min, Math.min(max, (Number(d.size) || 1) + delta));
+  if (v === d.size) return;
+  d.size = v;
+  dom.drawSize.value = String(v);
+  if (dom.drawSizeVal) dom.drawSizeVal.textContent = String(v);
+  renderDrawOverlay();
 }
 
 function onDrawKeyUp(e) {
@@ -13602,6 +13833,112 @@ function toggleScreenFitMode() {
   localStorage.setItem("voiceChatScreenFitMode", state.screenFitMode);
   applyScreenFitMode();
   revealScreenControls();
+}
+
+// ── 화면 공유 PIP(작은 플로팅 창) ──
+// 디스코드의 팝아웃처럼, 공유 화면을 앱 위에 떠 있는 작은 창으로 띄워 다른 작업을 보면서 함께 볼 수 있게 한다.
+function toggleScreenPip() {
+  setScreenPip(!state.screenPip);
+}
+
+function setScreenPip(on) {
+  state.screenPip = Boolean(on);
+  // 전체화면 중이면 PIP와 충돌하므로 먼저 빠져나온다.
+  if (state.screenPip && document.fullscreenElement === dom.screenStage) {
+    document.exitFullscreen().catch(() => {});
+  }
+  applyScreenPipMode();
+  revealScreenControls();
+}
+
+function applyScreenPipMode() {
+  const stage = dom.screenStage;
+  if (!stage) return;
+  document.body.classList.toggle("screen-pip", state.screenPip);
+  if (dom.screenPipButton) {
+    dom.screenPipButton.classList.toggle("active", state.screenPip);
+    dom.screenPipButton.textContent = state.screenPip ? "원위치" : "PIP";
+    dom.screenPipButton.title = state.screenPip ? "원래 위치로 되돌리기" : "작은 창으로 띄우기 (PIP)";
+  }
+  if (state.screenPip) {
+    // 저장된 위치·크기를 복원(없으면 우측 하단 기본값). 화면 밖으로 나가지 않게 보정.
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem("voiceChatScreenPipBox") || "{}") || {}; } catch { saved = {}; }
+    const w = clampNum(saved.w, 260, Math.min(960, window.innerWidth - 20), 480);
+    const h = clampNum(saved.h, 170, Math.min(720, window.innerHeight - 20), 300);
+    const x = clampNum(saved.x, 8, Math.max(8, window.innerWidth - w - 8), window.innerWidth - w - 24);
+    const y = clampNum(saved.y, 8, Math.max(8, window.innerHeight - h - 8), window.innerHeight - h - 24);
+    stage.style.left = `${Math.round(x)}px`;
+    stage.style.top = `${Math.round(y)}px`;
+    stage.style.width = `${Math.round(w)}px`;
+    stage.style.height = `${Math.round(h)}px`;
+  } else {
+    stage.style.left = "";
+    stage.style.top = "";
+    stage.style.width = "";
+    stage.style.height = "";
+  }
+}
+
+function clampNum(v, min, max, fallback) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
+}
+
+function saveScreenPipBox() {
+  const stage = dom.screenStage;
+  if (!stage || !state.screenPip) return;
+  const box = {
+    x: parseFloat(stage.style.left) || 0,
+    y: parseFloat(stage.style.top) || 0,
+    w: stage.offsetWidth,
+    h: stage.offsetHeight,
+  };
+  localStorage.setItem("voiceChatScreenPipBox", JSON.stringify(box));
+}
+
+// PIP 창을 헤더로 드래그해 옮긴다. 크기는 CSS resize 손잡이(우하단)로 조절하며, 끝나면 위치·크기를 저장한다.
+function bindScreenPipDrag() {
+  const stage = dom.screenStage;
+  const head = stage?.querySelector(".screen-stage-head");
+  if (!stage || !head) return;
+  let drag = null;
+  head.addEventListener("pointerdown", (e) => {
+    if (!state.screenPip) return;
+    if (e.target.closest("button")) return; // 버튼 클릭은 드래그로 취급하지 않음
+    drag = { px: e.clientX, py: e.clientY, left: parseFloat(stage.style.left) || 0, top: parseFloat(stage.style.top) || 0 };
+    head.setPointerCapture?.(e.pointerId);
+    document.body.classList.add("screen-pip-dragging");
+    e.preventDefault();
+  });
+  head.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    const w = stage.offsetWidth;
+    const h = stage.offsetHeight;
+    const nx = clampNum(drag.left + (e.clientX - drag.px), 0, Math.max(0, window.innerWidth - w), drag.left);
+    const ny = clampNum(drag.top + (e.clientY - drag.py), 0, Math.max(0, window.innerHeight - h), drag.top);
+    stage.style.left = `${Math.round(nx)}px`;
+    stage.style.top = `${Math.round(ny)}px`;
+  });
+  const endDrag = (e) => {
+    if (!drag) return;
+    drag = null;
+    head.releasePointerCapture?.(e.pointerId);
+    document.body.classList.remove("screen-pip-dragging");
+    saveScreenPipBox();
+  };
+  head.addEventListener("pointerup", endDrag);
+  head.addEventListener("pointercancel", endDrag);
+  // resize 손잡이로 크기를 바꾸면 저장한다.
+  if (typeof ResizeObserver === "function") {
+    let t = 0;
+    new ResizeObserver(() => {
+      if (!state.screenPip) return;
+      window.clearTimeout(t);
+      t = window.setTimeout(saveScreenPipBox, 250);
+    }).observe(stage);
+  }
 }
 
 function applyScreenFitMode() {
