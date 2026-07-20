@@ -325,9 +325,24 @@ const reviews = [
   [/\[\/\\b\(demi \?light\|semi \?light\)\\b\/i, 350\]/.test(app), "memo font weight parser recognizes DemiLight"],
   [/\{ weight: "1 1000" \}/.test(app), "ungrouped custom memo fonts register a full weight range for variable font files"],
   [/let memoViewPref = MEMO_VIEWS\.includes/.test(app) && /localStorage\.setItem\("accordMemoView", v\)/.test(app), "memo view tab (split/edit/preview/live) is remembered across reopens"],
-  [/function renameFont\(channelId, fontId, name\)/.test(dataStore), "server can rename a shared memo font"],
-  [/case "channel:rename-font":/.test(server) && /store\.renameFont/.test(server), "server wires up the memo font rename socket message"],
-  [/function startFontRename\(row, font\)/.test(app) && /channel:rename-font/.test(app), "font manager lets you fix auto-detected name/weight by renaming"],
+  [/function setFontMeta\(channelId, fontId, patch\)/.test(dataStore) && /font\.family = /.test(dataStore) && /font\.weightText = /.test(dataStore), "server stores per-font family and weight overrides"],
+  [/case "channel:set-font-meta":/.test(server) && /store\.setFontMeta/.test(server), "server wires up the font meta socket message"],
+  [/family: f\.family \|\| "", weightText: f\.weightText \|\| ""/.test(dataStore), "channel payload sends font family/weight overrides to clients"],
+  [/function resolveWeightText\(text\)/.test(app) && /중간/.test(app) && /굵/.test(app), "manual weight input resolves Korean/letter/number labels"],
+  [/function resolveFontMeta\(font\)/.test(app) && /famText \|\| parsed\.family/.test(app), "explicit family/weight overrides win over filename parsing"],
+  [/function bindFontFamilyInput\(input, group\)/.test(app) && /function bindFontWeightInput\(input, font\)/.test(app) && /channel:set-font-meta/.test(app), "font manager edits family per card and weight per file"],
+  [/const registeredFontFaces = new Map\(\)/.test(app) && /document\.fonts\.delete\(prev\.face\)/.test(app), "font re-registers (dropping stale FontFace) when family/weight changes"],
+  [(() => {
+    // resolveWeightText 를 소스에서 그대로 뽑아 실제로 실행해 매핑을 검증한다(정적 존재 확인이 아니라 동작 확인).
+    try {
+      const src = app.match(/const MEMO_WEIGHT_TEXT_CODES =[\s\S]*?function resolveWeightText\(text\) \{[\s\S]*?\n\}/);
+      if (!src) return false;
+      const fn = new Function(`${src[0]}\nreturn resolveWeightText;`)();
+      return fn("가늘게") === 300 && fn("중간") === 500 && fn("굵게") === 700
+        && fn("세미볼드") === 600 && fn("Bold") === 700 && fn("700") === 700
+        && fn("L") === 300 && fn("") === 400;
+    } catch { return false; }
+  })(), "resolveWeightText maps Korean/English/letter/number labels to weights (runtime)"],
 ];
 
 for (const [ok, label] of reviews) {

@@ -5396,48 +5396,87 @@ input.perm-switch:checked::after { transform: translateX(16px); }
 .font-manager-backdrop { z-index: 260; }
 .font-manager {
   position: relative;
-  width: min(94vw, 460px);
-  max-height: 84vh;
+  width: min(94vw, 760px);
+  max-height: 88vh;
 }
 .font-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin: 10px 0 4px;
-  max-height: 46vh;
+  gap: 12px;
+  margin: 12px 0 4px;
+  max-height: 60vh;
   overflow-y: auto;
+}
+/* 글꼴(family) 카드: 제목(이름) + 파일 행들 */
+.font-group {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  padding: 10px 12px;
+}
+.font-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.font-group-name {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 5px 8px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--heading);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-xs);
+  background: var(--bg-input);
+}
+.font-group-count {
+  flex: none;
+  font-size: 12px;
+  color: var(--muted);
 }
 .font-row {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--bg-surface);
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
 }
-.font-row-name {
-  font-weight: 700;
-  color: var(--heading);
-  font-size: 14px;
+.font-row-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  width: 46%;
+  min-width: 0;
+}
+.font-row-file {
+  min-width: 0;
+  flex: 1;
+  color: var(--muted);
+  font-size: 12px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 40%;
-  cursor: text;
 }
-.font-row-name-input {
+.font-row-weight-label { flex: none; font-size: 12px; color: var(--muted); }
+.font-row-weight {
+  flex: none;
+  width: 96px;
   min-height: 0;
-  padding: 2px 4px;
+  padding: 4px 6px;
+  font-size: 13px;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-xs);
-  background: var(--bg-surface);
+  background: var(--bg-input);
 }
 .font-row-sample {
   flex: 1;
   min-width: 0;
   color: var(--text);
-  font-size: 16px;
+  font-size: 17px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

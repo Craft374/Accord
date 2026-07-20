@@ -10589,6 +10589,44 @@ const MEMO_FONT_WEIGHT_LABELS = {
   100: "씬", 200: "엑스트라 라이트", 300: "라이트", 350: "데미 라이트", 400: "레귤러", 500: "미디엄",
   600: "세미 볼드", 700: "볼드", 800: "엑스트라 볼드", 900: "블랙",
 };
+// 글꼴 관리창에서 사용자가 직접 적은 굵기 문자열을 CSS 굵기 숫자로 바꾼다.
+// 파일 이름 자동인식(MEMO_FONT_WEIGHT_WORDS, 영어 전용)과 달리 여기선 한글·약자·숫자를 폭넓게 받는다.
+// 숫자로서의 값은 FontFace 식별자일 뿐이라 정확한 표준값이 아니어도 되고, 표시는 사용자가 적은 원문을 그대로 쓴다.
+const MEMO_WEIGHT_TEXT_CODES = { t: 100, el: 200, ul: 200, l: 300, dl: 350, r: 400, m: 500, sb: 600, db: 600, b: 700, eb: 800, ub: 800, h: 800, bl: 900 };
+const MEMO_WEIGHT_TEXT_WORDS = [
+  [/thin|hairline|씬/, 100],
+  [/extra ?light|ultra ?light|엑스트라 ?라이트|울트라 ?라이트/, 200],
+  [/demi ?light|semi ?light|데미 ?라이트|세미 ?라이트/, 350],
+  [/light|라이트|가는|가늘|얇/, 300],
+  [/regular|normal|book|레귤러|보통|기본|일반/, 400],
+  [/medium|미디엄|중간/, 500],
+  [/semi ?bold|demi ?bold|세미 ?볼드|데미 ?볼드/, 600],
+  [/extra ?bold|ultra ?bold|엑스트라 ?볼드|울트라 ?볼드|heavy|헤비/, 800],
+  [/black|블랙|매우 ?굵/, 900],
+  [/bold|볼드|굵|두꺼/, 700],
+];
+function resolveWeightText(text) {
+  const s = String(text || "").trim().toLowerCase();
+  if (!s) return 400;
+  const num = Number(s);
+  if (Number.isFinite(num) && num >= 1 && num <= 1000) return Math.round(num);
+  if (Object.prototype.hasOwnProperty.call(MEMO_WEIGHT_TEXT_CODES, s)) return MEMO_WEIGHT_TEXT_CODES[s];
+  for (const [re, w] of MEMO_WEIGHT_TEXT_WORDS) if (re.test(s)) return w;
+  return 400;
+}
+// 파일 이름 자동인식 위에, 사용자가 관리창에서 직접 지정한 family·굵기(있으면)를 덮어쓴다.
+function resolveFontMeta(font) {
+  const parsed = parseMemoFontName(font?.name);
+  const famText = String(font?.family || "").trim();
+  const wText = String(font?.weightText || "").trim();
+  const weight = wText ? resolveWeightText(wText) : parsed.weight;
+  return {
+    family: famText || parsed.family,
+    weight,
+    italic: parsed.italic,
+    label: wText || MEMO_FONT_WEIGHT_LABELS[weight] || String(weight),
+  };
+}
 // "custom-family:<slug>" 뒤에 "@<weight>" 를 붙여 굵기 선택을 함께 저장한다(예: custom-family:pretendard@600).
 function parseMemoFontKey(key) {
   const s = String(key || "");
@@ -10616,15 +10654,28 @@ function parseMemoFontName(rawName) {
 function memoFontFamilySlug(family) {
   return String(family).toLowerCase().replace(/[^a-z0-9가-힣]+/g, "-").replace(/^-+|-+$/g, "") || "font";
 }
-// 업로드 글꼴들을 이름에서 뽑아낸 family 로 묶는다.
+// 업로드 글꼴들을 family(직접 지정 우선, 없으면 이름에서 뽑은 것) 기준으로 묶는다.
 function groupMemoFonts(fonts) {
-  const groups = new Map(); // slug -> { family, slug, items: [{ font, weight, italic }] }
+  const groups = new Map(); // slug -> { family, slug, items: [{ font, weight, italic, label }] }
   for (const font of fonts) {
     if (!font?.id) continue;
-    const { family, weight, italic } = parseMemoFontName(font.name);
+    const { family, weight, italic, label } = resolveFontMeta(font);
     const slug = memoFontFamilySlug(family);
     if (!groups.has(slug)) groups.set(slug, { family, slug, items: [] });
-    groups.get(slug).items.push({ font, weight, italic });
+    groups.get(slug).items.push({ font, weight, italic, label });
+  }
+  // 한 family 안에서 굵기 숫자가 겹치면(같은 FontFace 식별자) 렌더 때 한 파일만 남으므로,
+  // 겹치는 값을 비어 있는 표준 굵기로 밀어 서로 다르게 만든다(배열 순서 기준이라 결정적).
+  // 라벨(표시 문자열)은 그대로 두므로 사용자가 적은 이름은 유지된다.
+  for (const group of groups.values()) {
+    if (group.items.length < 2) continue;
+    const used = new Set();
+    for (const item of group.items) {
+      let w = item.weight;
+      if (used.has(w)) w = [100, 200, 300, 400, 500, 600, 700, 800, 900].find((c) => !used.has(c)) ?? Math.max(...used) + 1;
+      used.add(w);
+      item.weight = w;
+    }
   }
   return groups;
 }
@@ -10672,25 +10723,27 @@ function acceptMemoFont(key) {
   return MEMO_FONT_DEFAULT_KEY;
 }
 
-// 업로드 글꼴을 브라우저에 등록(FontFace). 같은 이름의 굵기 변형이 2개 이상이면 하나의 family 로,
-// 혼자면 예전처럼 개별 family(af-<id>)로 등록한다. (font.id, 등록된 family) 조합으로 중복 등록만 막는다
-// — 나중에 같은 이름의 글꼴이 추가/삭제돼 그룹 소속이 바뀌어도 새 family 로 다시 등록될 수 있게.
-const registeredFontFaces = new Set();
+// 업로드 글꼴을 브라우저에 등록(FontFace). 굵기 변형이 2개 이상이면 하나의 family(af-fam-<slug>)로,
+// 혼자면 개별 family(af-<id>)로 등록한다. font.id 별로 (family·굵기·기울임) 조합을 기억해,
+// 관리창에서 family 나 굵기를 바꾸면 옛 FontFace 를 지우고 새 설정으로 다시 등록한다.
+const registeredFontFaces = new Map(); // font.id -> { key, face }
 function registerCustomFonts(channel) {
   if (!channel || !Array.isArray(channel.fonts) || typeof FontFace === "undefined" || !document.fonts) return;
   for (const group of groupMemoFonts(channel.fonts).values()) {
     const grouped = group.items.length > 1;
     const familyName = memoFontFamilyName(group);
     for (const { font, weight, italic } of group.items) {
-      const dedupeKey = `${font.id}::${familyName}`;
-      if (registeredFontFaces.has(dedupeKey)) continue;
-      registeredFontFaces.add(dedupeKey);
+      const key = `${familyName}::${weight}::${italic}`;
+      const prev = registeredFontFaces.get(font.id);
+      if (prev && prev.key === key) continue; // 이미 같은 설정으로 등록됨
+      if (prev?.face) { try { document.fonts.delete(prev.face); } catch { /* 아직 add 안 됐으면 무시 */ } }
       try {
         // 혼자 올라온 파일(그룹 없음)은 굵기를 고정하지 않고 넓은 범위로 등록한다 — 파일 하나에
         // 여러 굵기가 들어있는 가변 글꼴(예: Pretendard 가변 폰트)이면 마크다운 **굵게** 등에서
         // 실제 굵은 글립을 쓸 수 있게 되고, 고정폭 글꼴이면 범위 선언이 있어도 동작은 그대로다.
         const descriptors = grouped ? { weight: String(weight), style: italic ? "italic" : "normal" } : { weight: "1 1000" };
         const face = new FontFace(familyName, `url("${serverUrl}${font.url}")`, descriptors);
+        registeredFontFaces.set(font.id, { key, face });
         face.load().then((loaded) => {
           document.fonts.add(loaded);
           // 지금 이 글꼴을 쓰는 메모가 열려 있으면 로드 완료 후 다시 렌더.
@@ -10758,15 +10811,15 @@ function populateMemoFontWeight(key) {
   const { base, weight } = parseMemoFontKey(key);
   const slug = typeof base === "string" && base.startsWith("custom-family:") ? base.slice(14) : "";
   const group = slug ? groupMemoFonts(memoChannelFonts()).get(slug) : null;
-  const weights = [...new Set((group?.items || []).map((it) => it.weight))].sort((a, b) => a - b);
-  if (weights.length < 2) {
+  const items = (group?.items || []).slice().sort((a, b) => a.weight - b.weight);
+  if (items.length < 2) {
     sel.hidden = true;
     sel.innerHTML = "";
     return;
   }
   sel.innerHTML = "";
   sel.append(new Option("기본 굵기", ""));
-  for (const w of weights) sel.append(new Option(MEMO_FONT_WEIGHT_LABELS[w] || String(w), String(w)));
+  for (const it of items) sel.append(new Option(it.label || MEMO_FONT_WEIGHT_LABELS[it.weight] || String(it.weight), String(it.weight)));
   sel.value = weight ? String(weight) : "";
   sel.hidden = false;
 }
@@ -10955,7 +11008,7 @@ function openFontManager() {
       <button class="ghost small" data-font-close="1" type="button">닫기</button>
     </header>
     <div class="modal-body">
-      <p class="modal-hint">올린 글꼴은 이 채널의 모든 메모장에서 함께 쓸 수 있어요. 파일을 이 창으로 끌어다 놓아도 올라가요. (ttf·otf·woff·woff2)</p>
+      <p class="modal-hint">파일을 올린 뒤 <b>같은 글꼴끼리 이름을 똑같이</b> 맞추면 한 글꼴로 묶이고, 파일마다 <b>굵기</b>를 직접 적어(가늘게·중간·굵게 등) 구분해요. 자동 인식이 안 되는 글꼴도 이렇게 손수 세팅할 수 있어요. 창으로 파일을 끌어다 놓아도 올라가요. (ttf·otf·woff·woff2)</p>
       <div class="font-list" data-font-list></div>
       <div class="font-manager-foot">
         <button class="primary small" data-font-upload="1" type="button">＋ 글꼴 올리기</button>
@@ -11015,70 +11068,106 @@ function setFontManagerMsg(text, ok = false) {
   el.textContent = text || "";
   el.classList.toggle("ok", Boolean(ok));
 }
+// 글꼴을 family(글꼴 이름) 카드로 묶어 보여준다. 카드 제목(글꼴 이름)을 고치면 그 카드의 파일 전부가
+// 같은 글꼴로 묶이고, 파일마다 오른쪽 굵기칸에 "가늘게/중간/굵게" 처럼 직접 적어 구분한다.
 function renderFontManagerList() {
   const list = fontManagerEl?.querySelector("[data-font-list]");
   if (!list) return;
+  // 서버 반영(브로드캐스트)으로 재렌더될 때 내가 지금 다른 칸을 입력 중이면 그 칸이 날아가지 않게 미룬다.
+  // (편집 확정=blur 시점엔 focus 가 빠져 있어 정상 재렌더된다)
+  if (fontManagerEl.contains(document.activeElement) && document.activeElement.tagName === "INPUT") return;
   const ch = memoChannel();
   const fonts = Array.isArray(ch?.fonts) ? ch.fonts : [];
   list.innerHTML = "";
   if (!fonts.length) {
-    list.append(el("p", "font-empty", "아직 올린 글꼴이 없어요."));
+    list.append(el("p", "font-empty", "아직 올린 글꼴이 없어요. 파일을 올린 뒤, 같은 글꼴끼리 이름을 맞추고 굵기를 적어 주세요."));
     return;
   }
-  const familyById = new Map();
   for (const group of groupMemoFonts(fonts).values()) {
+    const grouped = group.items.length > 1;
     const familyName = memoFontFamilyName(group);
-    for (const { font } of group.items) familyById.set(font.id, familyName);
-  }
-  for (const font of fonts) {
-    const row = document.createElement("div");
-    row.className = "font-row";
-    const cssFamily = `"${familyById.get(font.id) || `af-${font.id}`}", ${MEMO_FONTS.default.stack}`;
-    const name = document.createElement("span");
-    name.className = "font-row-name";
-    name.textContent = font.name;
-    name.style.fontFamily = cssFamily;
-    name.title = "클릭해서 이름 수정 (굵기·묶음 자동 인식은 이름의 Thin·Bold 같은 단어로 판단해요)";
-    name.addEventListener("click", () => startFontRename(row, font));
-    const sample = document.createElement("span");
-    sample.className = "font-row-sample";
-    sample.textContent = "가나다 AaBb 123";
-    sample.style.fontFamily = cssFamily;
-    const del = document.createElement("button");
-    del.type = "button";
-    del.className = "font-row-del";
-    del.textContent = "삭제";
-    del.dataset.fontDel = font.id;
-    row.append(name, sample, del);
-    list.append(row);
+    const cssFamily = `"${familyName}", ${MEMO_FONTS.default.stack}`;
+
+    const card = document.createElement("div");
+    card.className = "font-group";
+
+    const head = document.createElement("div");
+    head.className = "font-group-head";
+    const famInput = document.createElement("input");
+    famInput.type = "text";
+    famInput.className = "font-group-name";
+    famInput.value = group.family;
+    famInput.maxLength = 40;
+    famInput.placeholder = "글꼴 이름";
+    famInput.title = "이 이름이 같은 파일끼리 한 글꼴로 묶여요 (예: SB어그로)";
+    bindFontFamilyInput(famInput, group);
+    head.append(famInput, el("span", "font-group-count", `${group.items.length}개`));
+    card.append(head);
+
+    for (const item of group.items) {
+      const font = item.font;
+      const row = document.createElement("div");
+      row.className = "font-row";
+
+      const info = document.createElement("div");
+      info.className = "font-row-info";
+      info.append(el("span", "font-row-file", font.name));
+      const wInput = document.createElement("input");
+      wInput.type = "text";
+      wInput.className = "font-row-weight";
+      wInput.value = String(font.weightText || "").trim();
+      wInput.placeholder = item.label; // 자동 인식된 굵기를 흐리게 미리 보여줌
+      wInput.maxLength = 20;
+      wInput.title = "굵기 이름 (예: 가늘게·중간·굵게·Bold·700). 비우면 파일 이름에서 자동 인식해요";
+      bindFontWeightInput(wInput, font);
+      info.append(el("span", "font-row-weight-label", "굵기"), wInput);
+
+      const sample = el("span", "font-row-sample", "가나다 AaBb 굵게");
+      sample.style.fontFamily = cssFamily;
+      if (grouped) sample.style.fontWeight = String(item.weight);
+
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "font-row-del";
+      del.textContent = "삭제";
+      del.dataset.fontDel = font.id;
+
+      row.append(info, sample, del);
+      card.append(row);
+    }
+    list.append(card);
   }
 }
-// 이름을 고치면 굵기/묶음 자동인식(parseMemoFontName)이 새 이름으로 다시 돈다 —
-// 자동인식이 틀렸을 때(예: 파일명에 Bold 같은 단어가 없어 굵기를 못 읽은 경우) 이름을 고쳐 바로잡는 수동 대안.
-function startFontRename(row, font) {
-  const ch = memoChannel();
-  if (!ch) return;
-  const input = document.createElement("input");
-  input.type = "text";
-  input.value = font.name;
-  input.className = "font-row-name font-row-name-input";
-  input.maxLength = 40;
-  const nameEl = row.querySelector(".font-row-name");
-  row.replaceChild(input, nameEl);
-  input.focus();
-  input.select();
+// 카드 제목(글꼴 이름) 편집: 확정하면 카드 안 모든 파일의 family 를 그 이름으로 설정해 하나로 묶는다.
+function bindFontFamilyInput(input, group) {
   const commit = () => {
-    const newName = input.value.trim().slice(0, 40);
-    if (newName && newName !== font.name) {
-      sendSocket({ type: "channel:rename-font", channelId: ch.id, fontId: font.id, name: newName });
-    } else {
-      renderFontManagerList();
+    const ch = memoChannel();
+    const v = input.value.trim().slice(0, 40);
+    if (!ch || v === group.family) return;
+    if (!v) { input.value = group.family; return; }
+    for (const { font } of group.items) {
+      sendSocket({ type: "channel:set-font-meta", channelId: ch.id, fontId: font.id, family: v });
     }
   };
   input.addEventListener("blur", commit);
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); input.blur(); }
-    else if (e.key === "Escape") { e.preventDefault(); renderFontManagerList(); }
+    else if (e.key === "Escape") { e.preventDefault(); input.value = group.family; input.blur(); }
+  });
+}
+// 파일별 굵기 편집: 확정하면 그 파일의 굵기 문자열을 저장한다(비우면 자동 인식으로 되돌림).
+function bindFontWeightInput(input, font) {
+  const orig = String(font.weightText || "").trim();
+  const commit = () => {
+    const ch = memoChannel();
+    const v = input.value.trim().slice(0, 20);
+    if (!ch || v === orig) return;
+    sendSocket({ type: "channel:set-font-meta", channelId: ch.id, fontId: font.id, weightText: v });
+  };
+  input.addEventListener("blur", commit);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); input.blur(); }
+    else if (e.key === "Escape") { e.preventDefault(); input.value = orig; input.blur(); }
   });
 }
 function startFontUpload() {

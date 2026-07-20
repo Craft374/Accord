@@ -1264,11 +1264,11 @@ function handleChannelMessage(client, message) {
         notifyChannelMembers(message.channelId);
         return true;
       });
-    case "channel:rename-font":
+    case "channel:set-font-meta":
       return fontManageAction(client, message.channelId, () => {
-        const r = store.renameFont(message.channelId, message.fontId, message.name);
+        const r = store.setFontMeta(message.channelId, message.fontId, { family: message.family, weightText: message.weightText });
         if (r.error) return channelError(client, r.error);
-        logServer(`font rename name=${r.font.name} channel=${message.channelId}`, client);
+        logServer(`font meta name=${r.font.name} family=${r.font.family || ""} weight=${r.font.weightText || ""} channel=${message.channelId}`, client);
         notifyChannelMembers(message.channelId);
         return true;
       });

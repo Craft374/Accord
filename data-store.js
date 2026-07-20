@@ -1166,13 +1166,15 @@ function addFont(channelId, name, url) {
   return { channel, font };
 }
 
-function renameFont(channelId, fontId, name) {
+// 글꼴 관리창에서 사용자가 직접 지정한 family(묶음 이름)·weightText(굵기 문자열)를 저장한다.
+// 빈 문자열이면 지정 해제(파일 이름 자동 인식으로 되돌림). 렌더용 CSS 굵기 계산은 클라이언트가 한다.
+function setFontMeta(channelId, fontId, patch) {
   const channel = getChannel(channelId);
   if (!channel) return { error: "채널을 찾을 수 없습니다." };
   const font = fontsOf(channel).find((f) => f.id === fontId);
   if (!font) return { error: "글꼴을 찾을 수 없습니다." };
-  const clean = cleanFontName(name) || "글꼴";
-  font.name = clean;
+  if (patch && typeof patch.family === "string") font.family = cleanFontName(patch.family);
+  if (patch && typeof patch.weightText === "string") font.weightText = String(patch.weightText).trim().replace(/\s+/g, " ").slice(0, 20);
   persistChannels();
   return { channel, font };
 }
@@ -1261,7 +1263,7 @@ function channelSummary(channel) {
     attachRestricted: Boolean(channel.attachRestricted),
     userPerms: Object.fromEntries(Object.entries(channel.userPerms || {}).map(([k, v]) => [k, { ...v }])),
     emojis: emojisOf(channel).map((e) => ({ id: e.id, name: e.name, url: e.url })),
-    fonts: fontsOf(channel).map((f) => ({ id: f.id, name: f.name, url: f.url })),
+    fonts: fontsOf(channel).map((f) => ({ id: f.id, name: f.name, url: f.url, family: f.family || "", weightText: f.weightText || "" })),
     roomLayout,
     roomGroups: orderedGroups.map((g) => ({
       id: g.id,
@@ -1690,7 +1692,7 @@ module.exports = {
   removeEmoji,
   // 공유 글꼴 · 추가 권한
   addFont,
-  renameFont,
+  setFontMeta,
   removeFont,
   canRenameRoom,
   canManageFont,
