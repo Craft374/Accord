@@ -4,7 +4,7 @@ const serverUrl = location.origin;
 // 클라이언트(앱) 버전. 서버 버전(server.js VERSION, n.n.n)과 헷갈리지 않도록 **그냥 정수**(1, 2, 3 …)로 올린다.
 // package.json 의 version 은 electron-builder 가 semver 를 요구해 "N.0.0" 형태로 두고, 그 major 가 이 값과 같아야 한다.
 // (scripts/check-v2.js 가 둘이 어긋나지 않는지 검사한다)
-const CLIENT_VERSION = "4";
+const CLIENT_VERSION = "5";
 
 function getClientVersion() {
   // 표시는 항상 단일 정수 CLIENT_VERSION 을 쓴다(package.json 의 semver appVersion 대신).
@@ -1777,6 +1777,7 @@ async function handleSocketMessage(message) {
     logClientEvent("joined", `room=${message.room?.id || ""} peers=${(message.peers || []).length}`);
     setStatus("통화 중", "good");
     setMessage(`${message.room.name}에 들어왔습니다.`);
+    playUiSound("in");
     renderCurrentRoom();
     renderParticipants();
     updateControls();
@@ -1795,6 +1796,7 @@ async function handleSocketMessage(message) {
     renderCurrentRoom();
     renderParticipants();
     setMessage(`${message.peer.name}님이 들어왔습니다.`);
+    playUiSound("in");
     syncLocalSendersForPeer(peer, { forceOffer: false }).catch((error) => {
       logClientEvent("peer-joined-sync-error", error.message || String(error));
     });
@@ -1804,6 +1806,7 @@ async function handleSocketMessage(message) {
   if (message.type === "peer-left") {
     removePeer(message.peerId);
     state.currentRoom = message.room || state.currentRoom;
+    playUiSound("out");
     renderCurrentRoom();
     renderParticipants();
     return;
@@ -1811,6 +1814,7 @@ async function handleSocketMessage(message) {
 
   if (message.type === "left") {
     resetRoomState();
+    playUiSound("out");
     renderRooms();
     return;
   }
@@ -2514,6 +2518,7 @@ async function attachSystemTrack(stream, track, message, captureKind = "device",
   if (renegotiate) await renegotiatePeers();
   updateTrackStats();
   updateSetupStatus();
+  playUiSound("soundOn");
   if (notify) setMessage(message);
   if (captureKind === "program") scheduleProgramAudioSilenceWarning();
 }
@@ -2550,6 +2555,7 @@ async function enforceSystemAudioTrackConstraints(track) {
 }
 
 async function stopSystemAudio({ renegotiate = true, notify = true } = {}) {
+  if (state.systemSharing) playUiSound("soundOff");
   state.ignoreSystemEndedUntil = Date.now() + 1200;
   clearProgramAudioSilenceWarning();
   stopSystemShareMeter();
@@ -2843,6 +2849,7 @@ async function startCameraShare(deviceId) {
     await renegotiatePeers();
     renderParticipants();
     renderScreenStage();
+    playUiSound("screenOn");
     setMessage("카메라를 공유 중입니다.");
   } catch (error) {
     cleanupStream(stream);
@@ -2903,6 +2910,7 @@ async function startScreenShare() {
     renderScreenStage();
     logScreenShareStats("screen-share-start");
     scheduleScreenShareStatsLog("screen-share-5s");
+    playUiSound("screenOn");
     setMessage(Number(state.screenFps || 30) >= 60
       ? "전체 화면 공유를 시작했습니다. 60fps는 PC 상태에 따라 불안정할 수 있습니다."
       : "전체 화면 공유를 시작했습니다. 소리는 컴퓨터 사운드 공유를 따로 사용합니다.");
@@ -2923,6 +2931,7 @@ async function startScreenShare() {
 async function stopScreenShare({ renegotiate = true, message = "화면 공유를 껐습니다." } = {}) {
   if (!state.screenSharing && !state.screenTrack && !state.screenStream) return;
   cleanupLocalScreenShare();
+  playUiSound("screenOff");
 
   for (const peer of state.peers.values()) {
     if (!peer.senders.screen) continue;
@@ -4952,6 +4961,7 @@ function handleGlobalHotkeys(event) {
 function toggleMute() {
   state.muted = !state.muted;
   applyMicTrackEnabled();
+  playUiSound(state.muted ? "micOff" : "micOn");
   dom.muteButton.textContent = state.muted ? "마이크 켜기" : "마이크 끄기";
   dom.localState.textContent = getLocalStateText();
   // 상태 변화를 즉시 반영 — 주기 전송(~2초)만 기다리면 표시가 어긋난다.
@@ -5687,7 +5697,10 @@ function sendMediaStatus(peer) {
 }
 
 async function handleMediaStatus(peer, status) {
+  const isFirstUpdate = peer.remoteStatus.updatedAt === 0;
   const wasMicMuted = Boolean(peer.remoteStatus?.mic?.muted);
+  const wasSystemLive = Boolean(peer.remoteStatus?.system?.live);
+  const wasScreenLive = Boolean(peer.remoteStatus?.screen?.live);
   peer.remoteStatus.updatedAt = Date.now();
   for (const role of ["mic", "system", "screen"]) {
     const value = normalizeRemoteMediaStatus(status[role]);
@@ -5704,7 +5717,15 @@ async function handleMediaStatus(peer, status) {
       acceptRemoteStatusTrack(peer, role, value.streamId);
     }
   }
-  if (wasMicMuted !== Boolean(peer.remoteStatus?.mic?.muted)) renderParticipants();
+  const nowMicMuted = Boolean(peer.remoteStatus?.mic?.muted);
+  const nowSystemLive = Boolean(peer.remoteStatus?.system?.live);
+  const nowScreenLive = Boolean(peer.remoteStatus?.screen?.live);
+  if (!isFirstUpdate) {
+    if (wasMicMuted !== nowMicMuted) playUiSound(nowMicMuted ? "micOff" : "micOn");
+    if (wasSystemLive !== nowSystemLive) playUiSound(nowSystemLive ? "soundOn" : "soundOff");
+    if (wasScreenLive !== nowScreenLive) playUiSound(nowScreenLive ? "screenOn" : "screenOff");
+  }
+  if (wasMicMuted !== nowMicMuted) renderParticipants();
   checkRemoteMediaExpectation(peer);
 }
 
@@ -8791,11 +8812,14 @@ function handleIncomingChat(msg) {
     removeChatTyper(msg.userId);
     renderChatMessages();
     if (nearBottom || msg.userId === state.auth.user?.id) scrollChatToBottom();
-  } else {
+  } else if (msg.userId !== state.auth.user?.id) {
     state.chatUnread[msg.roomId] = (state.chatUnread[msg.roomId] || 0) + 1;
     if (Array.isArray(msg.mentions) && msg.mentions.includes(state.auth.user?.id)) {
       state.chatMentions[msg.roomId] = (state.chatMentions[msg.roomId] || 0) + 1;
       setMessage(`${msg.name || "누군가"}님이 회원님을 맨션했습니다.`);
+      playUiSound("dm");
+    } else {
+      playUiSound("chat");
     }
     renderRooms();
   }
@@ -11921,6 +11945,7 @@ function handleIncomingDm(message) {
     scrollDmToBottom();
   } else if (message.message.userId !== myId) {
     state.dm.unread[partnerId] = (state.dm.unread[partnerId] || 0) + 1;
+    playUiSound("dm");
     renderChannelRail();
     if (state.dm.open) renderDmThreads();
   }
@@ -15074,6 +15099,21 @@ function isLocalHost(hostname) {
 function setStatus(text, tone) {
   dom.statusText.textContent = text;
   dom.statusBadge.dataset.tone = tone === "good" || tone === "bad" ? tone : "";
+}
+
+const UI_SOUND_FILES = {
+  in: "in", out: "out", dm: "DM", chat: "chat",
+  micOn: "mic_on", micOff: "mic_off",
+  screenOn: "screen_on", screenOff: "screen_off",
+  soundOn: "sound_on", soundOff: "sound_off",
+};
+
+function playUiSound(name) {
+  const file = UI_SOUND_FILES[name];
+  if (!file) return;
+  const audio = new Audio(`/sound/${file}.mp3`);
+  audio.volume = 0.5;
+  applySinkToAudio(audio).finally(() => audio.play().catch(() => {}));
 }
 
 function setMessage(text) {
