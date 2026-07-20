@@ -5581,10 +5581,7 @@ input.perm-switch:checked::after { transform: translateX(16px); }
 .img-viewer-stage {
   position: relative;
   flex: 1;
-  /* .img-viewer는 콘텐츠 크기(auto height)라 flex:1이 실제로 늘어날 여유 공간이 없다.
-     min-height를 고정 px로 두면 가로로 넓은(16:9 등) 이미지가 이 작은 높이에 맞춰
-     축소 표시되어, 그 90% 크기로 잡히는 초기 크롭 박스도 함께 작아 보인다. */
-  min-height: min(62vh, 560px);
+  min-height: 240px;
   overflow: hidden;
   background:
     repeating-conic-gradient(#2a2c30 0% 25%, #303338 0% 50%) 50% / 22px 22px;
