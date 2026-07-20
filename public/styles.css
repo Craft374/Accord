@@ -1324,6 +1324,7 @@ body.memo-open .log-panel {
    예전엔 --bg-input(어두운 입력창 색)을 배경으로 써서 편집 중인 줄만 검게 도드라져 보였다. */
 .memo-live-raw {
   display: block;
+  min-height: 1.4em;
   margin: 0.1em 0;
   padding: 1px 4px;
   border-radius: 3px;

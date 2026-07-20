@@ -10887,6 +10887,7 @@ function openMemoRoom(roomId) {
     cursorSentAt: 0,
     lastCursor: "",
     folds: new Set(), // 미리보기에서 접어둔 목록 항목(문서 순서 기준 인덱스)
+    liveCaret: 0, // 라이브 모드 캐럿(문서 문자 오프셋) — 활성 줄을 정하고 원격 op 로 함께 이동
     writable: canWriteRoom(found.channel, found.room),
   };
   document.body.classList.add("memo-open");
@@ -10936,7 +10937,7 @@ function handleMemoState(message) {
   m.inflight = null;
   m.buffer = [];
   m.font = acceptMemoFont(message.font);
-  m.liveLine = 0;
+  m.liveCaret = 0;
   if (dom.memoEditor) { dom.memoEditor.disabled = !m.writable; dom.memoEditor.value = m.doc; }
   applyMemoFont(m.font);
   updateMemoToolsEnabled();
@@ -11206,26 +11207,32 @@ function deleteFont(fontId) {
 }
 
 // 로컬 편집 → 변경분(op)을 만들어 서버로 보낸다.
-function onMemoInput() {
+// dom.memoEditor.value 와 m.doc 의 차이를 OT op 으로 만들어 서버에 보낸다(렌더는 하지 않는다).
+// 편집기(textarea) 경로와 라이브 경로가 공유한다.
+function pushMemoDoc() {
   const m = state.memo;
   if (!m || !dom.memoEditor) return;
   const newDoc = dom.memoEditor.value;
   const op = window.OTText.fromDiff(m.doc, newDoc);
-  if (op.length) {
-    m.doc = newDoc;
-    // 내 편집으로 문서가 밀린 만큼 원격 커서도 함께 이동시켜 제자리에 고정한다.
-    // (안 하면 내가 앞에 글자를 넣어도 상대 커서가 옛 위치에 묶여 뒤로 밀려 보임)
-    for (const cur of m.cursors.values()) {
-      cur.pos = window.OTText.transformCursor(cur.pos, op, "left");
-      cur.sel = window.OTText.transformCursor(cur.sel, op, "left");
-    }
-    if (m.inflight === null) {
-      m.inflight = op;
-      sendSocket({ type: "memo:op", roomId: m.roomId, rev: m.serverRev, ops: op });
-    } else {
-      m.buffer.push(op);
-    }
+  if (!op.length) return;
+  m.doc = newDoc;
+  // 내 편집으로 문서가 밀린 만큼 원격 커서도 함께 이동시켜 제자리에 고정한다.
+  // (안 하면 내가 앞에 글자를 넣어도 상대 커서가 옛 위치에 묶여 뒤로 밀려 보임)
+  for (const cur of m.cursors.values()) {
+    cur.pos = window.OTText.transformCursor(cur.pos, op, "left");
+    cur.sel = window.OTText.transformCursor(cur.sel, op, "left");
   }
+  if (m.inflight === null) {
+    m.inflight = op;
+    sendSocket({ type: "memo:op", roomId: m.roomId, rev: m.serverRev, ops: op });
+  } else {
+    m.buffer.push(op);
+  }
+}
+
+function onMemoInput() {
+  if (!state.memo || !dom.memoEditor) return;
+  pushMemoDoc();
   renderMemoPreview();
   renderMemoCursors();
   sendMemoCursor();
@@ -11280,6 +11287,9 @@ function handleMemoOp(message) {
     cur.pos = OT.transformCursor(cur.pos, r, side);
     cur.sel = OT.transformCursor(cur.sel, r, side);
   }
+  // 라이브 캐럿도 같은 op 만큼 옮긴다 — 내가 라이브에서 타이핑 중에 원격 편집이 위쪽에 들어와도
+  // 활성 줄(캐럿)이 제자리를 지키고, renderMemoPreview 의 재조정이 다른 블록만 갱신한다.
+  if (m.liveCaret != null) m.liveCaret = OT.transformCursor(m.liveCaret, r, "left");
   renderMemoPreview();
   renderMemoCursors();
 }
@@ -11495,14 +11505,42 @@ function renderMemoPreview() {
   renderMemoLive();
 }
 
-// ===== 라이브 미리보기(옵시디언식 인라인 WYSIWYG) =====
-// 커서가 있는 줄(또는 그 줄이 속한 코드블록/목록 묶음)만 원문 그대로 보여주고 나머지는 렌더링한다.
-// 실제 문서는 여전히 dom.memoEditor.value 가 진실이며, 여기서의 편집은 그 값을 갱신하고
-// onMemoInput()을 그대로 재사용해 기존 OT 동기화·원격커서 파이프라인에 편승한다.
+// ===== 라이브 미리보기(옵시디언식 인라인 Live Preview) =====
+// 캐럿이 있는 줄(또는 그 줄이 속한 코드블록/목록 묶음)만 원문 그대로 편집하고 나머지는 렌더링한다.
+// 진실은 여전히 dom.memoEditor.value. 여기서의 편집은 그 값을 갱신하고 OT 동기화·원격커서
+// 파이프라인에 편승한다. 핵심은 innerHTML 통째 교체를 버리고 블록 단위로 재조정(reconcile)해
+// 캐럿/IME/원격편집이 서로를 깨지 않게 하는 것 — 예전 라이브 모드가 최악이던 근본 원인이 이 통째 교체였다.
 function memoLiveActiveRawEl() {
   return dom.memoLive?.querySelector(".memo-live-raw");
 }
-// 활성 줄 raw 요소 안에서 캐럿까지의 문자 오프셋(포커스가 그 요소 밖이면 null).
+// 문서에서 lineIndex 번째 줄이 시작하는 문자 오프셋.
+function docOffsetOfLine(doc, lineIndex) {
+  if (lineIndex <= 0) return 0;
+  let seen = 0;
+  for (let i = 0; i < doc.length; i++) {
+    if (doc[i] === "\n" && ++seen === lineIndex) return i + 1;
+  }
+  return doc.length;
+}
+// 문자 오프셋이 속한 줄 번호(0-based).
+function lineIndexOfOffset(doc, offset) {
+  let line = 0;
+  const end = Math.min(offset | 0, doc.length);
+  for (let i = 0; i < end; i++) if (doc[i] === "\n") line++;
+  return line;
+}
+// 라이브 캐럿(문서 문자 오프셋)을 갱신하고 textarea 선택에도 반영한다.
+// (원격커서 브로드캐스트·원격op 좌표변환이 textarea 선택을 기준으로 하므로 함께 맞춘다.)
+function setLiveCaret(offset) {
+  const m = state.memo;
+  if (!m) return;
+  const doc = dom.memoEditor?.value || "";
+  const p = Math.max(0, Math.min(offset | 0, doc.length));
+  m.liveCaret = p;
+  const el = dom.memoEditor;
+  if (el && !el.disabled) { try { el.selectionStart = el.selectionEnd = p; } catch (_) {} }
+}
+// 활성 raw 요소 안에서 캐럿까지의 문자 오프셋(포커스가 그 요소 밖이면 null).
 function getLiveCaretOffset() {
   const raw = memoLiveActiveRawEl();
   const sel = window.getSelection();
@@ -11512,13 +11550,14 @@ function getLiveCaretOffset() {
   range.setEnd(sel.focusNode, sel.focusOffset);
   return range.toString().length;
 }
+// 캐럿을 raw 안 문자 오프셋 위치에 놓는다. setLiveCaretOffset 은 항상 방금 렌더된 raw(단일
+// 텍스트노드, 줄바꿈 포함) 직후에만 불리므로 firstChild 하나로 충분하다.
 function setLiveCaretOffset(offset) {
   const raw = memoLiveActiveRawEl();
   if (!raw) return;
-  let node = raw.firstChild;
-  if (!node) node = raw.appendChild(document.createTextNode(""));
-  const len = node.textContent?.length ?? 0;
-  const pos = Math.max(0, Math.min(len, offset === Infinity ? len : (offset ?? 0)));
+  const node = raw.firstChild || raw.appendChild(document.createTextNode(""));
+  const len = node.textContent.length;
+  const pos = offset === Infinity ? len : Math.max(0, Math.min(len, offset ?? 0));
   const range = document.createRange();
   range.setStart(node, pos);
   range.collapse(true);
@@ -11527,117 +11566,190 @@ function setLiveCaretOffset(offset) {
   sel.addRange(range);
   raw.focus();
 }
+// contentEditable 이 붙인 <br>/<div>(주로 붙여넣기)를 \n 으로 정규화해 raw 원문을 읽는다.
+// 맨 끝의 <br> 는 브라우저가 빈 줄을 보이게 넣는 채움용이라 실제 줄바꿈으로 세지 않는다.
+function readLiveRawText(el) {
+  let out = "";
+  const walk = (node, top) => {
+    const kids = node.childNodes;
+    for (let i = 0; i < kids.length; i++) {
+      const c = kids[i];
+      if (c.nodeType === 3) out += c.nodeValue;
+      else if (c.nodeName === "BR") { if (!(top && i === kids.length - 1)) out += "\n"; }
+      else {
+        if (/^(DIV|P|LI)$/.test(c.nodeName) && out && !out.endsWith("\n")) out += "\n";
+        walk(c, false);
+      }
+    }
+  };
+  walk(el, true);
+  return out.replace(/\r\n?/g, "\n");
+}
 
-function renderMemoLive() {
+// 렌더 결과(HTML 문자열)를 블록 단위로 재조정한다. 바뀐 블록만 교체하고, 지금 포커스가 있는 raw
+// 요소는 절대 건드리지 않는다(캐럿/IME 보존). 이것이 '통째 innerHTML 교체'가 만들던 깜빡임/캐럿
+// 튐/조합깨짐의 근본 해결이며, 내가 타이핑 중에 원격 편집이 다른 블록에 반영돼도 캐럿이 안 튄다.
+function reconcileLive(container, newHTML, focusedRaw) {
+  const tmp = document.createElement("div");
+  tmp.innerHTML = newHTML;
+  const newNodes = Array.from(tmp.children);
+  // 재사용 풀: 포커스된 raw 제외한 기존 자식을 outerHTML 로 색인(동일 블록은 DOM 유지 → 무플리커).
+  const pool = new Map();
+  for (const el of Array.from(container.children)) {
+    if (el === focusedRaw) continue;
+    if (!pool.has(el.outerHTML)) pool.set(el.outerHTML, el);
+  }
+  const desired = [];
+  for (const nn of newNodes) {
+    if (focusedRaw && nn.classList.contains("memo-live-raw")) {
+      // 포커스된 raw 는 노드 그대로 유지하고 줄 범위만 새 값으로(원격이 위에 삽입하면 범위가 밀림).
+      focusedRaw.dataset.liveStart = nn.dataset.liveStart;
+      focusedRaw.dataset.liveEnd = nn.dataset.liveEnd;
+      desired.push(focusedRaw);
+      continue;
+    }
+    const reuse = pool.get(nn.outerHTML);
+    if (reuse) { pool.delete(nn.outerHTML); desired.push(reuse); }
+    else desired.push(nn);
+  }
+  for (let i = 0; i < desired.length; i++) {
+    if (container.children[i] !== desired[i]) container.insertBefore(desired[i], container.children[i] || null);
+  }
+  while (container.children.length > desired.length) container.lastElementChild.remove();
+}
+
+// 라이브 뷰 재렌더. opts.freshFocus 이면 포커스된 raw 도 새로 만든다(활성 줄을 옮기는 경우 —
+// 이후 반드시 placeLiveCaret 로 캐럿을 다시 놓는다). 기본은 포커스 raw 보존(타이핑·원격op 반영).
+function renderMemoLive(opts) {
   if (!dom.memoLive) return;
   const m = state.memo;
   if (!m) { dom.memoLive.innerHTML = ""; return; }
-  const hadFocus = dom.memoLive.contains(document.activeElement);
-  const offset = hadFocus ? getLiveCaretOffset() : null;
   const text = dom.memoEditor?.value || "";
-  let activeLine = null;
-  if (m.writable) {
-    const lineCount = text.split("\n").length;
-    activeLine = Math.max(0, Math.min(m.liveLine ?? 0, lineCount - 1));
-    m.liveLine = activeLine;
-  }
-  dom.memoLive.innerHTML = renderMarkdown(text, activeLine);
-  if (hadFocus && offset != null) setLiveCaretOffset(offset);
+  const activeLine = m.writable ? lineIndexOfOffset(text, m.liveCaret ?? 0) : null;
+  const raw = memoLiveActiveRawEl();
+  const focusedRaw = (!opts?.freshFocus && raw && document.activeElement === raw) ? raw : null;
+  reconcileLive(dom.memoLive, renderMarkdown(text, activeLine), focusedRaw);
 }
 
-// 라이브 편집 → 문서에 반영하고 기존 편집 파이프라인(onMemoInput)에 편승.
-function applyMemoLiveEdit(newDoc, activeLine, caretOffset) {
+// 활성 raw 안에서 문서 오프셋 docOffset 위치에 캐럿을 놓고 포커스한다.
+function placeLiveCaret(docOffset) {
+  const raw = memoLiveActiveRawEl();
+  if (!raw) return;
+  const start = docOffsetOfLine(dom.memoEditor?.value || "", Number(raw.dataset.liveStart) || 0);
+  setLiveCaretOffset(docOffset - start);
+}
+
+// DOM 의 실제 캐럿 위치를 라이브 캐럿(문서 오프셋)에 동기화(같은 블록 안 이동/클릭/드래그용).
+function syncLiveCaretFromDom() {
+  const m = state.memo;
+  const raw = memoLiveActiveRawEl();
+  if (!m || !raw || !dom.memoLive.contains(document.activeElement)) return;
+  const within = getLiveCaretOffset();
+  if (within == null) return;
+  const start = docOffsetOfLine(dom.memoEditor?.value || "", Number(raw.dataset.liveStart) || 0);
+  setLiveCaret(start + within);
+}
+
+// 활성 줄을 docOffset 위치로 옮긴다(문서 변경 없음 — 클릭/화살표 이동). raw 를 새로 만들고 캐럿을 놓는다.
+function moveLiveCaretTo(docOffset) {
+  const m = state.memo;
+  if (!m || !m.writable) return;
+  setLiveCaret(docOffset);
+  renderMemoLive({ freshFocus: true });
+  placeLiveCaret(m.liveCaret);
+  renderMemoCursors();
+  sendMemoCursor();
+}
+
+// 문서를 newDoc 으로 바꾸고 캐럿을 docOffset 에 둔다(라이브 편집). OT 전송 → 라이브 재조정 → 캐럿 배치.
+function applyMemoLiveEdit(newDoc, docOffset) {
   const m = state.memo;
   if (!m) return;
-  m.liveLine = activeLine;
   dom.memoEditor.value = newDoc;
-  onMemoInput();
-  setLiveCaretOffset(caretOffset);
+  setLiveCaret(docOffset);
+  pushMemoDoc();
+  renderMemoLive({ freshFocus: true });
+  placeLiveCaret(m.liveCaret);
+  renderMemoCursors();
+  sendMemoCursor();
 }
 
+// raw 안에서 타이핑/붙여넣기/IME 완료 → 그 블록 원문을 문서에 반영(활성 줄은 그대로, 캐럿은 브라우저가 유지).
 function onMemoLiveInput() {
   const m = state.memo;
   if (!m || !m.writable) return;
   const raw = memoLiveActiveRawEl();
   if (!raw) return;
-  const offset = getLiveCaretOffset();
-  const lines = (dom.memoEditor.value || "").split("\n");
   const start = Number(raw.dataset.liveStart);
   const end = Number(raw.dataset.liveEnd);
-  const newLineText = (raw.textContent || "").replace(/\r\n?/g, "\n");
-  const newLines = [...lines.slice(0, start), ...newLineText.split("\n"), ...lines.slice(end + 1)];
-  applyMemoLiveEdit(newLines.join("\n"), start, offset);
+  const within = getLiveCaretOffset() ?? 0;
+  const lines = (dom.memoEditor.value || "").split("\n");
+  const newText = readLiveRawText(raw);
+  const newDoc = [...lines.slice(0, start), ...newText.split("\n"), ...lines.slice(end + 1)].join("\n");
+  dom.memoEditor.value = newDoc;
+  setLiveCaret(docOffsetOfLine(newDoc, start) + within);
+  pushMemoDoc();
+  renderMemoLive(); // 포커스 raw 보존 — 다른 블록만 갱신, 캐럿은 유지
+  renderMemoCursors();
+  sendMemoCursor();
 }
 
 function onMemoLiveKeydown(event) {
   const m = state.memo;
   if (!m || !m.writable) return;
   const raw = memoLiveActiveRawEl();
-  if (!raw || !raw.contains(event.target)) return; // 체크박스·접기처럼 raw 밖의 포커스 가능한 요소는 건드리지 않는다
-  if (event.isComposing) return; // 한글 등 조합 중엔 IME가 Enter/Backspace 등을 자체 처리하므로 건드리지 않는다
+  if (!raw || document.activeElement !== raw) return; // 체크박스·접기 등 raw 밖 포커스는 안 건드림
+  if (event.isComposing) return; // 조합 중엔 IME 에 맡긴다
+  const doc = dom.memoEditor.value || "";
+  const start = Number(raw.dataset.liveStart);
+  const end = Number(raw.dataset.liveEnd);
+  const within = getLiveCaretOffset() ?? 0;
+  const rawLen = (raw.textContent || "").length;
+  const lastLine = doc.split("\n").length - 1;
+  const caret = docOffsetOfLine(doc, start) + within;
   if (event.key === "Tab") {
     event.preventDefault();
     document.execCommand?.("insertText", false, "  ");
     return;
   }
-  const start = Number(raw.dataset.liveStart);
-  const end = Number(raw.dataset.liveEnd);
-  const lines = (dom.memoEditor.value || "").split("\n");
-  const text = raw.textContent || "";
   if (event.key === "Enter") {
     event.preventDefault();
-    const offset = getLiveCaretOffset() ?? text.length;
-    const before = text.slice(0, offset);
-    const after = text.slice(offset);
-    const newLines = [...lines.slice(0, start), before, after, ...lines.slice(end + 1)];
-    applyMemoLiveEdit(newLines.join("\n"), start + 1, 0);
+    applyMemoLiveEdit(doc.slice(0, caret) + "\n" + doc.slice(caret), caret + 1);
     return;
   }
-  if (event.key === "Backspace") {
-    const offset = getLiveCaretOffset();
-    if (offset === 0 && start > 0) {
+  if (event.key === "Backspace" && within === 0) {
+    const blockStart = docOffsetOfLine(doc, start);
+    if (blockStart > 0) {
       event.preventDefault();
-      const prevLine = lines[start - 1];
-      const merged = prevLine + text;
-      const newLines = [...lines.slice(0, start - 1), merged, ...lines.slice(end + 1)];
-      applyMemoLiveEdit(newLines.join("\n"), start - 1, prevLine.length);
+      applyMemoLiveEdit(doc.slice(0, blockStart - 1) + doc.slice(blockStart), blockStart - 1);
     }
     return;
   }
-  if (event.key === "ArrowUp") {
-    const offset = getLiveCaretOffset();
-    if (offset === 0 && start > 0) {
-      event.preventDefault();
-      m.liveLine = start - 1;
-      renderMemoLive();
-      setLiveCaretOffset(0);
-    }
+  // 블록 경계에서 위/왼쪽 → 이전 줄 끝, 아래/오른쪽 → 다음 줄 시작 (렌더된 블록을 자연스럽게 넘나든다).
+  if ((event.key === "ArrowUp" || event.key === "ArrowLeft") && within === 0 && start > 0) {
+    event.preventDefault();
+    moveLiveCaretTo(docOffsetOfLine(doc, start) - 1);
     return;
   }
-  if (event.key === "ArrowDown") {
-    const offset = getLiveCaretOffset();
-    if (offset === text.length && end < lines.length - 1) {
-      event.preventDefault();
-      m.liveLine = end + 1;
-      renderMemoLive();
-      setLiveCaretOffset(0);
-    }
+  if ((event.key === "ArrowDown" || event.key === "ArrowRight") && within === rawLen && end < lastLine) {
+    event.preventDefault();
+    moveLiveCaretTo(docOffsetOfLine(doc, end + 1));
   }
 }
 
-// 렌더링된(비활성) 줄을 클릭하면 그 줄을 활성 줄로 바꾼다. 체크박스/접기는 각자 핸들러가 처리하므로 건드리지 않는다.
+// 렌더된(비활성) 블록을 클릭하면 그 줄을 활성 줄로 바꾼다. 체크박스/접기는 각자 핸들러가 처리.
 function onMemoLiveClick(event) {
   const m = state.memo;
   if (!m || !m.writable) return;
   if (event.target.closest(".md-check, .md-fold")) return;
-  if (event.target.closest(".memo-live-raw")) return; // 이미 활성 줄 — 캐럿 배치는 기본 클릭 동작에 맡긴다
+  if (event.target.closest(".memo-live-raw")) { syncLiveCaretFromDom(); return; } // 이미 활성 — 네이티브 캐럿
   const block = event.target.closest("[data-line]");
   if (!block) return;
   const line = Number(block.dataset.line);
   if (!Number.isFinite(line)) return;
-  m.liveLine = line;
-  renderMemoLive();
-  setLiveCaretOffset(Infinity);
+  const doc = dom.memoEditor.value || "";
+  const lineText = doc.split("\n")[line] || "";
+  moveLiveCaretTo(docOffsetOfLine(doc, line) + lineText.length); // 클릭한 줄 끝
 }
 
 // 미리보기의 체크박스를 눌렀을 때 원문에서 해당 항목을 찾아 [ ]↔[x] 로 토글한다.
@@ -11706,7 +11818,13 @@ function applyMemoView(view) {
   if (v !== "edit") renderMemoPreview();
   updateMemoToolsEnabled(); // 라이브 탭에서는 색 버튼을 잠근다
   renderMemoCursors();
-  if (v === "live") setLiveCaretOffset(0);
+  if (v === "live" && state.memo?.writable) {
+    // 편집 탭에서 넘어오면 그 캐럿 위치를 라이브로 이어받는다.
+    const sel = dom.memoEditor && !dom.memoEditor.disabled ? dom.memoEditor.selectionStart : 0;
+    setLiveCaret(sel || 0);
+    renderMemoLive();
+    placeLiveCaret(state.memo.liveCaret);
+  }
 }
 
 function bindMemoEvents() {
@@ -11776,13 +11894,25 @@ function bindMemoEvents() {
     handleMemoRenderedFoldKey(event);
     onMemoLiveKeydown(event);
   });
-  // 한글 등 조합 중에는 DOM을 다시 그리지 않는다 — 라이브 탭은 activeLine 이 바뀔 때 DOM을 통째로
-  // 새로 그리므로, 조합 중에 그리면 브라우저 IME 조합 상태가 깨진다. 조합이 끝난 뒤 한 번만 반영.
+  // 한글 등 조합 중에는 input 을 흘려보내고(조합 완료 때 한 번 반영), 그때도 재조정은 포커스된 raw 를
+  // 건드리지 않아 IME 조합이 안 깨진다.
   dom.memoLive?.addEventListener("input", (event) => {
     if (event.isComposing) return;
     onMemoLiveInput();
   });
   dom.memoLive?.addEventListener("compositionend", onMemoLiveInput);
+  // 같은 블록 안에서의 캐럿 이동(화살표/클릭/드래그)을 라이브 캐럿·원격커서에 반영한다.
+  for (const ev of ["keyup", "mouseup"]) {
+    dom.memoLive?.addEventListener(ev, () => { syncLiveCaretFromDom(); sendMemoCursor(); });
+  }
+  // 붙여넣기는 서식 없는 평문으로 넣어 raw 원문을 깨끗이 유지한다(input 이 이어서 문서에 반영).
+  dom.memoLive?.addEventListener("paste", (event) => {
+    const raw = memoLiveActiveRawEl();
+    if (!raw || document.activeElement !== raw) return;
+    event.preventDefault();
+    const text = (event.clipboardData || window.clipboardData)?.getData("text") || "";
+    document.execCommand?.("insertText", false, text.replace(/\r\n?/g, "\n"));
+  });
   // 커서 이동/선택 변경을 다른 사람에게 알린다.
   const cursorEvents = ["keyup", "mouseup", "click", "select", "focus"];
   for (const ev of cursorEvents) dom.memoEditor?.addEventListener(ev, sendMemoCursor);
@@ -14149,7 +14279,7 @@ function renderMarkdown(src, activeLine) {
       origLine++;
       continue;
     }
-    if (/^\s*$/.test(line)) { closeQuote(); origLine++; continue; }
+    if (/^\s*$/.test(line)) { closeQuote(); if (isLive) pushLine("<br>", origLine); origLine++; continue; }
     if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { closeQuote(); pushLine("<hr />", origLine); origLine++; continue; }
 
     const heading = line.match(/^(#{1,6})\s+(.*)$/);
