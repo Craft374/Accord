@@ -3188,8 +3188,13 @@ body.screen-pip .screen-stage #screenViewer {
   width: 100%;
   height: 100%;
 }
-body.screen-pip .screen-stage-head {
+body.screen-pip .screen-stage,
+body.screen-pip .screen-stage #screenViewer {
   cursor: move;
+}
+body.screen-pip .screen-stage-actions button,
+body.screen-pip .screen-share-pill {
+  cursor: pointer;
 }
 /* PIP에서는 헤더를 항상 보이게 유지해 드래그·버튼 접근을 막지 않는다. */
 body.screen-pip .screen-stage.screen-controls-hidden .screen-stage-head {
@@ -4370,6 +4375,11 @@ audio,
   border-left: 1px solid var(--line);
 }
 .room-tree-root { padding-top: 1px; }
+/* 드래그 중에는 그룹 카드 배경/테두리를 없애 드롭 표시(파란 선·빈 그룹 안내)가 겹쳐 지저분해지지 않게 한다. */
+.room-list.room-tree-drag-active .room-group {
+  background: transparent;
+  border-color: transparent;
+}
 .room-tree-empty { display: none; }
 .room-list.room-tree-drag-active .room-tree-empty { display: block; }
 .room-list.room-tree-drag-active .room-tree-root { min-height: 36px; }
@@ -4388,15 +4398,22 @@ audio,
   pointer-events: none;
 }
 .room-group-empty { padding: 8px; color: var(--muted); font-size: 11px; text-align: center; border: 1px dashed var(--line-strong); border-radius: var(--radius-xs); }
+/* 방을 '떠 있는 글자'가 아니라 경계가 있는 상자로 보이게 한다.
+   경계선을 항목(.room-item) 전체에 두어 통화방의 참가자 목록까지 한 상자로 묶는다. */
 .room-item {
   border-radius: var(--radius-sm);
+  background: var(--bg-base);
+  border: 1px solid var(--line);
+  overflow: hidden;
 }
+.room-item:hover { border-color: var(--line-strong); }
 .room-item.room-draggable { cursor: grab; }
 .room-item.room-draggable:active { cursor: grabbing; }
 .room-list.room-pointer-drag-active { user-select: none; cursor: grabbing; }
 .room-item.dragging { opacity: 0.35; }
 .room-item.active {
-  background: transparent;
+  background: rgba(88, 101, 242, 0.16);
+  border-color: rgba(88, 101, 242, 0.5);
 }
 /* 지금 접속해 있는 방: 왼쪽 얇은 초록선 + 작은 '여기' 칩으로 거슬리지 않게 표시.
    보는 방(파란 active)과 접속한 방(초록)을 구분한다. */
@@ -4432,22 +4449,17 @@ audio,
   gap: 8px;
   min-height: 34px;
   padding: 0 8px;
-  /* 각 방을 '떠 있는 글자'가 아니라 경계가 있는 버튼 상자로 보이게 한다. */
-  background: var(--bg-base);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 0;
   color: var(--muted);
   font-weight: 500;
   justify-content: flex-start;
 }
 .room-item-head:hover:not(:disabled) {
   background: var(--bg-elevated);
-  border-color: var(--line-strong);
   color: var(--text);
 }
 .room-item.active .room-item-head {
-  background: rgba(88, 101, 242, 0.16);
-  border-color: rgba(88, 101, 242, 0.5);
   color: var(--heading);
 }
 .room-icon {
@@ -4543,7 +4555,9 @@ audio,
 }
 .room-add-button {
   margin-top: 0;
-  background: transparent;
+  background: var(--bg-base);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
   color: var(--muted);
   font-weight: 500;
   justify-content: flex-start;
@@ -4562,6 +4576,7 @@ audio,
 .room-list-actions .room-add-button { justify-content: center; }
 .room-add-button:hover:not(:disabled) {
   background: var(--bg-elevated);
+  border-color: var(--line-strong);
   color: var(--text);
 }
 
@@ -5421,6 +5436,20 @@ input.perm-switch:checked::after { transform: translateX(16px); }
 .monitor-tile-num { font-size: 18px; font-weight: 800; line-height: 1; }
 .monitor-tile-meta { font-size: 10px; line-height: 1.15; text-align: center; color: var(--muted); }
 .monitor-tile:hover .monitor-tile-meta { color: var(--text); }
+.camera-list { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.camera-option {
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-base);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+.camera-option:hover { background: rgba(88, 101, 242, 0.18); border-color: var(--blurple); color: var(--heading); }
 .img-viewer {
   display: flex;
   flex-direction: column;

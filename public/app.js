@@ -73,6 +73,7 @@ const state = {
   screenProbeEnabled: localStorage.getItem("voiceChatScreenProbe") !== "off",
   screenFitMode: localStorage.getItem("voiceChatScreenFitMode") === "cover" ? "cover" : "contain",
   screenPip: false, // 화면 공유를 작은 플로팅 창(PIP)으로 띄웠는지
+  screenSource: "screen", // 현재 공유 슬롯의 소스: "screen"(모니터) 또는 "camera"(웹캠/가상카메라)
   screenControlsHideTimer: 0,
   screenStats: { capture: "", sender: "", receiver: "", bottleneck: "" },
   screenCaptureMethod: "",
@@ -351,6 +352,7 @@ const dom = {
   systemAudioToggle: document.querySelector("#systemAudioToggle"),
   systemAudioAction: document.querySelector("#systemAudioAction"),
   screenShareButton: document.querySelector("#screenShareButton"),
+  cameraShareButton: document.querySelector("#cameraShareButton"),
   screenSharePanel: document.querySelector("#screenSharePanel"),
   screenResolutionSelect: document.querySelector("#screenResolutionSelect"),
   screenFpsSelect: document.querySelector("#screenFpsSelect"),
@@ -557,6 +559,7 @@ function bindEvents() {
   dom.copyLogButton?.addEventListener("click", copyClientLogs);
   dom.clearLogButton?.addEventListener("click", clearClientLogs);
   dom.screenShareButton.addEventListener("click", toggleScreenShare);
+  dom.cameraShareButton?.addEventListener("click", toggleCameraShare);
   dom.screenViewerCloseButton.addEventListener("click", () => {
     closeScreenViewer();
   });
@@ -2741,6 +2744,118 @@ async function chooseMonitorAndShare(displayId) {
   await startScreenShare();
 }
 
+// ── 카메라 공유(웹캠 / OBS 가상카메라) ──
+// 듀얼모니터를 한 화면으로 합쳐 캡처하는 건 화면 캡처 API가 지원하지 않으므로, 대신 카메라(가상카메라 포함)를
+// 화면 공유 슬롯으로 내보낼 수 있게 한다. OBS 가상카메라를 켜면 카메라 목록에 잡혀 그대로 공유된다.
+async function toggleCameraShare() {
+  if (state.screenSharing && state.screenSource === "camera") {
+    await stopScreenShare({ message: "카메라 공유를 껐습니다." });
+    return;
+  }
+  await requestCameraShare();
+}
+
+async function requestCameraShare() {
+  if (!state.currentRoom) { setMessage("방에 들어가면 카메라를 켤 수 있습니다."); return; }
+  if (!isScreenShareSendSupported()) { setMessage("이 환경에서는 영상 송출을 지원하지 않습니다."); return; }
+  let cams = [];
+  try {
+    let devices = await navigator.mediaDevices.enumerateDevices();
+    cams = devices.filter((d) => d.kind === "videoinput");
+    // 라벨은 카메라 권한이 있어야 채워지므로, 여러 대인데 라벨이 비어 있으면 한 번 열어 라벨을 확보한다.
+    if (cams.length > 1 && cams.every((c) => !c.label)) {
+      const probe = await navigator.mediaDevices.getUserMedia({ video: true, audio: false }).catch(() => null);
+      if (probe) {
+        probe.getTracks().forEach((t) => t.stop());
+        devices = await navigator.mediaDevices.enumerateDevices();
+        cams = devices.filter((d) => d.kind === "videoinput");
+      }
+    }
+  } catch (error) {
+    recordClientError("camera-list-failed", getErrorDetail(error));
+  }
+  if (cams.length > 1) { openCameraPicker(cams); return; }
+  await startCameraShare(cams[0]?.deviceId || "");
+}
+
+let cameraPickerEl = null;
+function closeCameraPicker() {
+  if (cameraPickerEl) { cameraPickerEl.remove(); cameraPickerEl = null; }
+  document.removeEventListener("keydown", onCameraPickerKey, true);
+}
+function onCameraPickerKey(e) { if (e.key === "Escape") { e.preventDefault(); closeCameraPicker(); } }
+function openCameraPicker(cams) {
+  closeCameraPicker();
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop monitor-picker-backdrop";
+  backdrop.addEventListener("click", (e) => { if (e.target === backdrop) closeCameraPicker(); });
+  const panel = document.createElement("div");
+  panel.className = "modal monitor-picker";
+  panel.innerHTML = `
+    <header class="modal-head"><h2>공유할 카메라 선택</h2><button class="ghost small" data-cam-close="1" type="button">닫기</button></header>
+    <div class="modal-body">
+      <p class="modal-hint">OBS 가상카메라를 켜면 이 목록에 나타나요.</p>
+      <div class="camera-list" data-cam-list></div>
+    </div>`;
+  backdrop.append(panel);
+  document.body.append(backdrop);
+  cameraPickerEl = backdrop;
+  panel.querySelector("[data-cam-close]").addEventListener("click", closeCameraPicker);
+  const list = panel.querySelector("[data-cam-list]");
+  cams.forEach((cam, i) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "camera-option";
+    btn.textContent = cam.label || `카메라 ${i + 1}`;
+    btn.addEventListener("click", () => { closeCameraPicker(); startCameraShare(cam.deviceId || ""); });
+    list.append(btn);
+  });
+  document.addEventListener("keydown", onCameraPickerKey, true);
+}
+
+async function startCameraShare(deviceId) {
+  if (!state.currentRoom) return;
+  // 화면 공유와 같은 송출 슬롯을 쓰므로, 화면 공유 중이면 먼저 끈다(동시 1개).
+  if (state.screenSharing) await stopScreenShare({ renegotiate: false, message: "" });
+  let stream = null;
+  try {
+    if (dom.cameraShareButton) dom.cameraShareButton.disabled = true;
+    const video = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } };
+    if (deviceId) video.deviceId = { exact: deviceId };
+    stream = await navigator.mediaDevices.getUserMedia({ video, audio: false });
+    const track = stream.getVideoTracks()[0];
+    if (!track) throw new Error("카메라 영상 트랙을 가져오지 못했습니다.");
+    state.screenStream = stream;
+    state.screenTrack = track;
+    state.screenSharing = true;
+    state.screenSource = "camera";
+    state.selectedScreenPeerId = state.screenPreviewEnabled ? "local" : "";
+    track.contentHint = "motion";
+    track.addEventListener("ended", () => {
+      if (Date.now() < state.ignoreScreenEndedUntil) return;
+      stopScreenShare().catch(() => {});
+    });
+    rebuildLocalStream();
+    for (const peer of state.peers.values()) {
+      peer.senders.screen = addLocalTrack(peer, state.screenTrack, "screen");
+      tuneSender(peer.senders.screen, "screen");
+    }
+    await renegotiatePeers();
+    renderParticipants();
+    renderScreenStage();
+    setMessage("카메라를 공유 중입니다.");
+  } catch (error) {
+    cleanupStream(stream);
+    state.screenSharing = false;
+    state.screenStream = null;
+    state.screenTrack = null;
+    state.screenSource = "screen";
+    setMessage(error.message || "카메라를 켜지 못했습니다.");
+  } finally {
+    updateControls();
+  }
+}
+
 async function startScreenShare() {
   if (state.screenSharing) return;
   if (!state.currentRoom) {
@@ -2895,6 +3010,7 @@ function cleanupLocalScreenShare() {
   state.screenStream = null;
   state.screenTrack = null;
   state.screenSharing = false;
+  state.screenSource = "screen";
   state.screenStats.capture = "";
   state.screenStats.sender = "";
   state.screenStats.receiver = "";
@@ -11170,21 +11286,22 @@ function bindMemoEvents() {
     onMemoInput();
   });
   // 엔터를 누르면 크로미움이 캐럿을 화면 맨 위로 끌어올리며 스크롤을 확 내리는 버그가 종종 생긴다.
-  // 일반 메모장처럼 스크롤이 튀지 않도록, 줄바꿈 뒤 캐럿이 화면 밖으로 벗어날 때만 최소한으로 보정한다.
+  // 기본 줄바꿈을 막고 우리가 직접 개행을 넣으면 그 자동 스크롤 자체가 일어나지 않아(줄번호가 튀는 깜빡임도 없음),
+  // 일반 메모장처럼 스크롤이 그대로 유지된다. execCommand 는 네이티브 실행취소(undo)도 보존한다.
   dom.memoEditor?.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" || event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return;
     const el = dom.memoEditor;
+    if (el.disabled || el.readOnly) return;
+    event.preventDefault();
     const before = el.scrollTop;
-    // 기본 줄바꿈(+브라우저 자동 스크롤)이 끝난 다음 프레임에 스크롤을 제자리로 되돌린다.
-    requestAnimationFrame(() => {
-      if (dom.memoEditor !== el) return;
-      const caret = getCaretCoordinates(el, el.selectionStart);
-      const view = el.clientHeight;
-      let next = before;
-      if (caret.top + caret.height > before + view) next = caret.top + caret.height - view + 6; // 아래로 벗어나면 최소만 내림
-      else if (caret.top < before) next = Math.max(0, caret.top - 6);                              // 위로 벗어나면 최소만 올림
-      if (Math.abs(next - el.scrollTop) > 1) el.scrollTop = next;
-    });
+    document.execCommand("insertText", false, "\n"); // input 이벤트 → onMemoInput 자동 호출(전파+미리보기+거터)
+    // execCommand 는 자동 스크롤을 하지 않으므로, 캐럿이 화면 밖으로 벗어날 때만 동기적으로 최소 보정한다.
+    const caret = getCaretCoordinates(el, el.selectionStart);
+    const view = el.clientHeight;
+    let next = before;
+    if (caret.top + caret.height > before + view) next = caret.top + caret.height - view + 6;
+    else if (caret.top < before) next = Math.max(0, caret.top - 6);
+    if (Math.abs(next - el.scrollTop) > 1) el.scrollTop = next;
   });
   // Ctrl(⌘)+휠 로 글자 크기 조절 — 편집기/미리보기 어느 쪽 위에서든 동작.
   dom.memoBody?.addEventListener("wheel", (event) => {
@@ -12423,9 +12540,14 @@ function endTransform(event) {
   const layer = findDrawLayer(t.layerId);
   if (!layer) { d.transform = null; return; }
   // 확정: 다음 드래그의 기준을 새 상태로 갱신하고 서버에 레이어 획을 통째로 교체 요청
+  const before = t.snapshot.map((s) => JSON.parse(JSON.stringify(s))); // 이번 변형 전 상태
+  const after = layer.strokes.map((s) => JSON.parse(JSON.stringify(s)));
   t.orig = { ...t.box };
-  t.snapshot = layer.strokes.map((s) => JSON.parse(JSON.stringify(s)));
-  d.myStrokes = d.myStrokes.filter((e) => e.layerId !== layer.id); // 좌표가 바뀌어 개별 undo 무효
+  t.snapshot = after.map((s) => JSON.parse(JSON.stringify(s)));
+  // 개별 획 undo 기록은 좌표가 바뀌어 무효 → 제거하되, 레이어 변형(replace)은 되돌릴 수 있게 기록으로 남긴다.
+  d.myStrokes = d.myStrokes.filter((e) => !(e.layerId === layer.id && (e.kind || "stroke") === "stroke"));
+  d.myStrokes.push({ kind: "replace", layerId: layer.id, before, after });
+  d.myRedo.length = 0;
   sendSocket({ type: "draw:layer-replace", roomId: d.roomId, layerId: layer.id, strokes: layer.strokes });
   renderDrawOverlay();
   setDrawStatus(`${Math.round(t.box.w)} × ${Math.round(t.box.h)}`, "");
@@ -12656,11 +12778,25 @@ function undoMyLastStroke() {
   const d = state.draw;
   if (!d || !d.myStrokes.length) return;
   const entry = d.myStrokes.pop();
+  // 이동·크기 변형(레이어 통째 교체) 되돌리기: 변형 전 상태로 복원한다.
+  if (entry.kind === "replace") {
+    const layer = findDrawLayer(entry.layerId);
+    if (layer) {
+      layer.strokes = entry.before.map((s) => JSON.parse(JSON.stringify(s)));
+      if (d.transform && d.transform.layerId === entry.layerId) d.transform = null;
+      renderLayer(layer);
+      compositeDraw();
+      renderDrawOverlay();
+      sendSocket({ type: "draw:layer-replace", roomId: d.roomId, layerId: layer.id, strokes: layer.strokes });
+    }
+    d.myRedo.push(entry);
+    return;
+  }
   const layer = findDrawLayer(entry.layerId);
   if (layer) {
     // 되돌린 획 원본을 보관해 두면 다시실행(Ctrl+Shift+Z)에서 그대로 되살릴 수 있다.
     const removed = layer.strokes.find((s) => s.id === entry.strokeId);
-    if (removed) d.myRedo.push({ layerId: entry.layerId, stroke: removed });
+    if (removed) d.myRedo.push({ kind: "stroke", layerId: entry.layerId, stroke: removed });
     layer.strokes = layer.strokes.filter((s) => s.id !== entry.strokeId);
     renderLayer(layer);
     compositeDraw();
@@ -12668,11 +12804,24 @@ function undoMyLastStroke() {
   sendSocket({ type: "draw:undo", roomId: d.roomId, strokeId: entry.strokeId });
 }
 
-// 다시실행: 마지막으로 되돌린 내 획을 같은 레이어에 되살린다(서버엔 draw:stroke 로 재전송).
+// 다시실행: 마지막으로 되돌린 작업을 되살린다(획은 draw:stroke, 이동변형은 draw:layer-replace 로 재전송).
 function redoMyLastStroke() {
   const d = state.draw;
   if (!d || !d.myRedo.length) return;
   const entry = d.myRedo.pop();
+  if (entry.kind === "replace") {
+    const layer = findDrawLayer(entry.layerId);
+    if (layer) {
+      layer.strokes = entry.after.map((s) => JSON.parse(JSON.stringify(s)));
+      if (d.transform && d.transform.layerId === entry.layerId) d.transform = null;
+      renderLayer(layer);
+      compositeDraw();
+      renderDrawOverlay();
+      sendSocket({ type: "draw:layer-replace", roomId: d.roomId, layerId: layer.id, strokes: layer.strokes });
+    }
+    d.myStrokes.push(entry);
+    return;
+  }
   const layer = findDrawLayer(entry.layerId);
   if (!layer) return;
   layer.strokes.push(entry.stroke);
@@ -13898,21 +14047,24 @@ function saveScreenPipBox() {
   localStorage.setItem("voiceChatScreenPipBox", JSON.stringify(box));
 }
 
-// PIP 창을 헤더로 드래그해 옮긴다. 크기는 CSS resize 손잡이(우하단)로 조절하며, 끝나면 위치·크기를 저장한다.
+// PIP 창은 화면 어디를 잡고 끌어도 옮겨진다(버튼·우하단 리사이즈 손잡이 영역만 제외).
+// 크기는 CSS resize 손잡이로 조절하며, 끝나면 위치·크기를 저장한다.
 function bindScreenPipDrag() {
   const stage = dom.screenStage;
-  const head = stage?.querySelector(".screen-stage-head");
-  if (!stage || !head) return;
+  if (!stage) return;
   let drag = null;
-  head.addEventListener("pointerdown", (e) => {
+  stage.addEventListener("pointerdown", (e) => {
     if (!state.screenPip) return;
-    if (e.target.closest("button")) return; // 버튼 클릭은 드래그로 취급하지 않음
-    drag = { px: e.clientX, py: e.clientY, left: parseFloat(stage.style.left) || 0, top: parseFloat(stage.style.top) || 0 };
-    head.setPointerCapture?.(e.pointerId);
+    if (e.target.closest("button")) return; // 버튼(맞춤/전체화면/닫기/공유목록 등) 클릭은 드래그 아님
+    const r = stage.getBoundingClientRect();
+    // 우하단 20px 은 크기조절 손잡이에 양보
+    if (e.clientX > r.right - 20 && e.clientY > r.bottom - 20) return;
+    drag = { px: e.clientX, py: e.clientY, left: parseFloat(stage.style.left) || r.left, top: parseFloat(stage.style.top) || r.top };
+    stage.setPointerCapture?.(e.pointerId);
     document.body.classList.add("screen-pip-dragging");
     e.preventDefault();
   });
-  head.addEventListener("pointermove", (e) => {
+  stage.addEventListener("pointermove", (e) => {
     if (!drag) return;
     const w = stage.offsetWidth;
     const h = stage.offsetHeight;
@@ -13924,12 +14076,12 @@ function bindScreenPipDrag() {
   const endDrag = (e) => {
     if (!drag) return;
     drag = null;
-    head.releasePointerCapture?.(e.pointerId);
+    stage.releasePointerCapture?.(e.pointerId);
     document.body.classList.remove("screen-pip-dragging");
     saveScreenPipBox();
   };
-  head.addEventListener("pointerup", endDrag);
-  head.addEventListener("pointercancel", endDrag);
+  stage.addEventListener("pointerup", endDrag);
+  stage.addEventListener("pointercancel", endDrag);
   // resize 손잡이로 크기를 바꾸면 저장한다.
   if (typeof ResizeObserver === "function") {
     let t = 0;
@@ -13993,7 +14145,7 @@ function renderScreenStage() {
   dom.screenStage.hidden = false;
   applyScreenFitMode();
   updateScreenFullscreenButton();
-  dom.screenViewerTitle.textContent = `${selected.name} 화면 공유`;
+  dom.screenViewerTitle.textContent = `${selected.name} ${selected.kind === "camera" ? "카메라" : "화면 공유"}`;
   if (dom.screenViewer.srcObject !== selected.stream) {
     dom.screenViewer.srcObject = selected.stream;
     dom.screenViewer.play?.().catch(() => {});
@@ -14014,7 +14166,7 @@ function renderScreenStage() {
 function getActiveScreenShares() {
   const shares = [];
   if (state.screenPreviewEnabled && state.screenSharing && state.screenTrack?.readyState === "live" && state.screenStream) {
-    shares.push({ id: "local", name: getUserName(), stream: state.screenStream });
+    shares.push({ id: "local", name: getUserName(), stream: state.screenStream, kind: state.screenSource });
   }
   for (const peer of state.peers.values()) {
     const playback = peer.remote.screen;
@@ -14054,11 +14206,19 @@ function updateControls() {
   dom.systemAudioToggle.disabled = !canShareSystem || state.applyingSettings || denySound;
   dom.systemAudioToggle.checked = state.systemSharing || (!inRoom && dom.systemAudioToggle.checked);
   if (!canShareSystem || denySound) dom.systemAudioToggle.checked = false;
+  const sharingScreen = state.screenSharing && state.screenSource === "screen";
+  const sharingCamera = state.screenSharing && state.screenSource === "camera";
   dom.screenShareButton.hidden = !canSendScreen || denyScreen;
   dom.screenSharePanel.hidden = !canSendScreen || denyScreen;
-  dom.screenShareButton.disabled = !canSendScreen || !inRoom || state.applyingSettings || denyScreen;
+  // 카메라 공유 중에는 화면 공유 버튼을 잠가(한 슬롯 공유), 반대도 마찬가지.
+  dom.screenShareButton.disabled = !canSendScreen || !inRoom || state.applyingSettings || denyScreen || sharingCamera;
   if (dom.openScreenTestButton) dom.openScreenTestButton.disabled = !canSendScreen || typeof desktop.openScreenTestWindow !== "function";
-  dom.screenShareButton.textContent = state.screenSharing ? "화면 공유 끄기" : "화면 공유";
+  dom.screenShareButton.textContent = sharingScreen ? "화면 공유 끄기" : "화면 공유";
+  if (dom.cameraShareButton) {
+    dom.cameraShareButton.hidden = !canSendScreen || denyScreen;
+    dom.cameraShareButton.disabled = !canSendScreen || !inRoom || state.applyingSettings || denyScreen || sharingScreen;
+    dom.cameraShareButton.textContent = sharingCamera ? "카메라 끄기" : "카메라";
+  }
   dom.systemInputField.hidden = !isVirtualSystemAudioSupported();
   dom.systemInputDeviceSelect.disabled = !isVirtualSystemAudioSupported() || state.applyingSettings;
   if (dom.refreshProgramAudioButton) dom.refreshProgramAudioButton.disabled = state.applyingSettings;
