@@ -9324,7 +9324,7 @@ function openImageViewer(opts) {
     if (o.aspect) {
       if (layout.w / layout.h > o.aspect) { ch = layout.h * 0.9; cw = ch * o.aspect; }
       else { cw = layout.w * 0.9; ch = cw / o.aspect; }
-    } else { cw = layout.w * 0.9; ch = layout.h * 0.9; }
+    } else { cw = layout.w; ch = layout.h; }
     crop.w = cw; crop.h = ch;
     crop.x = layout.left + (layout.w - cw) / 2;
     crop.y = layout.top + (layout.h - ch) / 2;
