@@ -25,6 +25,12 @@ const BANNER_GRADIENTS = [
 ];
 const BANNER_GRADIENT_MAP = Object.fromEntries(BANNER_GRADIENTS.map((g) => [g.key, g.css]));
 
+// init() 중 bindDrawLayersResize()가 즉시 사용하므로 초기화 호출보다 먼저 선언한다.
+const DRAW_LAYERS_W_KEY = "accordDrawLayersWidth";
+const DRAW_LAYERS_W_DEFAULT = 200;
+const DRAW_LAYERS_W_MIN = 140;
+const DRAW_LAYERS_W_MAX = 400;
+
 const ROOM_TYPE_META = {
   voice: { icon: "🔊", label: "통화방" },
   chat: { icon: "#", label: "채팅방" },
@@ -13639,11 +13645,6 @@ function bindDrawEvents() {
 }
 
 // ── 레이어 패널 폭 조절(드래그) ──
-const DRAW_LAYERS_W_KEY = "accordDrawLayersWidth";
-const DRAW_LAYERS_W_DEFAULT = 200;
-const DRAW_LAYERS_W_MIN = 140;
-const DRAW_LAYERS_W_MAX = 400;
-
 function clampDrawLayersWidth(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return DRAW_LAYERS_W_DEFAULT;
