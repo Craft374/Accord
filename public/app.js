@@ -93,6 +93,7 @@ const state = {
   localStream: null,
   muted: false,
   systemSharing: false,
+  outputOverrideValue: null, // 시스템사운드 공유용 임시 출력장치 전환 중이면 원래 장치를 여기에 보관(null=비활성, 영구 저장 X)
   localMeterStop: null,
   rawMicMeterStop: null,
   remoteMeterStop: null,
@@ -283,6 +284,10 @@ const dom = {
   drawOverlay: document.querySelector("#drawOverlay"),
   drawLayerAdd: document.querySelector("#drawLayerAdd"),
   drawLayerList: document.querySelector("#drawLayerList"),
+  drawLayerBulk: document.querySelector("#drawLayerBulk"),
+  drawLayerBulkCount: document.querySelector("#drawLayerBulkCount"),
+  drawLayerMergeBtn: document.querySelector("#drawLayerMergeBtn"),
+  drawLayerBulkDelBtn: document.querySelector("#drawLayerBulkDelBtn"),
   drawLayersResizeHandle: document.querySelector("#drawLayersResizeHandle"),
   logPanel: document.querySelector("#logPanel"),
   logRoomName: document.querySelector("#logRoomName"),
@@ -451,6 +456,7 @@ const dom = {
   membersResizeHandle: document.querySelector("#membersResizeHandle"),
   roomsCollapseToggle: document.querySelector("#roomsCollapseToggle"),
   membersCollapseToggle: document.querySelector("#membersCollapseToggle"),
+  drawLayerNamesToggle: document.querySelector("#drawLayerNamesToggle"),
   resetLayoutButton: document.querySelector("#resetLayoutButton"),
   focusBar: document.querySelector("#focusBar"),
   focusBarTitle: document.querySelector("#focusBarTitle"),
@@ -592,6 +598,8 @@ function bindEvents() {
   dom.outputDeviceSelect.addEventListener("change", async () => {
     resetEchoProbe();
     localStorage.setItem("voiceChatOutputDeviceId", dom.outputDeviceSelect.value);
+    // 공유 중 임시 전환된 상태에서 사용자가 다시 직접 고르면, 되돌아갈 기준값도 그 선택으로 갱신한다.
+    if (state.outputOverrideValue !== null) state.outputOverrideValue = dom.outputDeviceSelect.value;
     if (state.systemSharing || dom.systemAudioToggle.checked) {
       await selectSafeOutputDeviceForSystemShare();
       if (state.systemSharing) await restartSystemAudio();
@@ -780,6 +788,7 @@ async function connect() {
 let socketEverConnected = false;
 let reconnectTimer = 0;
 let reconnectAttempts = 0;
+const RECONNECT_MAX_ATTEMPTS = 5; // 이 횟수만큼 실패하면 재연결을 포기하고 서버 선택 화면으로 나간다.
 
 function openSocket() {
   return new Promise((resolve, reject) => {
@@ -832,6 +841,16 @@ function openSocket() {
 function scheduleReconnect() {
   if (reconnectTimer) return;
   reconnectAttempts += 1;
+  if (reconnectAttempts > RECONNECT_MAX_ATTEMPTS) {
+    setStatus("서버 끊김", "bad");
+    if (desktop.isDesktop) {
+      setMessage("서버에 연결할 수 없어 서버 선택 화면으로 돌아갑니다.");
+      desktop.backToLauncher?.();
+    } else {
+      setMessage("서버에 연결할 수 없습니다. 새로고침 후 다시 시도해 주세요.");
+    }
+    return;
+  }
   const delay = Math.min(15000, 1000 * 2 ** Math.min(reconnectAttempts - 1, 4));
   setStatus("재연결 중", "");
   setMessage(`서버와 연결이 끊겨 다시 연결하는 중입니다… (${reconnectAttempts}회)`);
@@ -2568,6 +2587,7 @@ async function stopSystemAudio({ renegotiate = true, notify = true } = {}) {
   state.systemTrack = null;
   state.systemCaptureKind = "";
   state.systemSharing = false;
+  endAutoOutputOverride();
   rebuildLocalStream();
 
   for (const peer of state.peers.values()) {
@@ -4890,6 +4910,18 @@ function initLayoutControls() {
     setLayoutCollapsed("members", dom.membersCollapseToggle.checked);
   });
   dom.resetLayoutButton?.addEventListener("click", resetLayoutSizing);
+  applyDrawLayerNamesPref();
+  dom.drawLayerNamesToggle?.addEventListener("change", () => {
+    localStorage.setItem("accordDrawLayerNamesHidden", dom.drawLayerNamesToggle.checked ? "0" : "1");
+    applyDrawLayerNamesPref();
+  });
+}
+
+// 그림판 레이어 이름 표시 여부(설정 > 화면). 기본은 표시.
+function applyDrawLayerNamesPref() {
+  const hidden = localStorage.getItem("accordDrawLayerNamesHidden") === "1";
+  document.body.classList.toggle("hide-draw-layer-names", hidden);
+  if (dom.drawLayerNamesToggle) dom.drawLayerNamesToggle.checked = !hidden;
 }
 
 function toggleProfileModal(open) {
@@ -11628,6 +11660,7 @@ function openDrawRoom(roomId) {
     height: 600,
     layers: [], // { id, name, visible, strokes:[], canvas, ctx }
     activeLayerId: "",
+    selectedLayerIds: new Set(), // Shift+클릭 다중선택(병합/일괄삭제용)
     tool: "pen",
     color: dom.drawColor?.value || "#1a1a1a",
     size: Number(dom.drawSize?.value) || 4,
@@ -12821,6 +12854,17 @@ function updateTransform(event) {
     if (h.includes("s")) b.h = t.startBox.h + dy;
     if (h.includes("w")) { b.x = t.startBox.x + dx; b.w = t.startBox.w - dx; }
     if (h.includes("n")) { b.y = t.startBox.y + dy; b.h = t.startBox.h - dy; }
+    // 모서리 핸들 + Shift: 원본 비율을 유지하며 크기 조절(많이 움직인 축이 기준).
+    if (event.shiftKey && h.length === 2) {
+      const ratio = t.startBox.w / t.startBox.h;
+      if (Math.abs(dx) >= Math.abs(dy)) {
+        b.h = b.w / ratio;
+        if (h.includes("n")) b.y = t.startBox.y + t.startBox.h - b.h;
+      } else {
+        b.w = b.h * ratio;
+        if (h.includes("w")) b.x = t.startBox.x + t.startBox.w - b.w;
+      }
+    }
   }
   if (b.w < 4) b.w = 4;
   if (b.h < 4) b.h = 4;
@@ -13203,7 +13247,8 @@ function insertDrawImageFile(file) {
       const h = Math.max(1, Math.round(encH * fitScale));
       const x = Math.round((d.width - w) / 2);
       const y = Math.round((d.height - h) / 2);
-      const layer = findDrawLayer(d.activeLayerId) || d.layers[d.layers.length - 1];
+      addDrawLayer(); // 붙여넣은 이미지는 새 레이어에 들어간다
+      const layer = findDrawLayer(d.activeLayerId);
       const stroke = { id: nextDrawStrokeId(), tool: "image", src, x, y, w, h };
       layer.strokes.push(stroke);
       d.myStrokes.push({ layerId: layer.id, strokeId: stroke.id });
@@ -13223,10 +13268,12 @@ function renderDrawLayers() {
   const d = state.draw;
   const list = dom.drawLayerList;
   if (!d || !list) return;
+  for (const id of [...d.selectedLayerIds]) if (!d.layers.some((l) => l.id === id)) d.selectedLayerIds.delete(id);
   list.innerHTML = "";
   d.layers.forEach((layer, index) => {
     const li = document.createElement("li");
-    li.className = "draw-layer-item" + (layer.id === d.activeLayerId ? " active" : "") + (layer.visible ? "" : " hidden-layer") + (layer.locked ? " locked-layer" : "");
+    const multi = d.selectedLayerIds.size > 1 && d.selectedLayerIds.has(layer.id);
+    li.className = "draw-layer-item" + (layer.id === d.activeLayerId ? " active" : "") + (multi ? " multi-selected" : "") + (layer.visible ? "" : " hidden-layer") + (layer.locked ? " locked-layer" : "");
     li.dataset.layerId = layer.id;
 
     const vis = document.createElement("button");
@@ -13273,21 +13320,97 @@ function renderDrawLayers() {
 
     li.append(vis, lock, name, rename, order, del);
     // 선택은 목록을 다시 그리지 않고 active 클래스만 갱신한다(재렌더 시 더블클릭 이름변경이 씹히던 문제 방지).
-    li.addEventListener("click", () => selectDrawLayer(layer.id));
+    li.addEventListener("click", (e) => {
+      if (e.shiftKey) { toggleDrawLayerMultiSelect(layer.id); return; }
+      selectDrawLayer(layer.id);
+    });
     list.appendChild(li);
   });
+  updateLayerBulkBar();
 }
 
 // 레이어 선택(경량): DOM을 새로 만들지 않고 활성 표시만 바꾼다.
+// active/multi-selected 클래스를 d.activeLayerId · d.selectedLayerIds 에 맞춰 갱신(DOM 재생성 없음).
+function syncLayerSelectionDom() {
+  const d = state.draw;
+  const multi = d.selectedLayerIds.size > 1;
+  for (const li of dom.drawLayerList?.querySelectorAll(".draw-layer-item") || []) {
+    li.classList.toggle("active", li.dataset.layerId === d.activeLayerId);
+    li.classList.toggle("multi-selected", multi && d.selectedLayerIds.has(li.dataset.layerId));
+  }
+}
+
 function selectDrawLayer(layerId) {
   const d = state.draw;
   if (!d) return;
   d.activeLayerId = layerId;
+  d.selectedLayerIds = new Set([layerId]);
   d.transform = null;
-  for (const li of dom.drawLayerList?.querySelectorAll(".draw-layer-item") || []) {
-    li.classList.toggle("active", li.dataset.layerId === layerId);
-  }
+  syncLayerSelectionDom();
   renderDrawOverlay();
+  updateLayerBulkBar();
+}
+
+// Shift+클릭: 레이어를 다중선택 집합에 넣고 뺀다(병합/일괄삭제용). DOM은 다시 안 그리고 클래스만 갱신.
+function toggleDrawLayerMultiSelect(layerId) {
+  const d = state.draw;
+  if (!d) return;
+  if (d.selectedLayerIds.size === 0) d.selectedLayerIds.add(d.activeLayerId);
+  if (d.selectedLayerIds.has(layerId) && d.selectedLayerIds.size > 1) d.selectedLayerIds.delete(layerId);
+  else d.selectedLayerIds.add(layerId);
+  d.activeLayerId = layerId;
+  d.transform = null;
+  syncLayerSelectionDom();
+  renderDrawOverlay();
+  updateLayerBulkBar();
+}
+
+// 하단 병합/일괄삭제 바: 2개 이상 선택했을 때만 보인다.
+function updateLayerBulkBar() {
+  const d = state.draw;
+  if (!dom.drawLayerBulk) return;
+  const count = d?.selectedLayerIds?.size || 0;
+  dom.drawLayerBulk.hidden = count < 2;
+  if (count >= 2 && dom.drawLayerBulkCount) dom.drawLayerBulkCount.textContent = `${count}개 선택됨`;
+}
+
+// 선택한 레이어들을 z-순서(아래→위) 그대로 이어붙여 가장 아래 레이어 하나로 합친다.
+function mergeSelectedLayers() {
+  const d = state.draw;
+  if (!d || d.selectedLayerIds.size < 2) return;
+  const ids = d.selectedLayerIds;
+  const ordered = d.layers.filter((l) => ids.has(l.id)); // 배열 순서 = z-순서(아래→위)
+  if (ordered.length < 2) return;
+  const target = ordered[0];
+  target.strokes = ordered.flatMap((l) => l.strokes);
+  d.myStrokes = d.myStrokes.filter((e) => !ids.has(e.layerId) || e.layerId === target.id);
+  d.myRedo = d.myRedo.filter((e) => !ids.has(e.layerId) || e.layerId === target.id);
+  renderLayer(target);
+  sendSocket({ type: "draw:layer-replace", roomId: d.roomId, layerId: target.id, strokes: target.strokes });
+  for (const layer of ordered.slice(1)) {
+    applyLayerRemoval(layer.id);
+    sendSocket({ type: "draw:layer-remove", roomId: d.roomId, layerId: layer.id });
+  }
+  d.activeLayerId = target.id;
+  d.selectedLayerIds = new Set([target.id]);
+  renderDrawLayers();
+  compositeDraw();
+  setDrawStatus("레이어를 병합했습니다", "");
+}
+
+// 선택한 레이어들을 한번에 삭제한다(최소 한 개는 남겨야 함).
+function deleteSelectedLayers() {
+  const d = state.draw;
+  if (!d || d.selectedLayerIds.size < 2) return;
+  const ids = [...d.selectedLayerIds];
+  if (ids.length >= d.layers.length) { setDrawStatus("최소 한 개의 레이어가 필요합니다", "bad"); return; }
+  if (!confirm(`레이어 ${ids.length}개를 삭제할까요?`)) return;
+  for (const id of ids) {
+    applyLayerRemoval(id);
+    sendSocket({ type: "draw:layer-remove", roomId: d.roomId, layerId: id });
+  }
+  d.selectedLayerIds = new Set(d.activeLayerId ? [d.activeLayerId] : []);
+  renderDrawLayers();
 }
 
 function startLayerRename(li, layer) {
@@ -13614,6 +13737,8 @@ function bindDrawEvents() {
     if (dom.drawMoreMenu && !dom.drawMoreMenu.hidden && !e.target.closest(".draw-more-wrap")) closeDrawMore();
   });
   dom.drawLayerAdd?.addEventListener("click", addDrawLayer);
+  dom.drawLayerMergeBtn?.addEventListener("click", mergeSelectedLayers);
+  dom.drawLayerBulkDelBtn?.addEventListener("click", deleteSelectedLayers);
   // 캔버스 크기를 마우스로 직접 조절하는 손잡이
   document.querySelectorAll(".draw-rz-handle").forEach((h) => {
     h.addEventListener("pointerdown", (e) => beginCanvasResize(e, h.dataset.drawRz || "se"));
@@ -14977,6 +15102,23 @@ function findVirtualInputOption() {
   }) || null;
 }
 
+// 에코 방지를 위해 출력 장치를 임시로 바꿀 때, 사용자의 실제 선택을 기억해뒀다가
+// 공유가 끝나면 되돌린다. localStorage(voiceChatOutputDeviceId)는 건드리지 않아
+// 사용자가 고른 장치(예: 헤드셋)가 영구히 스피커로 바뀌어버리는 일이 없게 한다.
+function beginAutoOutputOverride() {
+  if (state.outputOverrideValue !== null) return;
+  state.outputOverrideValue = dom.outputDeviceSelect.value || "";
+}
+function endAutoOutputOverride() {
+  if (state.outputOverrideValue === null) return;
+  const prev = state.outputOverrideValue;
+  state.outputOverrideValue = null;
+  if (dom.outputDeviceSelect.value === prev) return;
+  if (![...dom.outputDeviceSelect.options].some((option) => option.value === prev)) return;
+  dom.outputDeviceSelect.value = prev;
+  applyOutputDevice();
+}
+
 async function selectSafeOutputDeviceForSystemShare() {
   if (isProgramSystemAudioMode()) return true;
   if (isWindowsSystemAudioShareActive()) return selectSeparatedWindowsOutputForSystemShare();
@@ -14987,8 +15129,8 @@ async function selectSafeOutputDeviceForSystemShare() {
 
   const safeOption = findSafeOutputOption();
   if (safeOption) {
+    beginAutoOutputOverride();
     dom.outputDeviceSelect.value = safeOption.value;
-    localStorage.setItem("voiceChatOutputDeviceId", safeOption.value);
     const applied = await applyOutputDevice();
     setMessage(applied
       ? "에코를 막기 위해 앱 출력 장치를 실제 스피커/헤드폰으로 바꿨습니다."
@@ -15024,8 +15166,8 @@ async function selectSeparatedWindowsOutputForSystemShare() {
     return false;
   }
 
+  beginAutoOutputOverride();
   dom.outputDeviceSelect.value = safeOption.value;
-  localStorage.setItem("voiceChatOutputDeviceId", safeOption.value);
   const applied = await applyOutputDevice();
   setMessage(applied
     ? "헤드셋 재캡처를 막기 위해 통화 출력을 별도 출력 장치로 바꿨습니다."
@@ -15043,8 +15185,8 @@ async function selectSafeOutputDeviceForEchoGuard() {
   const safeOption = findSafeOutputOption();
   if (!safeOption) return;
 
+  beginAutoOutputOverride();
   dom.outputDeviceSelect.value = safeOption.value;
-  localStorage.setItem("voiceChatOutputDeviceId", safeOption.value);
   const applied = await applyOutputDevice();
   setMessage(applied
     ? "에코를 줄이기 위해 앱 출력 장치를 실제 출력 장치로 바꿨습니다."

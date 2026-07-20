@@ -1837,6 +1837,8 @@ body.draw-open .log-panel {
 }
 .draw-layer-item.hidden-layer .draw-layer-name { opacity: 0.4; }
 .draw-layer-item.locked-layer .draw-layer-name { color: var(--muted); }
+.draw-layer-item.multi-selected { border-color: var(--green, #3ba55d); }
+body.hide-draw-layer-names .draw-layer-name { display: none; }
 .draw-layer-order {
   display: inline-flex;
   flex-direction: column;
@@ -1866,6 +1868,30 @@ body.draw-open .log-panel {
   font-size: 11px;
   line-height: 1.4;
 }
+.draw-layer-bulk {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--line);
+}
+.draw-layer-bulk-count {
+  flex: 1;
+  color: var(--muted);
+  font-size: 11px;
+}
+.draw-layer-bulk button {
+  min-height: 0;
+  padding: 4px 8px;
+  border: none;
+  border-radius: var(--radius-xs);
+  background: var(--bg-input);
+  color: var(--heading);
+  font-size: 11px;
+  cursor: pointer;
+}
+.draw-layer-bulk button:hover { background: var(--bg-elevated); }
 
 /* 마크다운 렌더 결과 */
 .markdown-body {
