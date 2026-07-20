@@ -8298,7 +8298,9 @@ function placeRoomTreeDropIndicator(container, before = null) {
   const indicator = ensureRoomTreeDropIndicator();
   const empty = [...container.children].find((child) => child.classList?.contains("room-tree-empty")) || null;
   container.insertBefore(indicator, before?.parentElement === container ? before : empty);
-  container.classList.add("drop-target");
+  // 루트는 방 목록 전체이므로 '컨테이너 안으로 드롭' 파란 테두리를 씌우면 목록 전체가
+  // 박스로 감싸여 보인다. 그룹 내부로 드롭할 때만 테두리를 표시한다.
+  if (!container.classList.contains("room-tree-root")) container.classList.add("drop-target");
   return true;
 }
 
