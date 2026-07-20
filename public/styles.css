@@ -912,7 +912,6 @@ body.chat-shift .chat-act.trash {
   color: #f3c869;
   cursor: default;
 }
-.chat-mention-special:hover { background: rgba(240, 178, 50, 0.28); color: #f3c869; }
 .chat-msg.mentioned {
   margin-left: -6px;
   padding-left: 4px;

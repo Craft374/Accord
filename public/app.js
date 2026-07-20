@@ -25,12 +25,6 @@ const BANNER_GRADIENTS = [
 ];
 const BANNER_GRADIENT_MAP = Object.fromEntries(BANNER_GRADIENTS.map((g) => [g.key, g.css]));
 
-// init() 중 bindDrawLayersResize()가 즉시 사용하므로 초기화 호출보다 먼저 선언한다.
-const DRAW_LAYERS_W_KEY = "accordDrawLayersWidth";
-const DRAW_LAYERS_W_DEFAULT = 200;
-const DRAW_LAYERS_W_MIN = 140;
-const DRAW_LAYERS_W_MAX = 400;
-
 const ROOM_TYPE_META = {
   voice: { icon: "🔊", label: "통화방" },
   chat: { icon: "#", label: "채팅방" },
@@ -4787,8 +4781,9 @@ function setSettingsTab(tab) {
 // 상수는 함수 내부에 두어 init() 조기 호출로 인한 TDZ 를 피한다.
 function layoutSizingConfig() {
   return {
-    rooms: { key: "accordRoomsWidth", def: 232, min: 168, max: 460 },
-    members: { key: "accordMembersWidth", def: 208, min: 150, max: 380 },
+    rooms: { key: "accordRoomsWidth", def: 232, min: 168, max: 460, cssVar: "--rooms-w" },
+    members: { key: "accordMembersWidth", def: 208, min: 150, max: 380, cssVar: "--members-w" },
+    drawLayers: { key: "accordDrawLayersWidth", def: 200, min: 140, max: 400, cssVar: "--draw-layers-w" },
   };
 }
 
@@ -4830,19 +4825,21 @@ function resetLayoutSizing() {
   applyLayoutSizing();
 }
 
-function bindLayoutResizeHandle(handle, kind) {
-  if (!handle || !dom.layout) return;
+// target: 폭 CSS 변수를 적용할 요소(기본 dom.layout — 사이드바). growsLeft: 핸들을 왼쪽으로 끌 때
+// 넓어지면 true(그림판 레이어 패널처럼 오른쪽 끝 요소), 기본은 오른쪽으로 끌 때 넓어짐(방 목록).
+// onReset: 더블클릭 시 기본값 복원 후 추가로 할 일(없으면 target 에 다시 적용만).
+function bindLayoutResizeHandle(handle, kind, { target = dom.layout, growsLeft = false, onReset } = {}) {
+  if (!handle || !target) return;
   const cfg = layoutSizingConfig()[kind];
-  const cssVar = kind === "rooms" ? "--rooms-w" : "--members-w";
+  const cssVar = cfg.cssVar;
   let startX = 0;
   let startWidth = 0;
   let pointerId = 0;
 
   const onMove = (event) => {
     const delta = event.clientX - startX;
-    // 방 목록 핸들은 오른쪽으로 끌면 넓어지고, 멤버 목록 핸들은 왼쪽으로 끌면 넓어진다.
-    const next = clampLayoutWidth(kind, kind === "rooms" ? startWidth + delta : startWidth - delta);
-    dom.layout.style.setProperty(cssVar, `${next}px`);
+    const next = clampLayoutWidth(kind, growsLeft ? startWidth - delta : startWidth + delta);
+    target.style.setProperty(cssVar, `${next}px`);
   };
   const onUp = () => {
     handle.classList.remove("dragging");
@@ -4850,7 +4847,7 @@ function bindLayoutResizeHandle(handle, kind) {
     window.removeEventListener("pointermove", onMove);
     window.removeEventListener("pointerup", onUp);
     try { handle.releasePointerCapture(pointerId); } catch {}
-    const current = parseInt(dom.layout.style.getPropertyValue(cssVar), 10);
+    const current = parseInt(target.style.getPropertyValue(cssVar), 10);
     if (Number.isFinite(current)) localStorage.setItem(cfg.key, String(current));
   };
 
@@ -4859,7 +4856,7 @@ function bindLayoutResizeHandle(handle, kind) {
     event.preventDefault();
     pointerId = event.pointerId;
     startX = event.clientX;
-    const cur = parseInt(getComputedStyle(dom.layout).getPropertyValue(cssVar), 10);
+    const cur = parseInt(getComputedStyle(target).getPropertyValue(cssVar), 10);
     startWidth = Number.isFinite(cur) ? cur : cfg.def;
     handle.classList.add("dragging");
     document.body.classList.add("resizing-layout");
@@ -4871,14 +4868,15 @@ function bindLayoutResizeHandle(handle, kind) {
   // 더블클릭하면 해당 목록 폭을 기본값으로 되돌린다.
   handle.addEventListener("dblclick", () => {
     localStorage.removeItem(cfg.key);
-    applyLayoutSizing();
+    if (onReset) onReset();
+    else target.style.setProperty(cssVar, `${cfg.def}px`);
   });
 }
 
 function initLayoutControls() {
   applyLayoutSizing();
-  bindLayoutResizeHandle(dom.roomsResizeHandle, "rooms");
-  bindLayoutResizeHandle(dom.membersResizeHandle, "members");
+  bindLayoutResizeHandle(dom.roomsResizeHandle, "rooms", { onReset: applyLayoutSizing });
+  bindLayoutResizeHandle(dom.membersResizeHandle, "members", { onReset: applyLayoutSizing });
   dom.toggleRoomsButton?.addEventListener("click", () => {
     setLayoutCollapsed("rooms", !dom.layout?.classList.contains("rooms-collapsed"));
   });
@@ -10511,16 +10509,11 @@ const MEMO_FONT_DEFAULT_KEY = "default";
 // 업로드 글꼴 이름에서 굵기·기울임 단어를 떼어내 (family, weight, italic)을 얻는다.
 // 예: "Pretendard Bold" → { family: "Pretendard", weight: 700, italic: false }
 // 같은 family 로 묶인 파일이 2개 이상이면 하나의 폰트 패밀리처럼 굵기별로 등록한다.
+// 마크다운 굵게(**)는 항상 font-weight:bold(700)만 요청하므로(다른 숫자굵기는 앱에서 쓰지 않음)
+// 두 단계만 구분하면 충분하다 — 그래도 이름에서 떼어내는 굵기 단어 자체는 넓게 인식한다(family 추출용).
 const MEMO_FONT_WEIGHT_WORDS = [
-  [/\b(thin|hairline)\b/i, 100],
-  [/\b(extra ?light|ultra ?light)\b/i, 200],
-  [/\blight\b/i, 300],
-  [/\b(regular|normal|book)\b/i, 400],
-  [/\bmedium\b/i, 500],
-  [/\b(semi ?bold|demi ?bold)\b/i, 600],
-  [/\bbold\b/i, 700],
-  [/\b(extra ?bold|ultra ?bold|heavy)\b/i, 800],
-  [/\bblack\b/i, 900],
+  [/\b(bold|semi ?bold|demi ?bold|extra ?bold|ultra ?bold|black|heavy)\b/i, 700],
+  [/\b(thin|hairline|extra ?light|ultra ?light|light|regular|normal|book|medium)\b/i, 400],
 ];
 function parseMemoFontName(rawName) {
   const name = String(rawName || "").trim();
@@ -10554,6 +10547,10 @@ function groupMemoFonts(fonts) {
     groups.get(slug).items.push({ font, weight, italic });
   }
   return groups;
+}
+// 그룹(굵기 변형 2개+)은 하나의 family 명으로, 혼자면 예전처럼 폰트별 family 명으로 등록/조회한다.
+function memoFontFamilyName(group) {
+  return group.items.length > 1 ? `af-fam-${group.slug}` : `af-${group.items[0].font.id}`;
 }
 
 function memoFontStack(key) {
@@ -10600,7 +10597,7 @@ function registerCustomFonts(channel) {
   if (!channel || !Array.isArray(channel.fonts) || typeof FontFace === "undefined" || !document.fonts) return;
   for (const group of groupMemoFonts(channel.fonts).values()) {
     const grouped = group.items.length > 1;
-    const familyName = grouped ? `af-fam-${group.slug}` : `af-${group.items[0].font.id}`;
+    const familyName = memoFontFamilyName(group);
     for (const { font, weight, italic } of group.items) {
       const dedupeKey = `${font.id}::${familyName}`;
       if (registeredFontFaces.has(dedupeKey)) continue;
@@ -10920,7 +10917,7 @@ function renderFontManagerList() {
   }
   const familyById = new Map();
   for (const group of groupMemoFonts(fonts).values()) {
-    const familyName = group.items.length > 1 ? `af-fam-${group.slug}` : `af-${group.items[0].font.id}`;
+    const familyName = memoFontFamilyName(group);
     for (const { font } of group.items) familyById.set(font.id, familyName);
   }
   for (const font of fonts) {
@@ -11378,17 +11375,6 @@ function onMemoLiveKeydown(event) {
     }
     return;
   }
-  if (event.key === "Delete") {
-    const offset = getLiveCaretOffset();
-    if (offset === text.length && end < lines.length - 1) {
-      event.preventDefault();
-      const nextLine = lines[end + 1];
-      const merged = text + nextLine;
-      const newLines = [...lines.slice(0, start), merged, ...lines.slice(end + 2)];
-      applyMemoLiveEdit(newLines.join("\n"), start, offset);
-    }
-    return;
-  }
   if (event.key === "ArrowUp") {
     const offset = getLiveCaretOffset();
     if (offset === 0 && start > 0) {
@@ -11415,8 +11401,9 @@ function onMemoLiveClick(event) {
   const m = state.memo;
   if (!m || !m.writable) return;
   if (event.target.closest(".md-check, .md-fold")) return;
+  if (event.target.closest(".memo-live-raw")) return; // 이미 활성 줄 — 캐럿 배치는 기본 클릭 동작에 맡긴다
   const block = event.target.closest("[data-line]");
-  if (!block || block.classList.contains("memo-live-raw")) return;
+  if (!block) return;
   const line = Number(block.dataset.line);
   if (!Number.isFinite(line)) return;
   m.liveLine = line;
@@ -13644,62 +13631,21 @@ function bindDrawEvents() {
   bindDrawLayersResize();
 }
 
-// ── 레이어 패널 폭 조절(드래그) ──
-function clampDrawLayersWidth(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return DRAW_LAYERS_W_DEFAULT;
-  return Math.min(DRAW_LAYERS_W_MAX, Math.max(DRAW_LAYERS_W_MIN, Math.round(n)));
-}
-
+// ── 레이어 패널 폭 조절(드래그) — 사이드바와 같은 bindLayoutResizeHandle 재사용 ──
 function applyDrawLayersWidth() {
   const body = document.querySelector(".draw-body");
   if (!body) return;
-  const w = clampDrawLayersWidth(localStorage.getItem(DRAW_LAYERS_W_KEY) || DRAW_LAYERS_W_DEFAULT);
+  const w = clampLayoutWidth("drawLayers", localStorage.getItem(layoutSizingConfig().drawLayers.key));
   body.style.setProperty("--draw-layers-w", `${w}px`);
 }
 
 function bindDrawLayersResize() {
-  const handle = dom.drawLayersResizeHandle;
-  const body = document.querySelector(".draw-body");
-  if (!handle || !body) return;
   applyDrawLayersWidth();
-  let startX = 0;
-  let startWidth = 0;
-  let pointerId = 0;
-
-  const onMove = (event) => {
-    const delta = event.clientX - startX;
-    // 핸들은 레이어 패널 왼쪽 경계에 있으므로 왼쪽으로 끌면 넓어진다.
-    const next = clampDrawLayersWidth(startWidth - delta);
-    body.style.setProperty("--draw-layers-w", `${next}px`);
-  };
-  const onUp = () => {
-    handle.classList.remove("dragging");
-    document.body.classList.remove("resizing-layout");
-    window.removeEventListener("pointermove", onMove);
-    window.removeEventListener("pointerup", onUp);
-    try { handle.releasePointerCapture(pointerId); } catch {}
-    const current = parseInt(body.style.getPropertyValue("--draw-layers-w"), 10);
-    if (Number.isFinite(current)) localStorage.setItem(DRAW_LAYERS_W_KEY, String(current));
-  };
-
-  handle.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    pointerId = event.pointerId;
-    startX = event.clientX;
-    const cur = parseInt(getComputedStyle(body).getPropertyValue("--draw-layers-w"), 10);
-    startWidth = Number.isFinite(cur) ? cur : DRAW_LAYERS_W_DEFAULT;
-    handle.classList.add("dragging");
-    document.body.classList.add("resizing-layout");
-    try { handle.setPointerCapture(pointerId); } catch {}
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-  });
-
-  handle.addEventListener("dblclick", () => {
-    localStorage.removeItem(DRAW_LAYERS_W_KEY);
-    applyDrawLayersWidth();
+  // 핸들은 레이어 패널 왼쪽 경계에 있으므로 왼쪽으로 끌면 넓어진다(growsLeft).
+  bindLayoutResizeHandle(dom.drawLayersResizeHandle, "drawLayers", {
+    target: document.querySelector(".draw-body"),
+    growsLeft: true,
+    onReset: applyDrawLayersWidth,
   });
 }
 
@@ -13813,7 +13759,7 @@ function renderMarkdown(src, activeLine) {
   let origLine = 0;
   const pushRaw = (s, e) => {
     const chunk = rawLines.slice(s, e + 1).join("\n");
-    html.push(`<div class="memo-live-raw" contenteditable="true" data-live-start="${s}" data-live-end="${e}" data-line="${s}">${escapeHtmlText(chunk)}</div>`);
+    html.push(`<div class="memo-live-raw" contenteditable="true" data-live-start="${s}" data-live-end="${e}">${escapeHtmlText(chunk)}</div>`);
   };
   const pushLine = (htmlStr, ln) => {
     html.push(isLive ? `<div class="memo-live-line" data-line="${ln}">${htmlStr}</div>` : htmlStr);
