@@ -50,3 +50,4 @@ Thumbs.db
 .vscode/
 .idea/
 electron/bin/AccordProcessLoopback.exe
+AGENTS.md
