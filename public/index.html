@@ -45,7 +45,6 @@
             </span>
           </button>
           <button class="ghost" id="settingsButton" type="button">설정</button>
-          <button class="ghost" id="launcherButton" type="button" hidden>서버 변경</button>
           <div class="status" id="statusBadge">
             <span></span>
             <strong id="statusText">연결 중</strong>
@@ -54,7 +53,6 @@
       </header>
 
       <div class="focus-bar" id="focusBar">
-        <button class="ghost" id="focusLauncherButton" type="button" hidden>서버 변경</button>
         <span class="focus-bar-title" id="focusBarTitle"></span>
         <button class="secondary" id="focusExitButton" type="button">집중모드 나가기 (Esc)</button>
       </div>
@@ -257,6 +255,7 @@
                 <button class="memo-view-btn active" id="memoViewSplit" type="button" data-memo-view="split">나란히</button>
                 <button class="memo-view-btn" id="memoViewEdit" type="button" data-memo-view="edit">편집</button>
                 <button class="memo-view-btn" id="memoViewPreview" type="button" data-memo-view="preview">미리보기</button>
+                <button class="memo-view-btn" id="memoViewLive" type="button" data-memo-view="live" title="옵시디언처럼 편집 중인 줄만 원문으로 보여줍니다">라이브</button>
               </div>
               <button class="focus-btn" id="memoFocusButton" type="button" title="집중모드" aria-label="집중모드">
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
@@ -270,6 +269,7 @@
               <div class="memo-cursors" id="memoCursors" aria-hidden="true"></div>
             </div>
             <div class="memo-preview markdown-body" id="memoPreview"></div>
+            <div class="memo-live markdown-body" id="memoLive" spellcheck="false"></div>
           </div>
         </section>
 
@@ -333,6 +333,7 @@
                 <span class="draw-rz-handle draw-rz-se" data-draw-rz="se" title="크기 조절"></span>
               </div>
             </div>
+            <div class="layout-resize-handle draw-layers-resize-handle" id="drawLayersResizeHandle" role="separator" aria-orientation="vertical" aria-label="레이어 목록 폭 조절" title="드래그하여 레이어 목록 폭 조절"></div>
             <aside class="draw-layers">
               <div class="draw-layers-head">
                 <span>레이어</span>
@@ -620,6 +621,7 @@
               </div>
               <button class="secondary" id="openProfileButton" type="button">프로필 편집</button>
               <button class="secondary" id="logoutButton" type="button">로그아웃</button>
+              <button class="secondary" id="launcherButton" type="button" hidden>서버 변경</button>
             </div>
             <label class="switch admin-ui-toggle-row" id="adminUiToggleRow" hidden>
               <input id="adminUiToggle" type="checkbox" checked />

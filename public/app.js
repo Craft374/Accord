@@ -4,7 +4,7 @@ const serverUrl = location.origin;
 // 클라이언트(앱) 버전. 서버 버전(server.js VERSION, n.n.n)과 헷갈리지 않도록 **그냥 정수**(1, 2, 3 …)로 올린다.
 // package.json 의 version 은 electron-builder 가 semver 를 요구해 "N.0.0" 형태로 두고, 그 major 가 이 값과 같아야 한다.
 // (scripts/check-v2.js 가 둘이 어긋나지 않는지 검사한다)
-const CLIENT_VERSION = "5";
+const CLIENT_VERSION = "6";
 
 function getClientVersion() {
   // 표시는 항상 단일 정수 CLIENT_VERSION 을 쓴다(package.json 의 semver appVersion 대신).
@@ -241,11 +241,13 @@ const dom = {
   memoBody: document.querySelector("#memoBody"),
   memoEditor: document.querySelector("#memoEditor"),
   memoPreview: document.querySelector("#memoPreview"),
+  memoLive: document.querySelector("#memoLive"),
   memoCursors: document.querySelector("#memoCursors"),
   memoGutter: document.querySelector("#memoGutter"),
   memoViewSplit: document.querySelector("#memoViewSplit"),
   memoViewEdit: document.querySelector("#memoViewEdit"),
   memoViewPreview: document.querySelector("#memoViewPreview"),
+  memoViewLive: document.querySelector("#memoViewLive"),
   memoFontSelect: document.querySelector("#memoFontSelect"),
   memoFontManageButton: document.querySelector("#memoFontManageButton"),
   memoColorPick: document.querySelector("#memoColorPick"),
@@ -281,6 +283,7 @@ const dom = {
   drawOverlay: document.querySelector("#drawOverlay"),
   drawLayerAdd: document.querySelector("#drawLayerAdd"),
   drawLayerList: document.querySelector("#drawLayerList"),
+  drawLayersResizeHandle: document.querySelector("#drawLayersResizeHandle"),
   logPanel: document.querySelector("#logPanel"),
   logRoomName: document.querySelector("#logRoomName"),
   logSubtitle: document.querySelector("#logSubtitle"),
@@ -452,7 +455,6 @@ const dom = {
   focusBar: document.querySelector("#focusBar"),
   focusBarTitle: document.querySelector("#focusBarTitle"),
   focusExitButton: document.querySelector("#focusExitButton"),
-  focusLauncherButton: document.querySelector("#focusLauncherButton"),
   chatFocusButton: document.querySelector("#chatFocusButton"),
   memoFocusButton: document.querySelector("#memoFocusButton"),
   drawFocusButton: document.querySelector("#drawFocusButton"),
@@ -549,7 +551,6 @@ function bindEvents() {
   dom.memoFocusButton?.addEventListener("click", toggleFocusMode);
   dom.drawFocusButton?.addEventListener("click", toggleFocusMode);
   dom.focusExitButton?.addEventListener("click", exitFocusMode);
-  dom.focusLauncherButton?.addEventListener("click", () => desktop.backToLauncher?.());
   document.addEventListener("keydown", handleGlobalHotkeys);
   dom.refreshDevicesButton.addEventListener("click", () => refreshDevices());
   dom.leaveButton.addEventListener("click", () => leaveRoom("방에서 나갔습니다."));
@@ -4899,7 +4900,7 @@ function toggleProfileModal(open) {
 
 // ===== 집중모드 =====
 // 채팅 · 메모장 · 그림판을 화면 가득 채우고, 상단/사이드 UI를 모두 숨긴다.
-// 상단에는 "서버 변경"과 "집중모드 나가기"만 남는다.
+// 상단에는 제목과 "집중모드 나가기"만 남는다.
 function focusablePanel() {
   const body = document.body.classList;
   if (body.contains("chat-open")) return { kind: "chat", name: state.activeChat?.name || "채팅방", icon: "#" };
@@ -4920,7 +4921,6 @@ function enterFocusMode() {
   if (dom.focusBarTitle) {
     dom.focusBarTitle.textContent = `${panel.icon} ${panel.name}${channel ? ` · ${channel.name}` : ""}`;
   }
-  if (dom.focusLauncherButton) dom.focusLauncherButton.hidden = !desktop.isDesktop;
   // 레이아웃이 바뀌었으니 캔버스 등 크기에 의존하는 UI를 다시 맞춘다.
   window.dispatchEvent(new Event("resize"));
 }
@@ -9575,6 +9575,14 @@ function activeChatMentionMembers(mentionIds) {
 function protectChatMentions(value, mentionIds) {
   let text = String(value || "");
   const html = [];
+  for (const special of ["everyone", "here"]) {
+    const re = new RegExp(`(^|[\\s([{])@${special}(?=$|[\\s.,!?…:;)\\]}>])`, "giu");
+    text = text.replace(re, (whole, prefix) => {
+      const index = html.length;
+      html.push(`<span class="chat-mention chat-mention-special">@${special}</span>`);
+      return `${prefix}MENTION${index}`;
+    });
+  }
   for (const member of activeChatMentionMembers(mentionIds)) {
     const name = String(member.displayName || "");
     if (!name) continue;
@@ -9613,6 +9621,12 @@ function closeChatMentionMenu() {
   }
 }
 
+// @everyone(전체)·@here(현재 접속중) — 서버(cleanChatMentions)가 실제 대상 id 목록을 권위 있게 재계산한다.
+const CHAT_MENTION_SPECIALS = [
+  { id: "__everyone__", displayName: "everyone", special: "everyone", icon: "📢", label: "전체", hint: "채널의 모든 멤버" },
+  { id: "__here__", displayName: "here", special: "here", icon: "🟢", label: "현재 접속중", hint: "지금 온라인인 멤버" },
+];
+
 function updateChatMentionMenu() {
   const input = dom.chatInput;
   const menu = dom.chatMentionMenu;
@@ -9623,13 +9637,14 @@ function updateChatMentionMenu() {
   const match = before.match(/(?:^|\s)@([^\s@]{0,24})$/u);
   if (!match) { closeChatMentionMenu(); return; }
   const query = (match[1] || "").toLocaleLowerCase("ko");
-  const items = activeChatMentionMembers()
+  const specials = CHAT_MENTION_SPECIALS.filter((s) => !query || s.displayName.startsWith(query) || s.label.includes(query));
+  const members = activeChatMentionMembers()
     .filter((member) => {
       const name = String(member.displayName || "").toLocaleLowerCase("ko");
       const code = String(member.code || "").toLocaleLowerCase("ko");
       return !query || name.includes(query) || code.startsWith(query.replace(/^#/, ""));
-    })
-    .slice(0, 8);
+    });
+  const items = [...specials, ...members].slice(0, 8);
   if (!items.length) { closeChatMentionMenu(); return; }
   chatMentionState.items = items;
   chatMentionState.index = Math.min(chatMentionState.index, items.length - 1);
@@ -9651,13 +9666,14 @@ function renderChatMentionMenu() {
     button.setAttribute("aria-selected", String(index === chatMentionState.index));
     const avatar = document.createElement("span");
     avatar.className = "account-avatar small";
-    setAvatar(avatar, member);
+    if (member.special) { avatar.classList.add("special"); avatar.textContent = member.icon; }
+    else setAvatar(avatar, member);
     const label = document.createElement("span");
     label.className = "chat-mention-option-label";
     const name = document.createElement("b");
-    name.textContent = member.displayName || "이름없음";
+    name.textContent = member.special ? `@${member.label}` : (member.displayName || "이름없음");
     const code = document.createElement("em");
-    code.textContent = `#${member.code || "----"}`;
+    code.textContent = member.special ? member.hint : `#${member.code || "----"}`;
     label.append(name, code);
     button.append(avatar, label);
     menu.append(button);
@@ -10485,8 +10501,61 @@ const MEMO_FONTS = {
   hand: { label: "손글씨", stack: '"Nanum Pen Script", "Gaegu", "Apple SD Gothic Neo", cursive' },
 };
 const MEMO_FONT_DEFAULT_KEY = "default";
+
+// 업로드 글꼴 이름에서 굵기·기울임 단어를 떼어내 (family, weight, italic)을 얻는다.
+// 예: "Pretendard Bold" → { family: "Pretendard", weight: 700, italic: false }
+// 같은 family 로 묶인 파일이 2개 이상이면 하나의 폰트 패밀리처럼 굵기별로 등록한다.
+const MEMO_FONT_WEIGHT_WORDS = [
+  [/\b(thin|hairline)\b/i, 100],
+  [/\b(extra ?light|ultra ?light)\b/i, 200],
+  [/\blight\b/i, 300],
+  [/\b(regular|normal|book)\b/i, 400],
+  [/\bmedium\b/i, 500],
+  [/\b(semi ?bold|demi ?bold)\b/i, 600],
+  [/\bbold\b/i, 700],
+  [/\b(extra ?bold|ultra ?bold|heavy)\b/i, 800],
+  [/\bblack\b/i, 900],
+];
+function parseMemoFontName(rawName) {
+  const name = String(rawName || "").trim();
+  let family = name.replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+  let weight = 400;
+  let italic = false;
+  const italicRe = /\b(italic|oblique)\b/i;
+  if (italicRe.test(family)) {
+    const stripped = family.replace(italicRe, " ").replace(/\s+/g, " ").trim();
+    if (stripped) { italic = true; family = stripped; }
+  }
+  for (const [re, w] of MEMO_FONT_WEIGHT_WORDS) {
+    if (!re.test(family)) continue;
+    const stripped = family.replace(re, " ").replace(/\s+/g, " ").trim();
+    if (stripped) { weight = w; family = stripped; }
+    break;
+  }
+  return { family: family || name, weight, italic };
+}
+function memoFontFamilySlug(family) {
+  return String(family).toLowerCase().replace(/[^a-z0-9가-힣]+/g, "-").replace(/^-+|-+$/g, "") || "font";
+}
+// 업로드 글꼴들을 이름에서 뽑아낸 family 로 묶는다.
+function groupMemoFonts(fonts) {
+  const groups = new Map(); // slug -> { family, slug, items: [{ font, weight, italic }] }
+  for (const font of fonts) {
+    if (!font?.id) continue;
+    const { family, weight, italic } = parseMemoFontName(font.name);
+    const slug = memoFontFamilySlug(family);
+    if (!groups.has(slug)) groups.set(slug, { family, slug, items: [] });
+    groups.get(slug).items.push({ font, weight, italic });
+  }
+  return groups;
+}
+
 function memoFontStack(key) {
-  // 업로드 글꼴(custom:<id>) 은 등록된 FontFace 패밀리 + 기본 대체 스택을 쓴다.
+  // 업로드 글꼴은 등록된 FontFace 패밀리 + 기본 대체 스택을 쓴다.
+  // custom-family:<slug> 는 굵기 변형이 2개 이상 모인 그룹, custom:<id> 는 혼자인 글꼴.
+  if (typeof key === "string" && key.startsWith("custom-family:")) {
+    return `"af-fam-${key.slice(14)}", ${MEMO_FONTS[MEMO_FONT_DEFAULT_KEY].stack}`;
+  }
   if (typeof key === "string" && key.startsWith("custom:")) {
     return `"af-${key.slice(7)}", ${MEMO_FONTS[MEMO_FONT_DEFAULT_KEY].stack}`;
   }
@@ -10501,34 +10570,46 @@ function memoChannelFonts() {
 }
 function memoFontExists(key) {
   if (MEMO_FONTS[key]) return true;
+  if (typeof key === "string" && key.startsWith("custom-family:")) {
+    return groupMemoFonts(memoChannelFonts()).has(key.slice(14));
+  }
   if (typeof key === "string" && key.startsWith("custom:")) {
     return memoChannelFonts().some((f) => `custom:${f.id}` === key);
   }
   return false;
 }
-// 서버가 넘겨준 글꼴 키를 받아들인다. 내장 글꼴이거나 업로드 글꼴(custom:<id>) 형식이면 그대로 쓴다.
+// 서버가 넘겨준 글꼴 키를 받아들인다. 내장 글꼴이거나 업로드 글꼴(custom:<id>/custom-family:<slug>) 형식이면 그대로 쓴다.
 // (지워졌거나 아직 FontFace 로드 전인 업로드 글꼴은 memoFontStack 이 기본 스택으로 자연 대체한다.)
 // ※ 예전엔 MEMO_FONTS[key] 로만 검사해 업로드 글꼴이 전부 기본으로 되돌아가는 버그가 있었다.
 function acceptMemoFont(key) {
-  if (typeof key === "string" && (MEMO_FONTS[key] || key.startsWith("custom:"))) return key;
+  if (typeof key === "string" && (MEMO_FONTS[key] || key.startsWith("custom:") || key.startsWith("custom-family:"))) return key;
   return MEMO_FONT_DEFAULT_KEY;
 }
 
-// 업로드 글꼴을 브라우저에 등록(FontFace). 이미 등록한 것은 건너뛴다.
-const registeredFontIds = new Set();
+// 업로드 글꼴을 브라우저에 등록(FontFace). 같은 이름의 굵기 변형이 2개 이상이면 하나의 family 로,
+// 혼자면 예전처럼 개별 family(af-<id>)로 등록한다. (font.id, 등록된 family) 조합으로 중복 등록만 막는다
+// — 나중에 같은 이름의 글꼴이 추가/삭제돼 그룹 소속이 바뀌어도 새 family 로 다시 등록될 수 있게.
+const registeredFontFaces = new Set();
 function registerCustomFonts(channel) {
   if (!channel || !Array.isArray(channel.fonts) || typeof FontFace === "undefined" || !document.fonts) return;
-  for (const font of channel.fonts) {
-    if (!font?.id || registeredFontIds.has(font.id)) continue;
-    registeredFontIds.add(font.id);
-    try {
-      const face = new FontFace(`af-${font.id}`, `url("${serverUrl}${font.url}")`);
-      face.load().then((loaded) => {
-        document.fonts.add(loaded);
-        // 지금 이 글꼴을 쓰는 메모가 열려 있으면 로드 완료 후 다시 렌더.
-        if (state.memo && state.memo.font === `custom:${font.id}`) applyMemoFont(state.memo.font);
-      }).catch(() => {});
-    } catch { /* 잘못된 폰트 URL 무시 */ }
+  for (const group of groupMemoFonts(channel.fonts).values()) {
+    const grouped = group.items.length > 1;
+    const familyName = grouped ? `af-fam-${group.slug}` : `af-${group.items[0].font.id}`;
+    for (const { font, weight, italic } of group.items) {
+      const dedupeKey = `${font.id}::${familyName}`;
+      if (registeredFontFaces.has(dedupeKey)) continue;
+      registeredFontFaces.add(dedupeKey);
+      try {
+        const descriptors = grouped ? { weight: String(weight), style: italic ? "italic" : "normal" } : {};
+        const face = new FontFace(familyName, `url("${serverUrl}${font.url}")`, descriptors);
+        face.load().then((loaded) => {
+          document.fonts.add(loaded);
+          // 지금 이 글꼴을 쓰는 메모가 열려 있으면 로드 완료 후 다시 렌더.
+          const activeKey = grouped ? `custom-family:${group.slug}` : `custom:${font.id}`;
+          if (state.memo && state.memo.font === activeKey) applyMemoFont(state.memo.font);
+        }).catch(() => {});
+      } catch { /* 잘못된 폰트 URL 무시 */ }
+    }
   }
 }
 function registerAllCustomFonts() {
@@ -10548,7 +10629,14 @@ function populateMemoFonts() {
   if (fonts.length) {
     const grp = document.createElement("optgroup");
     grp.label = "업로드 글꼴";
-    for (const font of fonts) grp.append(new Option(font.name, `custom:${font.id}`));
+    for (const group of groupMemoFonts(fonts).values()) {
+      if (group.items.length > 1) {
+        grp.append(new Option(group.family, `custom-family:${group.slug}`));
+      } else {
+        const font = group.items[0].font;
+        grp.append(new Option(font.name, `custom:${font.id}`));
+      }
+    }
     sel.append(grp);
   }
   if (keep && memoFontExists(keep)) sel.value = keep;
@@ -10564,6 +10652,7 @@ function applyMemoFont(key) {
   if (dom.memoEditor) dom.memoEditor.style.fontFamily = stack;
   if (dom.memoGutter) dom.memoGutter.style.fontFamily = stack;
   if (dom.memoPreview) dom.memoPreview.style.fontFamily = stack;
+  if (dom.memoLive) dom.memoLive.style.fontFamily = stack;
   if (dom.memoFontSelect && dom.memoFontSelect.value !== key) {
     dom.memoFontSelect.value = memoFontExists(key) ? key : MEMO_FONT_DEFAULT_KEY;
   }
@@ -10606,6 +10695,7 @@ function applyMemoFontSize(px) {
   localStorage.setItem("accordMemoFontSize", String(memoFontSize));
   if (dom.memoEditor) dom.memoEditor.style.fontSize = `${memoFontSize}px`;
   if (dom.memoPreview) dom.memoPreview.style.fontSize = `${memoFontSize}px`;
+  if (dom.memoLive) dom.memoLive.style.fontSize = `${memoFontSize}px`;
   if (dom.memoGutter) dom.memoGutter.style.fontSize = `${memoFontSize}px`;
   renderMemoCursors(); // 캐럿 좌표·줄번호가 글자 크기에 의존하므로 다시 그린다
 }
@@ -10681,6 +10771,7 @@ function handleMemoState(message) {
   m.inflight = null;
   m.buffer = [];
   m.font = acceptMemoFont(message.font);
+  m.liveLine = 0;
   if (dom.memoEditor) { dom.memoEditor.disabled = !m.writable; dom.memoEditor.value = m.doc; }
   applyMemoFont(m.font);
   updateMemoToolsEnabled();
@@ -10701,10 +10792,12 @@ function handleMemoFont(message) {
 }
 
 // 글꼴/색 도구는 편집 권한이 있을 때만 활성화(읽기 전용이면 잠금).
+// 색 버튼은 편집기 선택영역을 기준으로 삽입하므로 라이브 탭(별도 편집 표면)에서는 잠근다.
 function updateMemoToolsEnabled() {
   const on = Boolean(state.memo?.writable);
+  const colorsOn = on && state.memo?.view !== "live";
   if (dom.memoFontSelect) dom.memoFontSelect.disabled = !on;
-  document.querySelectorAll("#memoPanel [data-memo-color], #memoColorPick").forEach((el) => { el.disabled = !on; });
+  document.querySelectorAll("#memoPanel [data-memo-color], #memoColorPick").forEach((el) => { el.disabled = !colorsOn; });
   const tools = document.querySelector(".memo-tools");
   if (tools) tools.classList.toggle("disabled", !on);
 }
@@ -10819,17 +10912,23 @@ function renderFontManagerList() {
     list.append(el("p", "font-empty", "아직 올린 글꼴이 없어요."));
     return;
   }
+  const familyById = new Map();
+  for (const group of groupMemoFonts(fonts).values()) {
+    const familyName = group.items.length > 1 ? `af-fam-${group.slug}` : `af-${group.items[0].font.id}`;
+    for (const { font } of group.items) familyById.set(font.id, familyName);
+  }
   for (const font of fonts) {
     const row = document.createElement("div");
     row.className = "font-row";
+    const cssFamily = `"${familyById.get(font.id) || `af-${font.id}`}", ${MEMO_FONTS.default.stack}`;
     const name = document.createElement("span");
     name.className = "font-row-name";
     name.textContent = font.name;
-    name.style.fontFamily = `"af-${font.id}", ${MEMO_FONTS.default.stack}`;
+    name.style.fontFamily = cssFamily;
     const sample = document.createElement("span");
     sample.className = "font-row-sample";
     sample.textContent = "가나다 AaBb 123";
-    sample.style.fontFamily = `"af-${font.id}", ${MEMO_FONTS.default.stack}`;
+    sample.style.fontFamily = cssFamily;
     const del = document.createElement("button");
     del.type = "button";
     del.className = "font-row-del";
@@ -11161,6 +11260,162 @@ function renderMemoGutter() {
 
 function renderMemoPreview() {
   if (dom.memoPreview) dom.memoPreview.innerHTML = renderMarkdown(dom.memoEditor?.value || "");
+  renderMemoLive();
+}
+
+// ===== 라이브 미리보기(옵시디언식 인라인 WYSIWYG) =====
+// 커서가 있는 줄(또는 그 줄이 속한 코드블록/목록 묶음)만 원문 그대로 보여주고 나머지는 렌더링한다.
+// 실제 문서는 여전히 dom.memoEditor.value 가 진실이며, 여기서의 편집은 그 값을 갱신하고
+// onMemoInput()을 그대로 재사용해 기존 OT 동기화·원격커서 파이프라인에 편승한다.
+function memoLiveActiveRawEl() {
+  return dom.memoLive?.querySelector(".memo-live-raw");
+}
+// 활성 줄 raw 요소 안에서 캐럿까지의 문자 오프셋(포커스가 그 요소 밖이면 null).
+function getLiveCaretOffset() {
+  const raw = memoLiveActiveRawEl();
+  const sel = window.getSelection();
+  if (!raw || !sel || !sel.rangeCount || !raw.contains(sel.focusNode)) return null;
+  const range = document.createRange();
+  range.selectNodeContents(raw);
+  range.setEnd(sel.focusNode, sel.focusOffset);
+  return range.toString().length;
+}
+function setLiveCaretOffset(offset) {
+  const raw = memoLiveActiveRawEl();
+  if (!raw) return;
+  let node = raw.firstChild;
+  if (!node) node = raw.appendChild(document.createTextNode(""));
+  const len = node.textContent?.length ?? 0;
+  const pos = Math.max(0, Math.min(len, offset === Infinity ? len : (offset ?? 0)));
+  const range = document.createRange();
+  range.setStart(node, pos);
+  range.collapse(true);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+  raw.focus();
+}
+
+function renderMemoLive() {
+  if (!dom.memoLive) return;
+  const m = state.memo;
+  if (!m) { dom.memoLive.innerHTML = ""; return; }
+  const hadFocus = dom.memoLive.contains(document.activeElement);
+  const offset = hadFocus ? getLiveCaretOffset() : null;
+  const text = dom.memoEditor?.value || "";
+  let activeLine = null;
+  if (m.writable) {
+    const lineCount = text.split("\n").length;
+    activeLine = Math.max(0, Math.min(m.liveLine ?? 0, lineCount - 1));
+    m.liveLine = activeLine;
+  }
+  dom.memoLive.innerHTML = renderMarkdown(text, activeLine);
+  if (hadFocus && offset != null) setLiveCaretOffset(offset);
+}
+
+// 라이브 편집 → 문서에 반영하고 기존 편집 파이프라인(onMemoInput)에 편승.
+function applyMemoLiveEdit(newDoc, activeLine, caretOffset) {
+  const m = state.memo;
+  if (!m) return;
+  m.liveLine = activeLine;
+  dom.memoEditor.value = newDoc;
+  onMemoInput();
+  setLiveCaretOffset(caretOffset);
+}
+
+function onMemoLiveInput() {
+  const m = state.memo;
+  if (!m || !m.writable) return;
+  const raw = memoLiveActiveRawEl();
+  if (!raw) return;
+  const offset = getLiveCaretOffset();
+  const lines = (dom.memoEditor.value || "").split("\n");
+  const start = Number(raw.dataset.liveStart);
+  const end = Number(raw.dataset.liveEnd);
+  const newLineText = (raw.textContent || "").replace(/\r\n?/g, "\n");
+  const newLines = [...lines.slice(0, start), ...newLineText.split("\n"), ...lines.slice(end + 1)];
+  applyMemoLiveEdit(newLines.join("\n"), start, offset);
+}
+
+function onMemoLiveKeydown(event) {
+  const m = state.memo;
+  if (!m || !m.writable) return;
+  const raw = memoLiveActiveRawEl();
+  if (!raw || !raw.contains(event.target)) return; // 체크박스·접기처럼 raw 밖의 포커스 가능한 요소는 건드리지 않는다
+  if (event.isComposing) return; // 한글 등 조합 중엔 IME가 Enter/Backspace 등을 자체 처리하므로 건드리지 않는다
+  if (event.key === "Tab") {
+    event.preventDefault();
+    document.execCommand?.("insertText", false, "  ");
+    return;
+  }
+  const start = Number(raw.dataset.liveStart);
+  const end = Number(raw.dataset.liveEnd);
+  const lines = (dom.memoEditor.value || "").split("\n");
+  const text = raw.textContent || "";
+  if (event.key === "Enter") {
+    event.preventDefault();
+    const offset = getLiveCaretOffset() ?? text.length;
+    const before = text.slice(0, offset);
+    const after = text.slice(offset);
+    const newLines = [...lines.slice(0, start), before, after, ...lines.slice(end + 1)];
+    applyMemoLiveEdit(newLines.join("\n"), start + 1, 0);
+    return;
+  }
+  if (event.key === "Backspace") {
+    const offset = getLiveCaretOffset();
+    if (offset === 0 && start > 0) {
+      event.preventDefault();
+      const prevLine = lines[start - 1];
+      const merged = prevLine + text;
+      const newLines = [...lines.slice(0, start - 1), merged, ...lines.slice(end + 1)];
+      applyMemoLiveEdit(newLines.join("\n"), start - 1, prevLine.length);
+    }
+    return;
+  }
+  if (event.key === "Delete") {
+    const offset = getLiveCaretOffset();
+    if (offset === text.length && end < lines.length - 1) {
+      event.preventDefault();
+      const nextLine = lines[end + 1];
+      const merged = text + nextLine;
+      const newLines = [...lines.slice(0, start), merged, ...lines.slice(end + 2)];
+      applyMemoLiveEdit(newLines.join("\n"), start, offset);
+    }
+    return;
+  }
+  if (event.key === "ArrowUp") {
+    const offset = getLiveCaretOffset();
+    if (offset === 0 && start > 0) {
+      event.preventDefault();
+      m.liveLine = start - 1;
+      renderMemoLive();
+      setLiveCaretOffset(0);
+    }
+    return;
+  }
+  if (event.key === "ArrowDown") {
+    const offset = getLiveCaretOffset();
+    if (offset === text.length && end < lines.length - 1) {
+      event.preventDefault();
+      m.liveLine = end + 1;
+      renderMemoLive();
+      setLiveCaretOffset(0);
+    }
+  }
+}
+
+// 렌더링된(비활성) 줄을 클릭하면 그 줄을 활성 줄로 바꾼다. 체크박스/접기는 각자 핸들러가 처리하므로 건드리지 않는다.
+function onMemoLiveClick(event) {
+  const m = state.memo;
+  if (!m || !m.writable) return;
+  if (event.target.closest(".md-check, .md-fold")) return;
+  const block = event.target.closest("[data-line]");
+  if (!block || block.classList.contains("memo-live-raw")) return;
+  const line = Number(block.dataset.line);
+  if (!Number.isFinite(line)) return;
+  m.liveLine = line;
+  renderMemoLive();
+  setLiveCaretOffset(Infinity);
 }
 
 // 미리보기의 체크박스를 눌렀을 때 원문에서 해당 항목을 찾아 [ ]↔[x] 로 토글한다.
@@ -11218,14 +11473,17 @@ function setMemoStatus(text, tone) {
 }
 
 function applyMemoView(view) {
-  const v = ["split", "edit", "preview"].includes(view) ? view : "split";
+  const v = ["split", "edit", "preview", "live"].includes(view) ? view : "split";
   if (state.memo) state.memo.view = v;
   if (dom.memoBody) dom.memoBody.className = `memo-body view-${v}`;
   dom.memoViewSplit?.classList.toggle("active", v === "split");
   dom.memoViewEdit?.classList.toggle("active", v === "edit");
   dom.memoViewPreview?.classList.toggle("active", v === "preview");
+  dom.memoViewLive?.classList.toggle("active", v === "live");
   if (v !== "edit") renderMemoPreview();
+  updateMemoToolsEnabled(); // 라이브 탭에서는 색 버튼을 잠근다
   renderMemoCursors();
+  if (v === "live") setLiveCaretOffset(0);
 }
 
 function bindMemoEvents() {
@@ -11233,6 +11491,7 @@ function bindMemoEvents() {
   dom.memoViewSplit?.addEventListener("click", () => applyMemoView("split"));
   dom.memoViewEdit?.addEventListener("click", () => applyMemoView("edit"));
   dom.memoViewPreview?.addEventListener("click", () => applyMemoView("preview"));
+  dom.memoViewLive?.addEventListener("click", () => applyMemoView("live"));
   // 글꼴 드롭다운 변경 시 모두에게 공유. (옵션 채우기는 openMemoRoom 에서 지연 — MEMO_FONTS TDZ 회피)
   dom.memoFontSelect?.addEventListener("change", () => {
     const m = state.memo;
@@ -11248,29 +11507,48 @@ function bindMemoEvents() {
     btn.addEventListener("click", () => applyMemoColor(btn.dataset.memoColor));
   });
   dom.memoColorPick?.addEventListener("change", () => applyMemoColor(dom.memoColorPick.value));
-  // 미리보기의 체크박스/접기 버튼 클릭 처리(문서 원문을 직접 갱신).
-  dom.memoPreview?.addEventListener("click", (event) => {
+  // 미리보기/라이브 공통: 체크박스·접기 버튼 클릭 처리(문서 원문을 직접 갱신). 처리했으면 true.
+  const handleMemoRenderedClick = (event) => {
     const check = event.target?.closest?.("input.md-check");
     if (check) {
       event.preventDefault(); // 실제 체크 상태는 문서 재렌더로만 반영(원문이 곧 진실)
       const idx = Number(check.dataset.cb);
       if (Number.isInteger(idx)) toggleMemoCheckbox(idx);
-      return;
+      return true;
     }
     const fold = event.target?.closest?.(".md-fold");
     if (fold) {
       const id = Number(fold.dataset.fold);
       if (Number.isInteger(id)) toggleMemoFold(id);
+      return true;
     }
-  });
-  dom.memoPreview?.addEventListener("keydown", (event) => {
+    return false;
+  };
+  const handleMemoRenderedFoldKey = (event) => {
     if (event.key !== "Enter" && event.key !== " ") return;
     const fold = event.target?.closest?.(".md-fold");
     if (!fold) return;
     event.preventDefault();
     const id = Number(fold.dataset.fold);
     if (Number.isInteger(id)) toggleMemoFold(id);
+  };
+  dom.memoPreview?.addEventListener("click", handleMemoRenderedClick);
+  dom.memoPreview?.addEventListener("keydown", handleMemoRenderedFoldKey);
+  dom.memoLive?.addEventListener("click", (event) => {
+    if (handleMemoRenderedClick(event)) return;
+    onMemoLiveClick(event);
   });
+  dom.memoLive?.addEventListener("keydown", (event) => {
+    handleMemoRenderedFoldKey(event);
+    onMemoLiveKeydown(event);
+  });
+  // 한글 등 조합 중에는 DOM을 다시 그리지 않는다 — 라이브 탭은 activeLine 이 바뀔 때 DOM을 통째로
+  // 새로 그리므로, 조합 중에 그리면 브라우저 IME 조합 상태가 깨진다. 조합이 끝난 뒤 한 번만 반영.
+  dom.memoLive?.addEventListener("input", (event) => {
+    if (event.isComposing) return;
+    onMemoLiveInput();
+  });
+  dom.memoLive?.addEventListener("compositionend", onMemoLiveInput);
   // 커서 이동/선택 변경을 다른 사람에게 알린다.
   const cursorEvents = ["keyup", "mouseup", "click", "select", "focus"];
   for (const ev of cursorEvents) dom.memoEditor?.addEventListener(ev, sendMemoCursor);
@@ -11286,26 +11564,26 @@ function bindMemoEvents() {
     const start = el.selectionStart;
     const end = el.selectionEnd;
     const outdent = event.shiftKey;
-    const lineMode = outdent || start !== end;
-    if (lineMode) {
-      const lineStart = value.lastIndexOf("\n", start - 1) + 1;
-      const regionLines = value.slice(lineStart, end).split("\n");
-      const newLines = regionLines.map((ln) => {
-        if (outdent) {
-          if (ln.startsWith("\t")) return ln.slice(1);
-          if (ln.startsWith("  ")) return ln.slice(2);
-          if (ln.startsWith(" ")) return ln.slice(1);
-          return ln;
-        }
-        return `  ${ln}`;
-      });
-      const replaced = newLines.join("\n");
-      el.value = value.slice(0, lineStart) + replaced + value.slice(end);
+    // 커서가 줄 중간이든 어디든 항상 그 줄(들) 전체에 들여쓰기/내어쓰기를 적용한다.
+    const hadSelection = start !== end;
+    const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+    const regionLines = value.slice(lineStart, end).split("\n");
+    const newLines = regionLines.map((ln) => {
+      if (outdent) {
+        if (ln.startsWith("\t")) return ln.slice(1);
+        if (ln.startsWith("  ")) return ln.slice(2);
+        if (ln.startsWith(" ")) return ln.slice(1);
+        return ln;
+      }
+      return `  ${ln}`;
+    });
+    const replaced = newLines.join("\n");
+    el.value = value.slice(0, lineStart) + replaced + value.slice(end);
+    if (hadSelection) {
       el.selectionStart = lineStart;
       el.selectionEnd = lineStart + replaced.length;
     } else {
-      el.value = `${value.slice(0, start)}  ${value.slice(end)}`;
-      el.selectionStart = el.selectionEnd = start + 2;
+      el.selectionStart = el.selectionEnd = lineStart + replaced.length;
     }
     onMemoInput();
   });
@@ -12081,10 +12359,22 @@ function nextDrawStrokeId() {
 }
 
 // ── 문서/레이어 구성 ──
+// 화질 개선: 캔버스 backing store 를 devicePixelRatio 만큼 키운다. 획 좌표는 그대로 논리(문서) 단위를
+// 쓰고, 레이어 컨텍스트에 ctx.scale(dpr,dpr) 을 걸어 매핑한다(크로스클라이언트 동기화가 논리 단위에 의존하므로).
+// width/height 대입은 캔버스 변환행렬을 초기화하므로, 대입할 때마다 스케일을 다시 걸어야 한다.
+function drawPixelRatio() {
+  return window.devicePixelRatio || 1;
+}
+function sizeDrawingCanvas(canvas, d) {
+  const dpr = drawPixelRatio();
+  canvas.width = Math.max(1, Math.round(d.width * dpr));
+  canvas.height = Math.max(1, Math.round(d.height * dpr));
+  return dpr;
+}
 function makeLayerCanvas(d) {
   const c = document.createElement("canvas");
-  c.width = d.width;
-  c.height = d.height;
+  const dpr = sizeDrawingCanvas(c, d);
+  c.getContext("2d").scale(dpr, dpr);
   return c;
 }
 
@@ -12127,11 +12417,11 @@ function applyCanvasSize() {
   const d = state.draw;
   const canvas = dom.drawCanvas;
   if (!canvas) return;
-  canvas.width = d.width;
-  canvas.height = d.height;
+  // 메인 캔버스는 레이어를 1:1 픽셀로 합성만 하므로 스케일을 걸지 않는다.
+  sizeDrawingCanvas(canvas, d);
   for (const layer of d.layers) {
-    layer.canvas.width = d.width;
-    layer.canvas.height = d.height;
+    const dpr = sizeDrawingCanvas(layer.canvas, d);
+    layer.ctx.scale(dpr, dpr);
   }
   applyZoom(); // CSS 표시 크기·오버레이 해상도 갱신
 }
@@ -12245,22 +12535,26 @@ function renderLayer(layer) {
 }
 
 // 표시 캔버스에 보이는 레이어들을 순서대로 합성한다.
+// 메인 캔버스는 스케일이 없으므로 레이어(backing 픽셀 크기가 동일)를 1:1로 복사한다.
 function compositeDraw() {
+  const canvas = dom.drawCanvas;
   const d = state.draw;
-  const ctx = dom.drawCanvas?.getContext("2d");
+  const ctx = canvas?.getContext("2d");
   if (!ctx) return;
-  ctx.clearRect(0, 0, d.width, d.height);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
   for (const layer of d.layers) {
     if (layer.visible) ctx.drawImage(layer.canvas, 0, 0);
   }
 }
 
 // ── 로컬 그리기 ──
+// 항상 논리(문서) 좌표로 변환한다 — backing 픽셀 해상도(DPR)와 무관해야 여러 클라이언트 간 좌표가 맞는다.
 function drawPointFromEvent(event) {
   const canvas = dom.drawCanvas;
+  const d = state.draw;
   const rect = canvas.getBoundingClientRect();
-  const sx = canvas.width / rect.width;
-  const sy = canvas.height / rect.height;
+  const sx = d.width / rect.width;
+  const sy = d.height / rect.height;
   return [(event.clientX - rect.left) * sx, (event.clientY - rect.top) * sy];
 }
 
@@ -12394,8 +12688,10 @@ function hexToRgba(hex) {
 
 function floodFillAt(pt, layer) {
   const d = state.draw;
-  const W = d.width, H = d.height;
-  const x0 = Math.floor(pt[0]), y0 = Math.floor(pt[1]);
+  // getImageData 는 ctx.scale(dpr,dpr) 변환을 무시하고 항상 backing 픽셀 그대로 준다 — 여기서만 물리 픽셀 좌표로 다룬다.
+  const W = layer.canvas.width, H = layer.canvas.height;
+  const dpr = W / d.width;
+  const x0 = Math.floor(pt[0] * dpr), y0 = Math.floor(pt[1] * dpr);
   if (x0 < 0 || y0 < 0 || x0 >= W || y0 >= H) return;
   const ctx = layer.ctx;
   const img = ctx.getImageData(0, 0, W, H);
@@ -12442,7 +12738,9 @@ function floodFillAt(pt, layer) {
     for (let x = 0; x < bw; x++) if (filled[srow + x]) odata[drow + x] = fill;
   }
   octx.putImageData(oimg, 0, 0);
-  const stroke = { id: nextDrawStrokeId(), tool: "image", src: out.toDataURL("image/png"), x: minX, y: minY, w: bw, h: bh };
+  // 획 좌표·크기는 논리(문서) 단위로 저장한다(다른 클라이언트의 DPR과 무관하게 같은 위치에 그려지도록).
+  // 이미지 원본(out)은 물리 해상도 그대로 둬서 저장/전송 화질은 유지한다.
+  const stroke = { id: nextDrawStrokeId(), tool: "image", src: out.toDataURL("image/png"), x: minX / dpr, y: minY / dpr, w: bw / dpr, h: bh / dpr };
   layer.strokes.push(stroke);
   d.myStrokes.push({ layerId: layer.id, strokeId: stroke.id });
   d.myRedo.length = 0; // 새 획을 그리면 다시실행 기록은 무효화한다.
@@ -12745,8 +13043,10 @@ function drawSanitizeFileName(name) {
 function compositeToCanvas() {
   const d = state.draw;
   const c = document.createElement("canvas");
-  c.width = d.width;
-  c.height = d.height;
+  // 내보내기 해상도는 레이어의 실제 backing 픽셀 크기(DPR 반영)에 맞춘다 — 안 그러면 화질이 다시 깎인다.
+  const src = d.layers[0]?.canvas;
+  c.width = src ? src.width : d.width;
+  c.height = src ? src.height : d.height;
   const ctx = c.getContext("2d");
   for (const layer of d.layers) if (layer.visible) ctx.drawImage(layer.canvas, 0, 0);
   return c;
@@ -13335,6 +13635,71 @@ function bindDrawEvents() {
   document.addEventListener("paste", handleDrawPaste);
   document.addEventListener("keydown", onDrawKeyDown);
   document.addEventListener("keyup", onDrawKeyUp);
+  bindDrawLayersResize();
+}
+
+// ── 레이어 패널 폭 조절(드래그) ──
+const DRAW_LAYERS_W_KEY = "accordDrawLayersWidth";
+const DRAW_LAYERS_W_DEFAULT = 200;
+const DRAW_LAYERS_W_MIN = 140;
+const DRAW_LAYERS_W_MAX = 400;
+
+function clampDrawLayersWidth(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return DRAW_LAYERS_W_DEFAULT;
+  return Math.min(DRAW_LAYERS_W_MAX, Math.max(DRAW_LAYERS_W_MIN, Math.round(n)));
+}
+
+function applyDrawLayersWidth() {
+  const body = document.querySelector(".draw-body");
+  if (!body) return;
+  const w = clampDrawLayersWidth(localStorage.getItem(DRAW_LAYERS_W_KEY) || DRAW_LAYERS_W_DEFAULT);
+  body.style.setProperty("--draw-layers-w", `${w}px`);
+}
+
+function bindDrawLayersResize() {
+  const handle = dom.drawLayersResizeHandle;
+  const body = document.querySelector(".draw-body");
+  if (!handle || !body) return;
+  applyDrawLayersWidth();
+  let startX = 0;
+  let startWidth = 0;
+  let pointerId = 0;
+
+  const onMove = (event) => {
+    const delta = event.clientX - startX;
+    // 핸들은 레이어 패널 왼쪽 경계에 있으므로 왼쪽으로 끌면 넓어진다.
+    const next = clampDrawLayersWidth(startWidth - delta);
+    body.style.setProperty("--draw-layers-w", `${next}px`);
+  };
+  const onUp = () => {
+    handle.classList.remove("dragging");
+    document.body.classList.remove("resizing-layout");
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    try { handle.releasePointerCapture(pointerId); } catch {}
+    const current = parseInt(body.style.getPropertyValue("--draw-layers-w"), 10);
+    if (Number.isFinite(current)) localStorage.setItem(DRAW_LAYERS_W_KEY, String(current));
+  };
+
+  handle.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    pointerId = event.pointerId;
+    startX = event.clientX;
+    const cur = parseInt(getComputedStyle(body).getPropertyValue("--draw-layers-w"), 10);
+    startWidth = Number.isFinite(cur) ? cur : DRAW_LAYERS_W_DEFAULT;
+    handle.classList.add("dragging");
+    document.body.classList.add("resizing-layout");
+    try { handle.setPointerCapture(pointerId); } catch {}
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  });
+
+  handle.addEventListener("dblclick", () => {
+    localStorage.removeItem(DRAW_LAYERS_W_KEY);
+    applyDrawLayersWidth();
+  });
 }
 
 function drawTypingTarget(e) {
@@ -13409,15 +13774,26 @@ function escapeHtmlText(str) {
     .replace(/'/g, "&#39;");
 }
 
-function renderMarkdown(src) {
+// activeLine 을 주면(0-based 원본 줄 번호) 그 줄(또는 그 줄이 속한 코드블록/목록 묶음)만 원문 그대로,
+// 나머지는 평소처럼 렌더링한다 — 라이브 미리보기 탭(renderMemoLive)에서만 쓰고, activeLine 이 없으면
+// 예전과 완전히 동일하게 동작한다(나란히/미리보기 탭에 영향 없음).
+function renderMarkdown(src, activeLine) {
+  const isLive = activeLine != null;
+  const rawSrc = String(src || "");
+  const rawLines = rawSrc.split("\n");
   // 1) 코드펜스(``` 또는 ```lang)를 먼저 빼내 보호. 언어 태그가 있으면 구문 강조에 쓴다.
   const codeBlocks = [];
-  let text = String(src || "").replace(
+  const codeSpans = []; // 라이브용: 각 코드블록이 차지하는 원본 줄 범위
+  let text = rawSrc.replace(
     /```([a-zA-Z0-9+#._-]*)[ \t]*\n([\s\S]*?)```|```([\s\S]*?)```/g,
-    (m, lang, body, bare) => {
+    (m, lang, body, bare, offset) => {
+      const idx = codeBlocks.length;
       if (body !== undefined) codeBlocks.push({ lang: (lang || "").toLowerCase(), code: body.replace(/\n$/, "") });
       else codeBlocks.push({ lang: "", code: (bare || "").replace(/^\n/, "").replace(/\n$/, "") });
-    return `\u0000CODE${codeBlocks.length - 1}\u0000`;
+      const startLine = (rawSrc.slice(0, offset).match(/\n/g) || []).length;
+      const spanLines = (m.match(/\n/g) || []).length + 1;
+      codeSpans[idx] = { startLine, endLine: startLine + spanLines - 1 };
+      return ` CODE${idx} `;
   });
   // 2) 전체 HTML 이스케이프(이후 삽입되는 태그는 우리가 만든 안전한 것뿐)
   text = escapeHtmlText(text);
@@ -13432,38 +13808,40 @@ function renderMarkdown(src) {
   // (미리보기 클릭 → 원문의 N번째 항목을 찾아 토글/접기 하기 위한 안정적 인덱스)
   const counters = { cb: 0, fold: 0 };
   const foldSet = (state.memo && state.memo.folds) || null;
+  // 라이브 모드: 활성 줄(원본 좌표)을 코드펜스로 collapse 된 lines[] 인덱스와 별도로 추적한다.
+  let origLine = 0;
+  const pushRaw = (s, e) => {
+    const chunk = rawLines.slice(s, e + 1).join("\n");
+    html.push(`<div class="memo-live-raw" contenteditable="true" data-live-start="${s}" data-live-end="${e}" data-line="${s}">${escapeHtmlText(chunk)}</div>`);
+  };
+  const pushLine = (htmlStr, ln) => {
+    html.push(isLive ? `<div class="memo-live-line" data-line="${ln}">${htmlStr}</div>` : htmlStr);
+  };
 
   for (let i = 0; i < lines.length; i++) {
     const coloredLine = unwrapMemoBlockColor(lines[i]);
     const line = coloredLine.text;
     const blockColor = coloredLine.color;
-    const codeMatch = line.match(/^\u0000CODE(\d+)\u0000$/);
+    const codeMatch = line.match(/^ CODE(\d+) $/);
     if (codeMatch) {
+      const span = codeSpans[Number(codeMatch[1])] || { startLine: origLine, endLine: origLine };
       closeQuote();
-      const blk = codeBlocks[Number(codeMatch[1])];
-      const langTag = blk.lang ? `<span class="md-code-lang">${escapeHtmlText(blk.lang)}</span>` : "";
-      html.push(`<pre class="md-code"${blk.lang ? ` data-lang="${escapeHtmlText(blk.lang)}"` : ""}>${langTag}<code>${highlightCode(blk.code, blk.lang)}</code></pre>`);
-      continue;
-    }
-    if (/^\s*$/.test(line)) { closeQuote(); continue; }
-    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { closeQuote(); html.push("<hr />"); continue; }
-
-    const heading = line.match(/^(#{1,6})\s+(.*)$/);
-    if (heading) {
-      closeQuote();
-      html.push(`<h${heading[1].length}${memoBlockStyle(blockColor)}>${inlineMarkdown(heading[2])}</h${heading[1].length}>`);
-      continue;
-    }
-    const quote = line.match(/^&gt;\s?(.*)$/); // '>' 는 이미 이스케이프됨
-    if (quote) {
-      if (!inQuote) { html.push("<blockquote>"); inQuote = true; }
-      html.push(`<p${memoBlockStyle(blockColor)}>${inlineMarkdown(quote[1])}</p>`);
+      if (isLive && activeLine >= span.startLine && activeLine <= span.endLine) {
+        pushRaw(span.startLine, span.endLine);
+      } else {
+        const blk = codeBlocks[Number(codeMatch[1])];
+        const langTag = blk.lang ? `<span class="md-code-lang">${escapeHtmlText(blk.lang)}</span>` : "";
+        const rendered = `<pre class="md-code"${blk.lang ? ` data-lang="${escapeHtmlText(blk.lang)}"` : ""}>${langTag}<code>${highlightCode(blk.code, blk.lang)}</code></pre>`;
+        pushLine(rendered, span.startLine);
+      }
+      origLine = span.endLine + 1;
       continue;
     }
     // 목록: 연속된 목록 줄을 한 블록으로 모아 들여쓰기(탭) 기준 중첩 트리로 렌더한다.
     // 그래야 '- 로 찍은 점을 탭으로 층 나누기', 체크박스, 접기가 모두 동작한다.
+    // (그룹 길이를 먼저 알아야 활성 줄이 이 묶음 안에 있는지 판단할 수 있다.)
     if (parseMemoListLine(lines[i])) {
-      closeQuote();
+      const groupStart = origLine;
       const items = [];
       let j = i;
       while (j < lines.length) {
@@ -13472,8 +13850,39 @@ function renderMarkdown(src) {
         items.push(it);
         j++;
       }
-      html.push(renderMemoList(items, counters, foldSet));
+      const groupEnd = groupStart + (j - i) - 1;
+      closeQuote();
+      if (isLive && activeLine >= groupStart && activeLine <= groupEnd) {
+        pushRaw(groupStart, groupEnd);
+      } else {
+        pushLine(renderMemoList(items, counters, foldSet), groupStart);
+      }
+      origLine = groupEnd + 1;
       i = j - 1;
+      continue;
+    }
+    // 여기부터는 이 반복이 원본 줄 하나(origLine)만 소비한다 — 활성 줄이면 원문 그대로 보여준다.
+    if (isLive && activeLine === origLine) {
+      closeQuote();
+      pushRaw(origLine, origLine);
+      origLine++;
+      continue;
+    }
+    if (/^\s*$/.test(line)) { closeQuote(); origLine++; continue; }
+    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { closeQuote(); pushLine("<hr />", origLine); origLine++; continue; }
+
+    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
+      closeQuote();
+      pushLine(`<h${heading[1].length}${memoBlockStyle(blockColor)}>${inlineMarkdown(heading[2])}</h${heading[1].length}>`, origLine);
+      origLine++;
+      continue;
+    }
+    const quote = line.match(/^&gt;\s?(.*)$/); // '>' 는 이미 이스케이프됨
+    if (quote) {
+      if (!inQuote) { html.push("<blockquote>"); inQuote = true; }
+      pushLine(`<p${memoBlockStyle(blockColor)}>${inlineMarkdown(quote[1])}</p>`, origLine);
+      origLine++;
       continue;
     }
     closeQuote();
@@ -13481,10 +13890,11 @@ function renderMarkdown(src) {
     const indented = line.match(/^([ \t]+)(\S[\s\S]*)$/);
     if (indented) {
       const level = memoIndentLevel(indented[1]);
-      html.push(`<p${memoBlockStyle(blockColor, `margin-left:${(level * 1.6).toFixed(2)}em`)}>${inlineMarkdown(indented[2])}</p>`);
+      pushLine(`<p${memoBlockStyle(blockColor, `margin-left:${(level * 1.6).toFixed(2)}em`)}>${inlineMarkdown(indented[2])}</p>`, origLine);
     } else {
-      html.push(`<p${memoBlockStyle(blockColor)}>${inlineMarkdown(line)}</p>`);
+      pushLine(`<p${memoBlockStyle(blockColor)}>${inlineMarkdown(line)}</p>`, origLine);
     }
+    origLine++;
   }
   closeQuote();
   return html.join("\n");
