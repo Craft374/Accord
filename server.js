@@ -15,7 +15,7 @@ seedAdminAccount();
 // 서버 버전. 클라이언트(앱) 버전은 package.json 의 version 이며 따로 관리한다.
 // 규칙: 클라 코드가 바뀌면 서버가 그 코드를 배포하므로 서버·클라 둘 다 올리고,
 //       서버만 바뀌면 서버 버전만 올린다.
-const VERSION = "2.4.5";
+const VERSION = "2.4.6";
 const PORT = Number(process.env.PORT || 25565);
 const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_HOST = cleanHost(process.env.PUBLIC_HOST || "");
@@ -1632,13 +1632,13 @@ const memoDocs = new Map(); // roomId -> { text, history:[], cursors:Map(clientI
 const MEMO_PERSIST_DEBOUNCE = 1500;
 
 const MEMO_FONT_KEYS = new Set(["default", "sans", "serif", "round", "hand"]);
-// 내장 글꼴 키, 업로드 글꼴 키(custom:<id>), 또는 굵기 변형을 묶은 패밀리 키(custom-family:<slug>)만 허용.
+// 내장 글꼴 키, 업로드 글꼴 키(custom:<id>), 또는 굵기 변형을 묶은 패밀리 키(custom-family:<slug>[@weight])만 허용.
 // 지워진 글꼴이면 클라이언트가 기본 스택으로 자연스럽게 대체하므로 존재 여부까지는 검사하지 않는다.
 function cleanMemoFont(font) {
   const f = String(font || "");
   if (MEMO_FONT_KEYS.has(f)) return f;
   if (/^custom:[a-f0-9]{4,32}$/.test(f)) return f;
-  if (/^custom-family:[a-z0-9가-힣-]{1,60}$/.test(f)) return f;
+  if (/^custom-family:[a-z0-9가-힣-]{1,60}(@[0-9]{3})?$/.test(f)) return f;
   return "default";
 }
 

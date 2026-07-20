@@ -1320,13 +1320,13 @@ body.memo-open .log-panel {
 .memo-body.view-live .memo-live {
   display: block;
 }
-/* 활성 줄(원문 그대로 편집 중)만 살짝 강조 — 나머지는 렌더링된 상태로 보인다(옵시디언 Live Preview). */
+/* 활성 줄(원문 그대로 편집 중)도 다른 줄과 같은 배경으로 보이게 한다(옵시디언 Live Preview).
+   예전엔 --bg-input(어두운 입력창 색)을 배경으로 써서 편집 중인 줄만 검게 도드라져 보였다. */
 .memo-live-raw {
   display: block;
   margin: 0.1em 0;
   padding: 1px 4px;
   border-radius: 3px;
-  background: var(--bg-input);
   outline: none;
   white-space: pre-wrap;
   word-break: break-word;
@@ -3258,47 +3258,6 @@ summary:hover {
   background: #000;
 }
 
-/* ─── 화면 공유 PIP(플로팅 작은 창) ─────────── */
-body.screen-pip .screen-stage:not([hidden]) {
-  position: fixed;
-  z-index: 500;
-  min-width: 240px;
-  min-height: 150px;
-  max-width: 96vw;
-  max-height: 92vh;
-  border-radius: 10px;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
-  outline: 1px solid rgba(255, 255, 255, 0.08);
-  resize: both;
-  overflow: hidden;
-}
-body.screen-pip .screen-stage #screenViewer {
-  width: 100%;
-  height: 100%;
-}
-body.screen-pip .screen-stage,
-body.screen-pip .screen-stage #screenViewer {
-  cursor: move;
-}
-body.screen-pip .screen-stage-actions button,
-body.screen-pip .screen-share-pill {
-  cursor: pointer;
-}
-/* PIP에서는 헤더를 항상 보이게 유지해 드래그·버튼 접근을 막지 않는다. */
-body.screen-pip .screen-stage.screen-controls-hidden .screen-stage-head {
-  opacity: 1;
-  pointer-events: auto;
-}
-body.screen-pip .screen-stage.screen-controls-hidden {
-  cursor: default;
-}
-body.screen-pip-dragging {
-  user-select: none;
-}
-body.screen-pip-dragging .screen-stage-head {
-  cursor: grabbing;
-}
-
 .screen-share-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
@@ -3416,6 +3375,23 @@ body.screen-pip-dragging .screen-stage-head {
 }
 
 .participant-volume input {
+  min-height: 24px;
+}
+
+.sound-prefs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sound-pref-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(0, 1fr) 40px;
+  gap: 12px;
+  align-items: center;
+}
+
+.sound-pref-row input[type="range"] {
   min-height: 24px;
 }
 
@@ -4575,6 +4551,11 @@ audio,
   font-weight: 700;
   display: inline-grid;
   place-items: center;
+}
+.room-muted {
+  flex: none;
+  font-size: 11px;
+  opacity: 0.6;
 }
 /* 삭제(×) 버튼은 흐름에서 빼 절대배치한다. flex 자리(20px+gap)를 차지하면
    대표자 모드에서만 방 이름이 그만큼 일찍 잘려 비대표자와 표시가 달라지던 문제가 생긴다. */

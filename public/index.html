@@ -240,6 +240,7 @@
               <span class="memo-status" id="memoStatus"></span>
               <div class="memo-tools">
                 <select id="memoFontSelect" class="memo-font-select" title="모두에게 적용되는 글꼴" aria-label="글꼴"></select>
+                <select id="memoFontWeightSelect" class="memo-font-select" title="글꼴 굵기" aria-label="글꼴 굵기" hidden></select>
                 <div class="memo-color-tools" role="group" aria-label="글자 색">
                   <button class="memo-color-btn" type="button" data-memo-color="#e03131" style="--sw:#e03131" title="빨강 글자"></button>
                   <button class="memo-color-btn" type="button" data-memo-color="#1971c2" style="--sw:#1971c2" title="파랑 글자"></button>
@@ -436,6 +437,7 @@
         <nav class="settings-tabs" id="settingsTabs" aria-label="설정 탭">
           <button class="settings-tab active" type="button" data-settings-tab="audio">🎧 오디오</button>
           <button class="settings-tab" type="button" data-settings-tab="voice">🎚 음성 처리</button>
+          <button class="settings-tab" type="button" data-settings-tab="sound">🔔 알림음</button>
           <button class="settings-tab" type="button" data-settings-tab="layout">🖥 화면</button>
           <button class="settings-tab" type="button" data-settings-tab="diag">📊 진단 · 품질</button>
           <button class="settings-tab" type="button" data-settings-tab="log">🧾 진단 로그</button>
@@ -497,6 +499,12 @@
               </label>
             </div>
             <p class="modal-hint">마이크 음소거 단축키: Ctrl+Shift+M</p>
+          </section>
+
+          <section class="settings-pane" data-settings-pane="sound">
+            <h3>알림음</h3>
+            <div class="sound-prefs-list" id="soundPrefsList"></div>
+            <p class="modal-hint">방을 우클릭하면 그 방의 알림음만 따로 끌 수도 있습니다.</p>
           </section>
 
           <section class="settings-pane" data-settings-pane="layout">

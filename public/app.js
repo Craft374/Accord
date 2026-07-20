@@ -72,8 +72,7 @@ const state = {
   screenPreviewEnabled: localStorage.getItem("voiceChatScreenPreview") !== "off",
   screenProbeEnabled: localStorage.getItem("voiceChatScreenProbe") !== "off",
   screenFitMode: localStorage.getItem("voiceChatScreenFitMode") === "cover" ? "cover" : "contain",
-  screenPip: false, // 화면 공유를 작은 플로팅 창(PIP)으로 띄웠는지
-  screenSource: "screen", // 현재 공유 슬롯의 소스: "screen"(모니터) 또는 "camera"(웹캠/가상카메라)
+  screenSource: "screen", // 현재 공유 슬롯의 소스: "screen"(모니터) 또는 "카메라"(웹캠/가상카메라)
   screenControlsHideTimer: 0,
   screenStats: { capture: "", sender: "", receiver: "", bottleneck: "" },
   screenCaptureMethod: "",
@@ -90,6 +89,8 @@ const state = {
   programAudioProcess: null,
   programAudioSilenceTimer: 0,
   peerVolumes: readStoredPeerVolumes(),
+  soundPrefs: readSoundPrefs(),
+  mutedRooms: readMutedRooms(),
   localStream: null,
   muted: false,
   systemSharing: false,
@@ -250,6 +251,7 @@ const dom = {
   memoViewPreview: document.querySelector("#memoViewPreview"),
   memoViewLive: document.querySelector("#memoViewLive"),
   memoFontSelect: document.querySelector("#memoFontSelect"),
+  memoFontWeightSelect: document.querySelector("#memoFontWeightSelect"),
   memoFontManageButton: document.querySelector("#memoFontManageButton"),
   memoColorPick: document.querySelector("#memoColorPick"),
   drawPanel: document.querySelector("#drawPanel"),
@@ -449,6 +451,7 @@ const dom = {
   profileChipName: document.querySelector("#profileChipName"),
   profileChipCode: document.querySelector("#profileChipCode"),
   settingsTabs: document.querySelector("#settingsTabs"),
+  soundPrefsList: document.querySelector("#soundPrefsList"),
   layout: document.querySelector(".layout"),
   toggleRoomsButton: document.querySelector("#toggleRoomsButton"),
   toggleMembersButton: document.querySelector("#toggleMembersButton"),
@@ -532,6 +535,7 @@ async function init() {
   renderParticipants();
   await refreshDevices();
   refreshProgramAudioSources({ silent: true });
+  preloadUiSounds();
   await connect();
 }
 
@@ -573,7 +577,9 @@ function bindEvents() {
   dom.screenFitButton.addEventListener("click", toggleScreenFitMode);
   dom.screenPipButton?.addEventListener("click", toggleScreenPip);
   dom.screenFullscreenButton.addEventListener("click", enterScreenFullscreen);
-  bindScreenPipDrag();
+  dom.screenViewer?.addEventListener("enterpictureinpicture", updateScreenPipButton);
+  dom.screenViewer?.addEventListener("leavepictureinpicture", updateScreenPipButton);
+  updateScreenPipButton();
   dom.screenStage.addEventListener("mousemove", revealScreenControls);
   dom.screenStage.addEventListener("pointermove", revealScreenControls);
   dom.screenStage.addEventListener("touchstart", revealScreenControls, { passive: true });
@@ -625,6 +631,15 @@ function bindEvents() {
     const input = event.target;
     if (!input?.matches?.("input[data-peer-volume-role]")) return;
     updatePeerVolumeFromInput(input);
+  });
+  dom.soundPrefsList?.addEventListener("input", (event) => {
+    const input = event.target?.closest?.("[data-sound-category]");
+    if (!input) return;
+    const category = input.dataset.soundCategory;
+    if (input.type === "checkbox") setSoundPref(category, { enabled: input.checked });
+    else setSoundPref(category, { volume: Number(input.value) || 0 });
+    const value = input.closest(".sound-pref-row")?.querySelector("b");
+    if (value) value.textContent = `${getSoundPref(category).volume}%`;
   });
   dom.participantList.addEventListener("click", (event) => {
     const mod = event.target?.closest?.("[data-mod-action]");
@@ -1797,7 +1812,7 @@ async function handleSocketMessage(message) {
     logClientEvent("joined", `room=${message.room?.id || ""} peers=${(message.peers || []).length}`);
     setStatus("통화 중", "good");
     setMessage(`${message.room.name}에 들어왔습니다.`);
-    playUiSound("in");
+    playUiSound("in", state.currentRoom?.id);
     renderCurrentRoom();
     renderParticipants();
     updateControls();
@@ -1816,7 +1831,7 @@ async function handleSocketMessage(message) {
     renderCurrentRoom();
     renderParticipants();
     setMessage(`${message.peer.name}님이 들어왔습니다.`);
-    playUiSound("in");
+    playUiSound("in", state.currentRoom?.id);
     syncLocalSendersForPeer(peer, { forceOffer: false }).catch((error) => {
       logClientEvent("peer-joined-sync-error", error.message || String(error));
     });
@@ -1826,15 +1841,16 @@ async function handleSocketMessage(message) {
   if (message.type === "peer-left") {
     removePeer(message.peerId);
     state.currentRoom = message.room || state.currentRoom;
-    playUiSound("out");
+    playUiSound("out", state.currentRoom?.id);
     renderCurrentRoom();
     renderParticipants();
     return;
   }
 
   if (message.type === "left") {
+    const leftRoomId = state.currentRoom?.id;
     resetRoomState();
-    playUiSound("out");
+    playUiSound("out", leftRoomId);
     renderRooms();
     return;
   }
@@ -2535,7 +2551,7 @@ async function attachSystemTrack(stream, track, message, captureKind = "device",
   if (renegotiate) await renegotiatePeers();
   updateTrackStats();
   updateSetupStatus();
-  playUiSound("soundOn");
+  playUiSound("soundOn", state.currentRoom?.id);
   if (notify) setMessage(message);
   if (captureKind === "program") scheduleProgramAudioSilenceWarning();
 }
@@ -2572,7 +2588,7 @@ async function enforceSystemAudioTrackConstraints(track) {
 }
 
 async function stopSystemAudio({ renegotiate = true, notify = true } = {}) {
-  if (state.systemSharing) playUiSound("soundOff");
+  if (state.systemSharing) playUiSound("soundOff", state.currentRoom?.id);
   state.ignoreSystemEndedUntil = Date.now() + 1200;
   clearProgramAudioSilenceWarning();
   stopSystemShareMeter();
@@ -2867,7 +2883,7 @@ async function startCameraShare(deviceId) {
     await renegotiatePeers();
     renderParticipants();
     renderScreenStage();
-    playUiSound("screenOn");
+    playUiSound("screenOn", state.currentRoom?.id);
     setMessage("카메라를 공유 중입니다.");
   } catch (error) {
     cleanupStream(stream);
@@ -2928,7 +2944,7 @@ async function startScreenShare() {
     renderScreenStage();
     logScreenShareStats("screen-share-start");
     scheduleScreenShareStatsLog("screen-share-5s");
-    playUiSound("screenOn");
+    playUiSound("screenOn", state.currentRoom?.id);
     setMessage(Number(state.screenFps || 30) >= 60
       ? "전체 화면 공유를 시작했습니다. 60fps는 PC 상태에 따라 불안정할 수 있습니다."
       : "전체 화면 공유를 시작했습니다. 소리는 컴퓨터 사운드 공유를 따로 사용합니다.");
@@ -2949,7 +2965,7 @@ async function startScreenShare() {
 async function stopScreenShare({ renegotiate = true, message = "화면 공유를 껐습니다." } = {}) {
   if (!state.screenSharing && !state.screenTrack && !state.screenStream) return;
   cleanupLocalScreenShare();
-  playUiSound("screenOff");
+  playUiSound("screenOff", state.currentRoom?.id);
 
   for (const peer of state.peers.values()) {
     if (!peer.senders.screen) continue;
@@ -4790,6 +4806,7 @@ function setSettingsTab(tab) {
     pane.classList.toggle("active", pane.dataset.settingsPane === name);
   }
   if (name === "log") renderClientLogs();
+  if (name === "sound") renderSoundPrefs();
 }
 
 // ===== 사이드바 레이아웃(폭 조절 · 접기) =====
@@ -4994,7 +5011,7 @@ function handleGlobalHotkeys(event) {
 function toggleMute() {
   state.muted = !state.muted;
   applyMicTrackEnabled();
-  playUiSound(state.muted ? "micOff" : "micOn");
+  playUiSound(state.muted ? "micOff" : "micOn", state.currentRoom?.id);
   dom.muteButton.textContent = state.muted ? "마이크 켜기" : "마이크 끄기";
   dom.localState.textContent = getLocalStateText();
   // 상태 변화를 즉시 반영 — 주기 전송(~2초)만 기다리면 표시가 어긋난다.
@@ -5754,9 +5771,10 @@ async function handleMediaStatus(peer, status) {
   const nowSystemLive = Boolean(peer.remoteStatus?.system?.live);
   const nowScreenLive = Boolean(peer.remoteStatus?.screen?.live);
   if (!isFirstUpdate) {
-    if (wasMicMuted !== nowMicMuted) playUiSound(nowMicMuted ? "micOff" : "micOn");
-    if (wasSystemLive !== nowSystemLive) playUiSound(nowSystemLive ? "soundOn" : "soundOff");
-    if (wasScreenLive !== nowScreenLive) playUiSound(nowScreenLive ? "screenOn" : "screenOff");
+    const roomId = state.currentRoom?.id;
+    if (wasMicMuted !== nowMicMuted) playUiSound(nowMicMuted ? "micOff" : "micOn", roomId);
+    if (wasSystemLive !== nowSystemLive) playUiSound(nowSystemLive ? "soundOn" : "soundOff", roomId);
+    if (wasScreenLive !== nowScreenLive) playUiSound(nowScreenLive ? "screenOn" : "screenOff", roomId);
   }
   if (wasMicMuted !== nowMicMuted) renderParticipants();
   checkRemoteMediaExpectation(peer);
@@ -7244,6 +7262,13 @@ function buildRoomItem(channel, room, owner) {
     count.textContent = occupants.length > 99 ? "99+" : String(occupants.length);
     head.append(count);
   }
+  if (isRoomMuted(room.id)) {
+    const mute = document.createElement("span");
+    mute.className = "room-muted";
+    mute.textContent = "🔕";
+    mute.title = "이 방의 알림음이 꺼져 있습니다";
+    head.append(mute);
+  }
   const unread = room.type === "chat" ? (state.chatUnread[room.id] || 0) : 0;
   const mentions = room.type === "chat" ? (state.chatMentions[room.id] || 0) : 0;
   if (unread > 0 && state.activeChat?.roomId !== room.id) {
@@ -8576,10 +8601,16 @@ function bindChannelEvents() {
   dom.roomList?.addEventListener("contextmenu", (event) => {
     const head = event.target?.closest?.(".room-item-head");
     if (!head) return;
-    const channel = currentChannel();
-    if (!channel || (!isChannelOwner(channel) && !canRenameRoom(channel))) return;
     event.preventDefault();
-    openRoomRenameModal(head.dataset.roomId);
+    const roomId = head.dataset.roomId;
+    const channel = currentChannel();
+    const items = [];
+    // 알림 켜고끄기는 권한과 무관하게 누구나 가능
+    items.push({ label: isRoomMuted(roomId) ? "알림 켜기" : "알림 끄기", action: () => toggleRoomMute(roomId) });
+    if (channel && (isChannelOwner(channel) || canRenameRoom(channel))) {
+      items.push({ label: "이름 변경", action: () => openRoomRenameModal(roomId) });
+    }
+    openChatContextMenu(items, { x: event.clientX, y: event.clientY });
   });
 
   // 방 이름 변경 모달
@@ -8850,9 +8881,9 @@ function handleIncomingChat(msg) {
     if (Array.isArray(msg.mentions) && msg.mentions.includes(state.auth.user?.id)) {
       state.chatMentions[msg.roomId] = (state.chatMentions[msg.roomId] || 0) + 1;
       setMessage(`${msg.name || "누군가"}님이 회원님을 맨션했습니다.`);
-      playUiSound("dm");
+      playUiSound("dm", msg.roomId);
     } else {
-      playUiSound("chat");
+      playUiSound("chat", msg.roomId);
     }
     renderRooms();
   }
@@ -10538,12 +10569,28 @@ const MEMO_FONT_DEFAULT_KEY = "default";
 // 업로드 글꼴 이름에서 굵기·기울임 단어를 떼어내 (family, weight, italic)을 얻는다.
 // 예: "Pretendard Bold" → { family: "Pretendard", weight: 700, italic: false }
 // 같은 family 로 묶인 파일이 2개 이상이면 하나의 폰트 패밀리처럼 굵기별로 등록한다.
-// 마크다운 굵게(**)는 항상 font-weight:bold(700)만 요청하므로(다른 숫자굵기는 앱에서 쓰지 않음)
-// 두 단계만 구분하면 충분하다 — 그래도 이름에서 떼어내는 굵기 단어 자체는 넓게 인식한다(family 추출용).
+// 굵기 드롭다운에서 각 파일을 구분해 고를 수 있어야 하므로 표준 CSS font-weight 9단계로 인식한다.
 const MEMO_FONT_WEIGHT_WORDS = [
-  [/\b(bold|semi ?bold|demi ?bold|extra ?bold|ultra ?bold|black|heavy)\b/i, 700],
-  [/\b(thin|hairline|extra ?light|ultra ?light|light|regular|normal|book|medium)\b/i, 400],
+  [/\b(thin|hairline)\b/i, 100],
+  [/\b(extra ?light|ultra ?light)\b/i, 200],
+  [/\blight\b/i, 300],
+  [/\b(regular|normal|book)\b/i, 400],
+  [/\bmedium\b/i, 500],
+  [/\b(semi ?bold|demi ?bold)\b/i, 600],
+  [/\bbold\b/i, 700],
+  [/\b(extra ?bold|ultra ?bold)\b/i, 800],
+  [/\b(black|heavy)\b/i, 900],
 ];
+const MEMO_FONT_WEIGHT_LABELS = {
+  100: "씬", 200: "엑스트라 라이트", 300: "라이트", 400: "레귤러", 500: "미디엄",
+  600: "세미 볼드", 700: "볼드", 800: "엑스트라 볼드", 900: "블랙",
+};
+// "custom-family:<slug>" 뒤에 "@<weight>" 를 붙여 굵기 선택을 함께 저장한다(예: custom-family:pretendard@600).
+function parseMemoFontKey(key) {
+  const s = String(key || "");
+  const m = s.match(/^(.*)@([0-9]{3})$/);
+  return m ? { base: m[1], weight: Number(m[2]) } : { base: s, weight: 0 };
+}
 function parseMemoFontName(rawName) {
   const name = String(rawName || "").trim();
   let family = name.replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
@@ -10585,13 +10632,14 @@ function memoFontFamilyName(group) {
 function memoFontStack(key) {
   // 업로드 글꼴은 등록된 FontFace 패밀리 + 기본 대체 스택을 쓴다.
   // custom-family:<slug> 는 굵기 변형이 2개 이상 모인 그룹, custom:<id> 는 혼자인 글꼴.
-  if (typeof key === "string" && key.startsWith("custom-family:")) {
-    return `"af-fam-${key.slice(14)}", ${MEMO_FONTS[MEMO_FONT_DEFAULT_KEY].stack}`;
+  const { base } = parseMemoFontKey(key);
+  if (typeof base === "string" && base.startsWith("custom-family:")) {
+    return `"af-fam-${base.slice(14)}", ${MEMO_FONTS[MEMO_FONT_DEFAULT_KEY].stack}`;
   }
-  if (typeof key === "string" && key.startsWith("custom:")) {
-    return `"af-${key.slice(7)}", ${MEMO_FONTS[MEMO_FONT_DEFAULT_KEY].stack}`;
+  if (typeof base === "string" && base.startsWith("custom:")) {
+    return `"af-${base.slice(7)}", ${MEMO_FONTS[MEMO_FONT_DEFAULT_KEY].stack}`;
   }
-  return (MEMO_FONTS[key] || MEMO_FONTS[MEMO_FONT_DEFAULT_KEY]).stack;
+  return (MEMO_FONTS[base] || MEMO_FONTS[MEMO_FONT_DEFAULT_KEY]).stack;
 }
 
 // 현재 메모방이 속한 채널의 업로드 글꼴 목록.
@@ -10601,20 +10649,22 @@ function memoChannelFonts() {
   return Array.isArray(ch?.fonts) ? ch.fonts : [];
 }
 function memoFontExists(key) {
-  if (MEMO_FONTS[key]) return true;
-  if (typeof key === "string" && key.startsWith("custom-family:")) {
-    return groupMemoFonts(memoChannelFonts()).has(key.slice(14));
+  const { base } = parseMemoFontKey(key);
+  if (MEMO_FONTS[base]) return true;
+  if (typeof base === "string" && base.startsWith("custom-family:")) {
+    return groupMemoFonts(memoChannelFonts()).has(base.slice(14));
   }
-  if (typeof key === "string" && key.startsWith("custom:")) {
-    return memoChannelFonts().some((f) => `custom:${f.id}` === key);
+  if (typeof base === "string" && base.startsWith("custom:")) {
+    return memoChannelFonts().some((f) => `custom:${f.id}` === base);
   }
   return false;
 }
-// 서버가 넘겨준 글꼴 키를 받아들인다. 내장 글꼴이거나 업로드 글꼴(custom:<id>/custom-family:<slug>) 형식이면 그대로 쓴다.
+// 서버가 넘겨준 글꼴 키를 받아들인다. 내장 글꼴이거나 업로드 글꼴(custom:<id>/custom-family:<slug>[@weight]) 형식이면 그대로 쓴다.
 // (지워졌거나 아직 FontFace 로드 전인 업로드 글꼴은 memoFontStack 이 기본 스택으로 자연 대체한다.)
 // ※ 예전엔 MEMO_FONTS[key] 로만 검사해 업로드 글꼴이 전부 기본으로 되돌아가는 버그가 있었다.
 function acceptMemoFont(key) {
-  if (typeof key === "string" && (MEMO_FONTS[key] || key.startsWith("custom:") || key.startsWith("custom-family:"))) return key;
+  const { base } = parseMemoFontKey(key);
+  if (typeof base === "string" && (MEMO_FONTS[base] || base.startsWith("custom:") || base.startsWith("custom-family:"))) return String(key);
   return MEMO_FONT_DEFAULT_KEY;
 }
 
@@ -10681,14 +10731,37 @@ function clampMemoFont(px) {
 // 편집기·거터·미리보기의 글꼴을 바꾼다(공유 속성이므로 로컬 저장은 하지 않음).
 function applyMemoFont(key) {
   const stack = memoFontStack(key);
-  if (dom.memoEditor) dom.memoEditor.style.fontFamily = stack;
-  if (dom.memoGutter) dom.memoGutter.style.fontFamily = stack;
-  if (dom.memoPreview) dom.memoPreview.style.fontFamily = stack;
-  if (dom.memoLive) dom.memoLive.style.fontFamily = stack;
-  if (dom.memoFontSelect && dom.memoFontSelect.value !== key) {
-    dom.memoFontSelect.value = memoFontExists(key) ? key : MEMO_FONT_DEFAULT_KEY;
+  const { base, weight } = parseMemoFontKey(key);
+  for (const el of [dom.memoEditor, dom.memoGutter, dom.memoPreview, dom.memoLive]) {
+    if (!el) continue;
+    el.style.fontFamily = stack;
+    el.style.fontWeight = weight || "";
   }
+  if (dom.memoFontSelect && dom.memoFontSelect.value !== base) {
+    dom.memoFontSelect.value = memoFontExists(base) ? base : MEMO_FONT_DEFAULT_KEY;
+  }
+  populateMemoFontWeight(key);
   renderMemoCursors(); // 글꼴에 따라 줄바꿈·캐럿 좌표가 달라지므로 다시 그린다
+}
+
+// 굵기 변형이 2개 이상인 업로드 패밀리일 때만 굵기 드롭다운을 보여준다.
+function populateMemoFontWeight(key) {
+  const sel = dom.memoFontWeightSelect;
+  if (!sel) return;
+  const { base, weight } = parseMemoFontKey(key);
+  const slug = typeof base === "string" && base.startsWith("custom-family:") ? base.slice(14) : "";
+  const group = slug ? groupMemoFonts(memoChannelFonts()).get(slug) : null;
+  const weights = [...new Set((group?.items || []).map((it) => it.weight))].sort((a, b) => a - b);
+  if (weights.length < 2) {
+    sel.hidden = true;
+    sel.innerHTML = "";
+    return;
+  }
+  sel.innerHTML = "";
+  sel.append(new Option("기본 굵기", ""));
+  for (const w of weights) sel.append(new Option(MEMO_FONT_WEIGHT_LABELS[w] || String(w), String(w)));
+  sel.value = weight ? String(weight) : "";
+  sel.hidden = false;
 }
 
 // 편집기에서 선택한 텍스트(없으면 자리표시자)를 색 마크업 {색:#hex}…{/색} 으로 감싼다.
@@ -10829,6 +10902,7 @@ function updateMemoToolsEnabled() {
   const on = Boolean(state.memo?.writable);
   const colorsOn = on && state.memo?.view !== "live";
   if (dom.memoFontSelect) dom.memoFontSelect.disabled = !on;
+  if (dom.memoFontWeightSelect) dom.memoFontWeightSelect.disabled = !on;
   document.querySelectorAll("#memoPanel [data-memo-color], #memoColorPick").forEach((el) => { el.disabled = !colorsOn; });
   const tools = document.querySelector(".memo-tools");
   if (tools) tools.classList.toggle("disabled", !on);
@@ -11518,7 +11592,18 @@ function bindMemoEvents() {
   dom.memoFontSelect?.addEventListener("change", () => {
     const m = state.memo;
     if (!m || !m.writable) return;
+    // 패밀리를 바꾸면 굵기 선택은 초기화(기본 굵기)한다.
     const key = memoFontExists(dom.memoFontSelect.value) ? dom.memoFontSelect.value : MEMO_FONT_DEFAULT_KEY;
+    m.font = key;
+    applyMemoFont(key);
+    sendSocket({ type: "memo:font", roomId: m.roomId, font: key });
+  });
+  dom.memoFontWeightSelect?.addEventListener("change", () => {
+    const m = state.memo;
+    if (!m || !m.writable) return;
+    const base = dom.memoFontSelect.value;
+    const w = dom.memoFontWeightSelect.value;
+    const key = memoFontExists(base) ? (w ? `${base}@${w}` : base) : MEMO_FONT_DEFAULT_KEY;
     m.font = key;
     applyMemoFont(key);
     sendSocket({ type: "memo:font", roomId: m.roomId, font: key });
@@ -14475,6 +14560,9 @@ async function closeScreenViewer() {
   if (document.fullscreenElement === dom.screenStage) {
     await document.exitFullscreen().catch(() => {});
   }
+  if (document.pictureInPictureElement === dom.screenViewer) {
+    await document.exitPictureInPicture().catch(() => {});
+  }
   state.selectedScreenPeerId = "";
   renderScreenStage();
   // 참가자 카드의 "보고 있음" 라벨이 남지 않도록 함께 갱신한다.
@@ -14489,112 +14577,24 @@ function toggleScreenFitMode() {
 }
 
 // ── 화면 공유 PIP(작은 플로팅 창) ──
-// 디스코드의 팝아웃처럼, 공유 화면을 앱 위에 떠 있는 작은 창으로 띄워 다른 작업을 보면서 함께 볼 수 있게 한다.
+// 브라우저/일렉트론(크로미움) 내장 Picture-in-Picture API로 진짜 OS 레벨 플로팅 창을 띄운다.
+// 예전엔 CSS position:fixed로 흉내냈는데 앱 창 경계 밖으로 못 나가는 한계가 있어서 네이티브 PIP로 교체.
 function toggleScreenPip() {
-  setScreenPip(!state.screenPip);
-}
-
-function setScreenPip(on) {
-  state.screenPip = Boolean(on);
-  // 전체화면 중이면 PIP와 충돌하므로 먼저 빠져나온다.
-  if (state.screenPip && document.fullscreenElement === dom.screenStage) {
-    document.exitFullscreen().catch(() => {});
-  }
-  applyScreenPipMode();
-  revealScreenControls();
-}
-
-function applyScreenPipMode() {
-  const stage = dom.screenStage;
-  if (!stage) return;
-  document.body.classList.toggle("screen-pip", state.screenPip);
-  if (dom.screenPipButton) {
-    dom.screenPipButton.classList.toggle("active", state.screenPip);
-    dom.screenPipButton.textContent = state.screenPip ? "원위치" : "PIP";
-    dom.screenPipButton.title = state.screenPip ? "원래 위치로 되돌리기" : "작은 창으로 띄우기 (PIP)";
-  }
-  if (state.screenPip) {
-    // 저장된 위치·크기를 복원(없으면 우측 하단 기본값). 화면 밖으로 나가지 않게 보정.
-    let saved = {};
-    try { saved = JSON.parse(localStorage.getItem("voiceChatScreenPipBox") || "{}") || {}; } catch { saved = {}; }
-    const w = clampNum(saved.w, 260, Math.min(960, window.innerWidth - 20), 480);
-    const h = clampNum(saved.h, 170, Math.min(720, window.innerHeight - 20), 300);
-    const x = clampNum(saved.x, 8, Math.max(8, window.innerWidth - w - 8), window.innerWidth - w - 24);
-    const y = clampNum(saved.y, 8, Math.max(8, window.innerHeight - h - 8), window.innerHeight - h - 24);
-    stage.style.left = `${Math.round(x)}px`;
-    stage.style.top = `${Math.round(y)}px`;
-    stage.style.width = `${Math.round(w)}px`;
-    stage.style.height = `${Math.round(h)}px`;
-  } else {
-    stage.style.left = "";
-    stage.style.top = "";
-    stage.style.width = "";
-    stage.style.height = "";
+  if (!dom.screenViewer) return;
+  if (document.pictureInPictureElement === dom.screenViewer) {
+    document.exitPictureInPicture().catch(() => {});
+  } else if (document.pictureInPictureEnabled && dom.screenViewer.readyState >= 1) {
+    dom.screenViewer.requestPictureInPicture().catch(() => {});
   }
 }
 
-function clampNum(v, min, max, fallback) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.max(min, Math.min(max, n));
-}
-
-function saveScreenPipBox() {
-  const stage = dom.screenStage;
-  if (!stage || !state.screenPip) return;
-  const box = {
-    x: parseFloat(stage.style.left) || 0,
-    y: parseFloat(stage.style.top) || 0,
-    w: stage.offsetWidth,
-    h: stage.offsetHeight,
-  };
-  localStorage.setItem("voiceChatScreenPipBox", JSON.stringify(box));
-}
-
-// PIP 창은 화면 어디를 잡고 끌어도 옮겨진다(버튼·우하단 리사이즈 손잡이 영역만 제외).
-// 크기는 CSS resize 손잡이로 조절하며, 끝나면 위치·크기를 저장한다.
-function bindScreenPipDrag() {
-  const stage = dom.screenStage;
-  if (!stage) return;
-  let drag = null;
-  stage.addEventListener("pointerdown", (e) => {
-    if (!state.screenPip) return;
-    if (e.target.closest("button")) return; // 버튼(맞춤/전체화면/닫기/공유목록 등) 클릭은 드래그 아님
-    const r = stage.getBoundingClientRect();
-    // 우하단 20px 은 크기조절 손잡이에 양보
-    if (e.clientX > r.right - 20 && e.clientY > r.bottom - 20) return;
-    drag = { px: e.clientX, py: e.clientY, left: parseFloat(stage.style.left) || r.left, top: parseFloat(stage.style.top) || r.top };
-    stage.setPointerCapture?.(e.pointerId);
-    document.body.classList.add("screen-pip-dragging");
-    e.preventDefault();
-  });
-  stage.addEventListener("pointermove", (e) => {
-    if (!drag) return;
-    const w = stage.offsetWidth;
-    const h = stage.offsetHeight;
-    const nx = clampNum(drag.left + (e.clientX - drag.px), 0, Math.max(0, window.innerWidth - w), drag.left);
-    const ny = clampNum(drag.top + (e.clientY - drag.py), 0, Math.max(0, window.innerHeight - h), drag.top);
-    stage.style.left = `${Math.round(nx)}px`;
-    stage.style.top = `${Math.round(ny)}px`;
-  });
-  const endDrag = (e) => {
-    if (!drag) return;
-    drag = null;
-    stage.releasePointerCapture?.(e.pointerId);
-    document.body.classList.remove("screen-pip-dragging");
-    saveScreenPipBox();
-  };
-  stage.addEventListener("pointerup", endDrag);
-  stage.addEventListener("pointercancel", endDrag);
-  // resize 손잡이로 크기를 바꾸면 저장한다.
-  if (typeof ResizeObserver === "function") {
-    let t = 0;
-    new ResizeObserver(() => {
-      if (!state.screenPip) return;
-      window.clearTimeout(t);
-      t = window.setTimeout(saveScreenPipBox, 250);
-    }).observe(stage);
-  }
+function updateScreenPipButton() {
+  if (!dom.screenPipButton) return;
+  const active = document.pictureInPictureElement === dom.screenViewer;
+  dom.screenPipButton.hidden = !document.pictureInPictureEnabled;
+  dom.screenPipButton.classList.toggle("active", active);
+  dom.screenPipButton.textContent = active ? "원위치" : "PIP";
+  dom.screenPipButton.title = active ? "원래 위치로 되돌리기" : "작은 창으로 띄우기 (프로그램 밖으로도 이동 가능)";
 }
 
 function applyScreenFitMode() {
@@ -14820,6 +14820,28 @@ function updatePeerVolumeFromInput(input) {
   const peer = state.peers.get(peerId);
   if (!peer) return;
   applyPlaybackVolume(peer.remote[role]);
+}
+
+// 방별 알림음 음소거(권한 무관, 방 우클릭 메뉴에서 토글)
+function readMutedRooms() {
+  try {
+    const list = JSON.parse(localStorage.getItem("accordMutedRooms") || "[]");
+    return new Set(Array.isArray(list) ? list.filter((v) => typeof v === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function isRoomMuted(roomId) {
+  return Boolean(roomId) && state.mutedRooms.has(roomId);
+}
+
+function toggleRoomMute(roomId) {
+  if (!roomId) return;
+  if (state.mutedRooms.has(roomId)) state.mutedRooms.delete(roomId);
+  else state.mutedRooms.add(roomId);
+  localStorage.setItem("accordMutedRooms", JSON.stringify([...state.mutedRooms]));
+  renderRooms();
 }
 
 function saveProgramAudioSelection() {
@@ -15556,13 +15578,129 @@ const UI_SOUND_FILES = {
   screenOn: "screen_on", screenOff: "screen_off",
   soundOn: "sound_on", soundOff: "sound_off",
 };
+// 설정 탭에서 묶어서 켜고끄고/음량 조절하는 단위. on/off 짝은 같은 카테고리로 묶는다.
+const UI_SOUND_CATEGORY = {
+  in: "connect", out: "connect",
+  micOn: "mic", micOff: "mic",
+  screenOn: "screen", screenOff: "screen",
+  soundOn: "sound", soundOff: "sound",
+  chat: "chat", dm: "dm",
+};
+const UI_SOUND_CATEGORY_LABELS = {
+  connect: "입장 · 퇴장", mic: "마이크 켜짐 · 꺼짐",
+  screen: "화면 공유 시작 · 종료", sound: "소리 공유 시작 · 종료",
+  chat: "채팅 메시지", dm: "DM · 맨션",
+};
 
-function playUiSound(name) {
+// 디코딩된 효과음 버퍼 캐시 — 매번 새로 받아오지 않아 재생이 밀리지 않는다.
+const UI_SOUND_BUFFERS = {};
+
+function preloadUiSounds() {
+  for (const file of new Set(Object.values(UI_SOUND_FILES))) loadUiSoundBuffer(file);
+}
+
+async function loadUiSoundBuffer(file) {
+  if (UI_SOUND_BUFFERS[file]) return UI_SOUND_BUFFERS[file];
+  const context = getPlaybackAudioContext();
+  if (!context) return null;
+  try {
+    const res = await fetch(`/sound/${file}.mp3`);
+    const bytes = await res.arrayBuffer();
+    const buffer = await context.decodeAudioData(bytes);
+    UI_SOUND_BUFFERS[file] = buffer;
+    return buffer;
+  } catch {
+    return null;
+  }
+}
+
+function readSoundPrefs() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem("accordSoundPrefs") || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function getSoundPref(category) {
+  const p = state.soundPrefs[category] || {};
+  const volume = Number(p.volume);
+  return {
+    enabled: p.enabled !== false,
+    volume: Number.isFinite(volume) ? Math.max(0, Math.min(200, volume)) : 100,
+  };
+}
+
+function setSoundPref(category, patch) {
+  state.soundPrefs[category] = { ...getSoundPref(category), ...patch };
+  localStorage.setItem("accordSoundPrefs", JSON.stringify(state.soundPrefs));
+}
+
+function renderSoundPrefs() {
+  if (!dom.soundPrefsList) return;
+  dom.soundPrefsList.innerHTML = "";
+  for (const [category, label] of Object.entries(UI_SOUND_CATEGORY_LABELS)) {
+    const pref = getSoundPref(category);
+    const row = document.createElement("div");
+    row.className = "sound-pref-row";
+
+    const toggle = document.createElement("label");
+    toggle.className = "switch";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = pref.enabled;
+    checkbox.dataset.soundCategory = category;
+    const toggleLabel = document.createElement("span");
+    toggleLabel.textContent = label;
+    toggle.append(checkbox, toggleLabel);
+
+    const volume = document.createElement("input");
+    volume.type = "range";
+    volume.min = "0";
+    volume.max = "200";
+    volume.step = "5";
+    volume.value = String(pref.volume);
+    volume.dataset.soundCategory = category;
+    const volumeValue = document.createElement("b");
+    volumeValue.textContent = `${pref.volume}%`;
+
+    row.append(toggle, volume, volumeValue);
+    dom.soundPrefsList.append(row);
+  }
+}
+
+// roomId를 주면(입장·퇴장/채팅 등 특정 방에 속한 알림) 그 방이 음소거됐는지도 함께 확인한다.
+function playUiSound(name, roomId) {
   const file = UI_SOUND_FILES[name];
   if (!file) return;
-  const audio = new Audio(`/sound/${file}.mp3`);
-  audio.volume = 0.5;
-  applySinkToAudio(audio).finally(() => audio.play().catch(() => {}));
+  if (roomId && isRoomMuted(roomId)) return;
+  const pref = getSoundPref(UI_SOUND_CATEGORY[name]);
+  if (!pref.enabled || pref.volume <= 0) return;
+  const context = getPlaybackAudioContext();
+  if (!context) {
+    // ponytail: Web Audio API 없는 아주 오래된 브라우저용 폴백, 100% 이상 증폭·출력장치 선택은 못 함
+    const audio = new Audio(`/sound/${file}.mp3`);
+    audio.volume = Math.min(1, pref.volume / 100);
+    audio.play().catch(() => {});
+    return;
+  }
+  const cached = UI_SOUND_BUFFERS[file];
+  if (cached) {
+    playUiSoundBuffer(context, cached, pref.volume);
+  } else {
+    loadUiSoundBuffer(file).then((buffer) => { if (buffer) playUiSoundBuffer(context, buffer, pref.volume); });
+  }
+}
+
+function playUiSoundBuffer(context, buffer, volumePercent) {
+  const source = context.createBufferSource();
+  source.buffer = buffer;
+  const gainNode = context.createGain();
+  gainNode.gain.value = Math.max(0, volumePercent / 100);
+  source.connect(gainNode);
+  gainNode.connect(context.destination);
+  source.start(0);
 }
 
 function setMessage(text) {
