@@ -4,7 +4,7 @@ const serverUrl = location.origin;
 // 클라이언트(앱) 버전. 서버 버전(server.js VERSION, n.n.n)과 헷갈리지 않도록 **그냥 정수**(1, 2, 3 …)로 올린다.
 // package.json 의 version 은 electron-builder 가 semver 를 요구해 "N.0.0" 형태로 두고, 그 major 가 이 값과 같아야 한다.
 // (scripts/check-v2.js 가 둘이 어긋나지 않는지 검사한다)
-const CLIENT_VERSION = "6";
+const CLIENT_VERSION = "7";
 
 function getClientVersion() {
   // 표시는 항상 단일 정수 CLIENT_VERSION 을 쓴다(package.json 의 semver appVersion 대신).
@@ -2543,6 +2543,7 @@ async function attachSystemTrack(stream, track, message, captureKind = "device",
   startSystemShareMeter();
   await ensureSystemBleedSuppressor();
   rebuildLocalStream();
+  playUiSound("soundOn", state.currentRoom?.id); // 상대에게 들리는 시점이 아니라 로컬 캡처가 준비된 시점에 바로 재생(렌고시에이션 대기 시 한박자 늦게 들리던 문제)
 
   for (const peer of state.peers.values()) {
     peer.senders.system = addLocalTrack(peer, state.systemTrack, "system");
@@ -2551,7 +2552,6 @@ async function attachSystemTrack(stream, track, message, captureKind = "device",
   if (renegotiate) await renegotiatePeers();
   updateTrackStats();
   updateSetupStatus();
-  playUiSound("soundOn", state.currentRoom?.id);
   if (notify) setMessage(message);
   if (captureKind === "program") scheduleProgramAudioSilenceWarning();
 }
@@ -2876,6 +2876,7 @@ async function startCameraShare(deviceId) {
       stopScreenShare().catch(() => {});
     });
     rebuildLocalStream();
+    playUiSound("screenOn", state.currentRoom?.id); // 렌고시에이션 전에 바로 재생(한박자 늦게 들리던 문제)
     for (const peer of state.peers.values()) {
       peer.senders.screen = addLocalTrack(peer, state.screenTrack, "screen");
       tuneSender(peer.senders.screen, "screen");
@@ -2883,7 +2884,6 @@ async function startCameraShare(deviceId) {
     await renegotiatePeers();
     renderParticipants();
     renderScreenStage();
-    playUiSound("screenOn", state.currentRoom?.id);
     setMessage("카메라를 공유 중입니다.");
   } catch (error) {
     cleanupStream(stream);
@@ -2929,6 +2929,7 @@ async function startScreenShare() {
     });
     startScreenCaptureProbe(track);
     rebuildLocalStream();
+    playUiSound("screenOn", state.currentRoom?.id); // 렌고시에이션·디스크톱 IPC 대기 전에 바로 재생(한박자 늦게 들리던 문제)
     await setDesktopScreenShareActive(true);
     state.screenStats.capture = getScreenCaptureStatsText();
     updateScreenStatsLabel();
@@ -2944,7 +2945,6 @@ async function startScreenShare() {
     renderScreenStage();
     logScreenShareStats("screen-share-start");
     scheduleScreenShareStatsLog("screen-share-5s");
-    playUiSound("screenOn", state.currentRoom?.id);
     setMessage(Number(state.screenFps || 30) >= 60
       ? "전체 화면 공유를 시작했습니다. 60fps는 PC 상태에 따라 불안정할 수 있습니다."
       : "전체 화면 공유를 시작했습니다. 소리는 컴퓨터 사운드 공유를 따로 사용합니다.");
@@ -10554,6 +10554,9 @@ const MEMO_FONT_MIN = 10;
 const MEMO_FONT_MAX = 32;
 const MEMO_FONT_DEFAULT = 13;
 let memoFontSize = clampMemoFont(Number(localStorage.getItem("accordMemoFontSize")) || MEMO_FONT_DEFAULT);
+const MEMO_VIEWS = ["split", "edit", "preview", "live"];
+const savedMemoView = localStorage.getItem("accordMemoView");
+let memoViewPref = MEMO_VIEWS.includes(savedMemoView) ? savedMemoView : "split";
 
 // 메모방 글꼴(글자 크기와 달리 모든 참가자에게 공유되는 문서 속성).
 // key만 서버로 주고받고, 실제 폰트 스택은 각 클라이언트가 매핑한다(안전 + 플랫폼별 대체).
@@ -10573,6 +10576,7 @@ const MEMO_FONT_DEFAULT_KEY = "default";
 const MEMO_FONT_WEIGHT_WORDS = [
   [/\b(thin|hairline)\b/i, 100],
   [/\b(extra ?light|ultra ?light)\b/i, 200],
+  [/\b(demi ?light|semi ?light)\b/i, 350],
   [/\blight\b/i, 300],
   [/\b(regular|normal|book)\b/i, 400],
   [/\bmedium\b/i, 500],
@@ -10582,7 +10586,7 @@ const MEMO_FONT_WEIGHT_WORDS = [
   [/\b(black|heavy)\b/i, 900],
 ];
 const MEMO_FONT_WEIGHT_LABELS = {
-  100: "씬", 200: "엑스트라 라이트", 300: "라이트", 400: "레귤러", 500: "미디엄",
+  100: "씬", 200: "엑스트라 라이트", 300: "라이트", 350: "데미 라이트", 400: "레귤러", 500: "미디엄",
   600: "세미 볼드", 700: "볼드", 800: "엑스트라 볼드", 900: "블랙",
 };
 // "custom-family:<slug>" 뒤에 "@<weight>" 를 붙여 굵기 선택을 함께 저장한다(예: custom-family:pretendard@600).
@@ -10682,7 +10686,10 @@ function registerCustomFonts(channel) {
       if (registeredFontFaces.has(dedupeKey)) continue;
       registeredFontFaces.add(dedupeKey);
       try {
-        const descriptors = grouped ? { weight: String(weight), style: italic ? "italic" : "normal" } : {};
+        // 혼자 올라온 파일(그룹 없음)은 굵기를 고정하지 않고 넓은 범위로 등록한다 — 파일 하나에
+        // 여러 굵기가 들어있는 가변 글꼴(예: Pretendard 가변 폰트)이면 마크다운 **굵게** 등에서
+        // 실제 굵은 글립을 쓸 수 있게 되고, 고정폭 글꼴이면 범위 선언이 있어도 동작은 그대로다.
+        const descriptors = grouped ? { weight: String(weight), style: italic ? "italic" : "normal" } : { weight: "1 1000" };
         const face = new FontFace(familyName, `url("${serverUrl}${font.url}")`, descriptors);
         face.load().then((loaded) => {
           document.fonts.add(loaded);
@@ -10817,7 +10824,7 @@ function openMemoRoom(roomId) {
     roomId,
     channelId: found.channel.id,
     name: found.room.name,
-    view: state.memo?.view || "split",
+    view: state.memo?.view || memoViewPref,
     doc: "",
     font: MEMO_FONT_DEFAULT_KEY, // 공유 글꼴(memo:state 로 갱신됨)
     serverRev: 0,
@@ -11031,6 +11038,8 @@ function renderFontManagerList() {
     name.className = "font-row-name";
     name.textContent = font.name;
     name.style.fontFamily = cssFamily;
+    name.title = "클릭해서 이름 수정 (굵기·묶음 자동 인식은 이름의 Thin·Bold 같은 단어로 판단해요)";
+    name.addEventListener("click", () => startFontRename(row, font));
     const sample = document.createElement("span");
     sample.className = "font-row-sample";
     sample.textContent = "가나다 AaBb 123";
@@ -11043,6 +11052,34 @@ function renderFontManagerList() {
     row.append(name, sample, del);
     list.append(row);
   }
+}
+// 이름을 고치면 굵기/묶음 자동인식(parseMemoFontName)이 새 이름으로 다시 돈다 —
+// 자동인식이 틀렸을 때(예: 파일명에 Bold 같은 단어가 없어 굵기를 못 읽은 경우) 이름을 고쳐 바로잡는 수동 대안.
+function startFontRename(row, font) {
+  const ch = memoChannel();
+  if (!ch) return;
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = font.name;
+  input.className = "font-row-name font-row-name-input";
+  input.maxLength = 40;
+  const nameEl = row.querySelector(".font-row-name");
+  row.replaceChild(input, nameEl);
+  input.focus();
+  input.select();
+  const commit = () => {
+    const newName = input.value.trim().slice(0, 40);
+    if (newName && newName !== font.name) {
+      sendSocket({ type: "channel:rename-font", channelId: ch.id, fontId: font.id, name: newName });
+    } else {
+      renderFontManagerList();
+    }
+  };
+  input.addEventListener("blur", commit);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); input.blur(); }
+    else if (e.key === "Escape") { e.preventDefault(); renderFontManagerList(); }
+  });
 }
 function startFontUpload() {
   const input = document.createElement("input");
@@ -11569,8 +11606,9 @@ function setMemoStatus(text, tone) {
 }
 
 function applyMemoView(view) {
-  const v = ["split", "edit", "preview", "live"].includes(view) ? view : "split";
+  const v = MEMO_VIEWS.includes(view) ? view : "split";
   if (state.memo) state.memo.view = v;
+  if (memoViewPref !== v) { memoViewPref = v; localStorage.setItem("accordMemoView", v); }
   if (dom.memoBody) dom.memoBody.className = `memo-body view-${v}`;
   dom.memoViewSplit?.classList.toggle("active", v === "split");
   dom.memoViewEdit?.classList.toggle("active", v === "edit");

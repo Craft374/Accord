@@ -5424,6 +5424,14 @@ input.perm-switch:checked::after { transform: translateX(16px); }
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 40%;
+  cursor: text;
+}
+.font-row-name-input {
+  min-height: 0;
+  padding: 2px 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-xs);
+  background: var(--bg-surface);
 }
 .font-row-sample {
   flex: 1;

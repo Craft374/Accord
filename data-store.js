@@ -1166,6 +1166,17 @@ function addFont(channelId, name, url) {
   return { channel, font };
 }
 
+function renameFont(channelId, fontId, name) {
+  const channel = getChannel(channelId);
+  if (!channel) return { error: "채널을 찾을 수 없습니다." };
+  const font = fontsOf(channel).find((f) => f.id === fontId);
+  if (!font) return { error: "글꼴을 찾을 수 없습니다." };
+  const clean = cleanFontName(name) || "글꼴";
+  font.name = clean;
+  persistChannels();
+  return { channel, font };
+}
+
 function removeFont(channelId, fontId) {
   const channel = getChannel(channelId);
   if (!channel) return { error: "채널을 찾을 수 없습니다." };
@@ -1679,6 +1690,7 @@ module.exports = {
   removeEmoji,
   // 공유 글꼴 · 추가 권한
   addFont,
+  renameFont,
   removeFont,
   canRenameRoom,
   canManageFont,

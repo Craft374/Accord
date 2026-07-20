@@ -319,6 +319,15 @@ const reviews = [
   [/new RegExp\(`a=fmtp:\$\{opusPayload\} \.\+\\\\r\\\\n`, "g"\)/.test(app) && /new RegExp\(`\(a=fmtp:\$\{opusPayload\} \.\+\\\\r\\\\n\)`, "g"\)/.test(app), "opus tuning applies to every audio m-line"],
   [/const enabled = !state\.muted && !isMicSendProtected\(\)/.test(app), "mic enabled state respects echo protection"],
   [/if \(!state\.muted && state\.rawMicTrack\)/.test(app) === false, "health check does not bypass echo mic protection"],
+  [/rebuildLocalStream\(\);\s*\n\s*playUiSound\("soundOn"/.test(app), "system sound-on cue plays before peer renegotiation"],
+  [/rebuildLocalStream\(\);\s*\n\s*playUiSound\("screenOn"/.test(app), "camera share sound-on cue plays before peer renegotiation"],
+  [/rebuildLocalStream\(\);\s*\n\s*playUiSound\("screenOn"[\s\S]+await setDesktopScreenShareActive\(true\)/.test(app), "full screen share sound-on cue plays before desktop capture setup and renegotiation"],
+  [/\[\/\\b\(demi \?light\|semi \?light\)\\b\/i, 350\]/.test(app), "memo font weight parser recognizes DemiLight"],
+  [/\{ weight: "1 1000" \}/.test(app), "ungrouped custom memo fonts register a full weight range for variable font files"],
+  [/let memoViewPref = MEMO_VIEWS\.includes/.test(app) && /localStorage\.setItem\("accordMemoView", v\)/.test(app), "memo view tab (split/edit/preview/live) is remembered across reopens"],
+  [/function renameFont\(channelId, fontId, name\)/.test(dataStore), "server can rename a shared memo font"],
+  [/case "channel:rename-font":/.test(server) && /store\.renameFont/.test(server), "server wires up the memo font rename socket message"],
+  [/function startFontRename\(row, font\)/.test(app) && /channel:rename-font/.test(app), "font manager lets you fix auto-detected name/weight by renaming"],
 ];
 
 for (const [ok, label] of reviews) {
