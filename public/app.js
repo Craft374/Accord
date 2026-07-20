@@ -844,8 +844,8 @@ function scheduleReconnect() {
   if (reconnectAttempts > RECONNECT_MAX_ATTEMPTS) {
     setStatus("서버 끊김", "bad");
     if (desktop.isDesktop) {
-      setMessage("서버에 연결할 수 없어 서버 선택 화면으로 돌아갑니다.");
-      desktop.backToLauncher?.();
+      setMessage("서버에 연결할 수 없습니다. 5초 후 서버 선택 화면으로 돌아갑니다.");
+      window.setTimeout(() => desktop.backToLauncher?.(), 5000);
     } else {
       setMessage("서버에 연결할 수 없습니다. 새로고침 후 다시 시도해 주세요.");
     }
@@ -2313,10 +2313,7 @@ async function startDisplaySystemAudioShare(options = {}) {
     dom.systemAudioToggle.disabled = true;
     await ensureDeviceLabels();
     await refreshDevices();
-    const outputReady = await selectSafeOutputDeviceForSystemShare();
-    if (!outputReady && isWindowsSystemAudioShareActive()) {
-      throw new Error(getWindowsSystemShareOutputMessage());
-    }
+    await selectSafeOutputDeviceForSystemShare();
     const stream = await getSystemAudioDisplayStream();
     const track = stream.getAudioTracks()[0];
     if (!track) {
@@ -6524,15 +6521,14 @@ function assertSafeMacAudioRouting(wantsSystem = state.systemSharing || dom.syst
   throw new Error(getAudioRoutingMessage(issue));
 }
 
+// 전체 컴퓨터 소리 공유 중 헤드셋 출력을 "문제"로 보고하지 않는다 — 사용자가 원치 않으면
+// 프로그램별 소리 공유나 헤드셋 반향 보정을 직접 선택한다(자동 강제전환/차단 없음).
 function getWindowsAudioRoutingIssue(wantsSystem = state.systemSharing || dom.systemAudioToggle.checked) {
   if (!wantsSystem || !desktop.isDesktop || desktop.platform !== "win32") return "";
   if (isProgramSystemAudioMode()) return "";
   if (state.outputSink.failed) {
     return state.outputSink.lastError === "unsupported" ? "출력 미지원" : "출력 실패";
   }
-  const outputOption = dom.outputDeviceSelect.selectedOptions[0];
-  if (dom.loopbackEchoReductionToggle.checked && !isWindowsSystemShareSafeOutputOption(outputOption)) return "";
-  if (!isWindowsSystemShareSafeOutputOption(outputOption)) return "출력 분리";
   return "";
 }
 
@@ -6559,7 +6555,6 @@ function getMacAudioRoutingIssue(wantsSystem = state.systemSharing || dom.system
 }
 
 function getAudioRoutingMessage(issue) {
-  if (issue === "출력 분리") return getWindowsSystemShareOutputMessage();
   return getMacAudioRoutingMessage(issue);
 }
 
@@ -15121,7 +15116,9 @@ function endAutoOutputOverride() {
 
 async function selectSafeOutputDeviceForSystemShare() {
   if (isProgramSystemAudioMode()) return true;
-  if (isWindowsSystemAudioShareActive()) return selectSeparatedWindowsOutputForSystemShare();
+  // Windows 전체 컴퓨터 소리 공유는 출력 장치를 건드리지 않는다(예전엔 헤드셋→스피커로 자동전환해 혼란을
+  // 줬음). 에코가 싫으면 프로그램별 소리 공유를 쓰거나 헤드셋 반향 보정을 켜라고 안내만 한다.
+  if (isWindowsSystemAudioShareActive()) return true;
   if (!isVirtualSystemAudioSupported()) return true;
 
   const selected = dom.outputDeviceSelect.selectedOptions[0];
@@ -15140,39 +15137,6 @@ async function selectSafeOutputDeviceForSystemShare() {
 
   setMessage("컴퓨터 사운드 공유 중에는 앱 출력이 BlackHole/Loopback으로 들어가면 에코가 납니다. 실제 출력 장치를 선택해 주세요.");
   return false;
-}
-
-async function selectSeparatedWindowsOutputForSystemShare() {
-  const selected = dom.outputDeviceSelect.selectedOptions[0];
-  if (isWindowsSystemShareSafeOutputOption(selected)) return true;
-  if (selected?.value && dom.loopbackEchoReductionToggle.checked) {
-    const applied = await applyOutputDevice();
-    setMessage(applied
-      ? "헤드셋 출력은 유지하고 컴퓨터 사운드 공유에 헤드셋 반향 보정을 적용합니다."
-      : "출력 장치를 적용하지 못했습니다. 운영체제 출력 장치와 헤드셋 반향 보정을 확인해 주세요.");
-    return applied;
-  }
-
-  const safeOption = findWindowsSeparatedOutputOption();
-  if (!safeOption) {
-    if (dom.loopbackEchoReductionToggle.checked) {
-      const applied = await applyOutputDevice();
-      setMessage(applied
-        ? "별도 출력 장치를 찾지 못해 기본 출력에 헤드셋 반향 보정을 적용합니다."
-        : "출력 장치를 적용하지 못했습니다. 운영체제 출력 장치와 헤드셋 반향 보정을 확인해 주세요.");
-      return applied;
-    }
-    setMessage(getWindowsSystemShareOutputMessage());
-    return false;
-  }
-
-  beginAutoOutputOverride();
-  dom.outputDeviceSelect.value = safeOption.value;
-  const applied = await applyOutputDevice();
-  setMessage(applied
-    ? "헤드셋 재캡처를 막기 위해 통화 출력을 별도 출력 장치로 바꿨습니다."
-    : "출력 장치를 자동 선택했지만 적용하지 못했습니다. 운영체제 출력 장치를 확인해 주세요.");
-  return applied;
 }
 
 async function selectSafeOutputDeviceForEchoGuard() {
@@ -15199,16 +15163,6 @@ function findSafeOutputOption() {
   });
   if (!options.length) return null;
   return options.find((option) => isLikelyOutputLabel(option.textContent)) || options[0];
-}
-
-function findWindowsSeparatedOutputOption() {
-  const options = [...dom.outputDeviceSelect.options].filter((option) => {
-    return option.value && !isVirtualAudioDeviceLabel(option.textContent);
-  });
-  if (!options.length) return null;
-  return options.find((option) => isLikelySpeakerOutputLabel(option.textContent)) ||
-    options.find((option) => !isLikelyHeadsetLoopbackOutputLabel(option.textContent)) ||
-    null;
 }
 
 function isWindowsSystemAudioShareActive() {
@@ -15238,12 +15192,6 @@ function isWindowsLoopbackEchoReductionActive() {
 
 function isLikelyHeadsetLoopbackOutputLabel(label) {
   return /headset|headphones?|hands.?free|ag audio|bluetooth|airpods|buds|earbuds|헤드셋|헤드폰|이어폰|이어버드/i.test(String(label || ""));
-}
-
-function isLikelySpeakerOutputLabel(label) {
-  const text = String(label || "");
-  if (isLikelyHeadsetLoopbackOutputLabel(text)) return false;
-  return /speaker|speakers|realtek|display|monitor|hdmi|nvidia|amd|intel|내장|internal|스피커|모니터/i.test(text);
 }
 
 function getWindowsSystemShareOutputMessage() {
