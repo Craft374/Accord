@@ -183,6 +183,20 @@ eq(idx(c, raw), -1, "switch: old raw removed");
 ok(c.children[3].classList.contains("memo-live-raw"), "switch: new active line is raw");
 eq(c.children.length, 4, "switch: block count stable");
 
+// External doc change on the ACTIVE line (memo:state load / memo:op remote edit of my line):
+// preserve keeps the stale focused-raw text (correct only for local typing) — freshFocus must
+// refresh it, else the loaded/remote text renders blank or a stale raw clobbers the peer's edit.
+// refreshLiveIfActiveLineStale() is the caller that switches to freshFocus in exactly this case.
+{
+  const cc = new El(); cc.innerHTML = "";
+  reconcileLive(cc, RAW(0, 0, ""), null);              // after openMemoRoom: empty active raw, focused
+  const stale = cc.children[0];
+  reconcileLive(cc, RAW(0, 0, "Hello world"), stale);  // preserve path (what a plain render does)
+  ok(cc.children[0] === stale && cc.children[0].innerHTML === "", "preserve keeps focused-raw text (local-typing invariant)");
+  reconcileLive(cc, RAW(0, 0, "Hello world"), null);   // freshFocus path (what the fix triggers)
+  ok(cc.children[0].innerHTML.includes("Hello world"), "freshFocus refreshes external change on active line (load/remote fix)");
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (process.argv.includes("--checklist")) {
   console.log(`\n--- manual smoke test (needs a real run: server + login + memo room, live tab) ---

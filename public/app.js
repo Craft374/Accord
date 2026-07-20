@@ -10942,6 +10942,7 @@ function handleMemoState(message) {
   applyMemoFont(m.font);
   updateMemoToolsEnabled();
   renderMemoPreview();
+  refreshLiveIfActiveLineStale(); // 불러온 원문이 라이브의 활성(빈) 줄에도 보이게 한다
   m.cursors.clear();
   for (const cur of message.cursors || []) setMemoCursor(cur);
   renderMemoCursors();
@@ -11291,6 +11292,7 @@ function handleMemoOp(message) {
   // 활성 줄(캐럿)이 제자리를 지키고, renderMemoPreview 의 재조정이 다른 블록만 갱신한다.
   if (m.liveCaret != null) m.liveCaret = OT.transformCursor(m.liveCaret, r, "left");
   renderMemoPreview();
+  refreshLiveIfActiveLineStale(); // 원격이 내가 편집 중인 바로 그 줄을 바꿨으면 그 줄만 새로 그린다
   renderMemoCursors();
 }
 
@@ -11629,6 +11631,24 @@ function renderMemoLive(opts) {
   const raw = memoLiveActiveRawEl();
   const focusedRaw = (!opts?.freshFocus && raw && document.activeElement === raw) ? raw : null;
   reconcileLive(dom.memoLive, renderMarkdown(text, activeLine), focusedRaw);
+}
+
+// 포커스된 raw 의 텍스트를 그대로 두는 최적화(reconcile)는 그 텍스트가 '내 타이핑'에서 온 경우에만
+// 옳다. 문서를 통째로 불러오거나(memo:state) 원격이 바로 그 줄을 고치면(memo:op) DOM 이 옛 내용이라
+// 불러온 원문이 안 보이거나, 심하면 다음 입력이 상대 편집을 덮어쓴다. 그래서 외부 변경 뒤에는 활성
+// raw 가 문서와 어긋났는지 확인해 어긋난 경우에만 그 줄을 새로 그리고 캐럿을 다시 놓는다.
+// (raw 가 이미 최신이면 아무것도 안 해 무플리커/무IME방해를 지킨다.)
+function refreshLiveIfActiveLineStale() {
+  const m = state.memo;
+  if (!m || m.view !== "live" || !m.writable) return;
+  const raw = memoLiveActiveRawEl();
+  if (!raw || document.activeElement !== raw) return; // 포커스 밖이면 reconcile 이 이미 새로 그렸다
+  const doc = dom.memoEditor?.value || "";
+  const s = Number(raw.dataset.liveStart) || 0, e = Number(raw.dataset.liveEnd) || 0;
+  if (readLiveRawText(raw) === doc.split("\n").slice(s, e + 1).join("\n")) return; // 이미 최신
+  const caret = Math.max(0, Math.min(m.liveCaret ?? 0, doc.length));
+  renderMemoLive({ freshFocus: true });
+  placeLiveCaret(caret);
 }
 
 // 활성 raw 안에서 문서 오프셋 docOffset 위치에 캐럿을 놓고 포커스한다.
