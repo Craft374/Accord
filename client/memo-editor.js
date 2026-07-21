@@ -2,8 +2,26 @@ import { EditorView, basicSetup } from "codemirror";
 import { Annotation, Compartment, EditorSelection, EditorState, StateEffect, StateField, Transaction } from "@codemirror/state";
 import { Decoration, ViewPlugin, WidgetType, keymap, placeholder } from "@codemirror/view";
 import { indentWithTab } from "@codemirror/commands";
-import { syntaxTree } from "@codemirror/language";
+import { HighlightStyle, syntaxHighlighting, syntaxTree } from "@codemirror/language";
+import { tags } from "@lezer/highlight";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
+
+// basicSetup 의 defaultHighlightStyle 은 밝은 배경 전제(헤딩 밑줄, 마크문자 어두운 회색)라 다크 테마에서
+// 안 보이거나(#404740 회색) 밑줄이 남는다(제목). 마크다운에 실제로 쓰이는 태그만 다시 정의해 완전히 대체한다.
+const memoHighlightStyle = HighlightStyle.define([
+  { tag: tags.heading, fontWeight: "bold" },
+  { tag: tags.link, textDecoration: "underline" },
+  { tag: tags.emphasis, fontStyle: "italic" },
+  { tag: tags.strong, fontWeight: "bold" },
+  { tag: tags.strikethrough, textDecoration: "line-through" },
+  { tag: tags.processingInstruction, color: "var(--memo-color-marker, var(--warning))" },
+]);
+
+// "*" 를 괄호처럼 취급해 선택한 글자를 양쪽에서 감싸게 한다(closeBrackets 는 이미 basicSetup 에 포함됨,
+// 여기선 대상 문자만 languageData 로 추가). 별 3개는 감싸기를 세 번 반복 적용해 자연히 얻어진다.
+const memoCloseBrackets = EditorState.languageData.of(() => [
+  { closeBrackets: { brackets: ["(", "[", "{", "'", '"', "*"] } },
+]);
 
 const setLiveMode = StateEffect.define();
 const toggleFold = StateEffect.define();
@@ -415,6 +433,8 @@ function createMemoEditor(options) {
   let writable = false;
   const extensions = [
     basicSetup,
+    syntaxHighlighting(memoHighlightStyle),
+    memoCloseBrackets,
     markdown({ base: markdownLanguage }),
     EditorView.lineWrapping,
     EditorState.tabSize.of(2),
@@ -490,6 +510,16 @@ function createMemoEditor(options) {
       callbacks.parent.style.setProperty("--memo-weight", fontWeight || "400");
       if (fontSize) callbacks.parent.style.setProperty("--memo-size", `${fontSize}px`);
       view.requestMeasure();
+    },
+    setPalette(colors) {
+      const set = (name, value) => {
+        if (value) callbacks.parent.style.setProperty(name, value);
+        else callbacks.parent.style.removeProperty(name);
+      };
+      set("--memo-color-em", colors?.em);
+      set("--memo-color-strong", colors?.strong);
+      set("--memo-color-strongem", colors?.strongem);
+      set("--memo-color-marker", colors?.marker);
     },
     wrapSelection(open, close, fallback) {
       if (view.state.readOnly) return;

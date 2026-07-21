@@ -436,6 +436,7 @@
           <button class="settings-tab" type="button" data-settings-tab="voice">🎚 음성 처리</button>
           <button class="settings-tab" type="button" data-settings-tab="sound">🔔 알림음</button>
           <button class="settings-tab" type="button" data-settings-tab="layout">🖥 화면</button>
+          <button class="settings-tab" type="button" data-settings-tab="memo">📝 메모장</button>
           <button class="settings-tab" type="button" data-settings-tab="diag">📊 진단 · 품질</button>
           <button class="settings-tab" type="button" data-settings-tab="log">🧾 진단 로그</button>
           <button class="settings-tab" type="button" data-settings-tab="account">👤 계정</button>
@@ -523,6 +524,32 @@
             <p class="modal-hint">방 목록 · 멤버 목록의 경계선을 드래그하면 폭을 조절할 수 있습니다. 상단 막대의 접기 버튼으로도 각 목록을 여닫을 수 있습니다.</p>
             <div class="modal-actions">
               <button class="secondary" id="resetLayoutButton" type="button">기본 폭으로 초기화</button>
+            </div>
+          </section>
+
+          <section class="settings-pane" data-settings-pane="memo">
+            <h3>메모장 라이브 모드 색상</h3>
+            <div class="settings-grid">
+              <label class="field">
+                <span>기울임 글자색</span>
+                <input type="color" id="memoColorEm" />
+              </label>
+              <label class="field">
+                <span>볼드 글자색</span>
+                <input type="color" id="memoColorStrong" />
+              </label>
+              <label class="field">
+                <span>기울임+볼드 글자색</span>
+                <input type="color" id="memoColorStrongEm" />
+              </label>
+              <label class="field">
+                <span>문법 기호색 (숫자 · # · - 등)</span>
+                <input type="color" id="memoColorMarker" />
+              </label>
+            </div>
+            <p class="modal-hint">라이브 모드에서 기울임·볼드·목록 번호 등 마크다운 문법 요소의 색을 직접 지정합니다.</p>
+            <div class="modal-actions">
+              <button class="secondary" id="resetMemoColorsButton" type="button">기본값으로 초기화</button>
             </div>
           </section>
 

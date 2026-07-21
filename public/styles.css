@@ -1362,12 +1362,6 @@ body.memo-open .log-panel {
 .memo-editor .cm-content ::selection {
   background: rgba(240, 178, 50, 0.28) !important;
 }
-.memo-editor[data-memo-mode="live"] .cm-gutters {
-  display: none;
-}
-.memo-editor[data-memo-mode="live"] .cm-content {
-  padding: 16px 20px;
-}
 .memo-editor[data-memo-mode="live"] .cm-activeLine {
   background: transparent;
 }
@@ -1383,8 +1377,10 @@ body.memo-open .log-panel {
 .memo-editor .cm-live-h4 { font-size: 1.15em; }
 .memo-editor .cm-live-h5 { font-size: 1.05em; }
 .memo-editor .cm-live-h6 { font-size: 1em; color: var(--muted); }
-.memo-editor .cm-live-strong { font-weight: 750; }
-.memo-editor .cm-live-em { font-style: italic; }
+.memo-editor .cm-live-strong { font-weight: 750; color: var(--memo-color-strong, inherit); }
+.memo-editor .cm-live-em { font-style: italic; color: var(--memo-color-em, inherit); }
+.memo-editor .cm-live-strong .cm-live-em,
+.memo-editor .cm-live-em .cm-live-strong { color: var(--memo-color-strongem, inherit); }
 .memo-editor .cm-live-strike { text-decoration: line-through; color: var(--muted); }
 .memo-editor .cm-live-inline-code {
   padding: 0.08em 0.28em;
@@ -1419,14 +1415,14 @@ body.memo-open .log-panel {
 .memo-editor .cm-live-bullet {
   display: inline-block;
   min-width: 1em;
-  color: var(--warning);
+  color: var(--memo-color-marker, var(--warning));
   text-align: center;
 }
 .memo-editor .cm-live-check {
   width: 14px;
   height: 14px;
   margin: 0 5px 0 1px;
-  accent-color: var(--warning);
+  accent-color: var(--memo-color-marker, var(--warning));
   vertical-align: -2px;
 }
 .memo-editor .cm-live-task-done { color: var(--muted); text-decoration: line-through; }
@@ -1452,7 +1448,7 @@ body.memo-open .log-panel {
   position: relative;
   display: inline-block;
   width: 0;
-  height: 1.25em;
+  height: 1lh;
   border-left: 2px solid var(--memo-cursor-color);
   vertical-align: text-bottom;
   pointer-events: none;

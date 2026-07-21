@@ -147,7 +147,7 @@ async function run() {
   assert(scrollBefore > 0, "긴 문서의 스크롤 위치를 설정할 수 있어야 함");
   assert(await evaluate("getComputedStyle(document.querySelector('.cm-gutters')).display !== 'none'"), "소스 모드는 줄번호를 보여야 함");
   await evaluate("memoEditor.setMode('live')");
-  assert(await evaluate("getComputedStyle(document.querySelector('.cm-gutters')).display === 'none'"), "라이브 모드는 줄번호를 숨겨야 함");
+  assert(await evaluate("getComputedStyle(document.querySelector('.cm-gutters')).display !== 'none'"), "라이브 모드도 줄번호를 보여야 함");
   await evaluate("memoEditor.setMode('source')");
   assert(Math.abs((await evaluate("document.querySelector('.cm-scroller').scrollTop")) - scrollBefore) < 2, "모드 전환이 스크롤 위치를 유지해야 함");
 

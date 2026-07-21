@@ -458,6 +458,11 @@ const dom = {
   membersCollapseToggle: document.querySelector("#membersCollapseToggle"),
   drawLayerNamesToggle: document.querySelector("#drawLayerNamesToggle"),
   resetLayoutButton: document.querySelector("#resetLayoutButton"),
+  memoColorEm: document.querySelector("#memoColorEm"),
+  memoColorStrong: document.querySelector("#memoColorStrong"),
+  memoColorStrongEm: document.querySelector("#memoColorStrongEm"),
+  memoColorMarker: document.querySelector("#memoColorMarker"),
+  resetMemoColorsButton: document.querySelector("#resetMemoColorsButton"),
   focusBar: document.querySelector("#focusBar"),
   focusBarTitle: document.querySelector("#focusBarTitle"),
   focusExitButton: document.querySelector("#focusExitButton"),
@@ -10556,6 +10561,14 @@ const MEMO_VIEWS = ["split", "edit", "preview", "live"];
 const savedMemoView = localStorage.getItem("accordMemoView");
 let memoViewPref = MEMO_VIEWS.includes(savedMemoView) ? savedMemoView : "split";
 
+// 라이브 모드 문법요소(기울임/볼드/기울임+볼드/마크기호) 색 — 개인 취향이라 방 동기화 없이 localStorage 만.
+const MEMO_LIVE_COLOR_DEFAULTS = { em: "#dbdee1", strong: "#dbdee1", strongem: "#dbdee1", marker: "#f0b232" };
+let memoLiveColors = { ...MEMO_LIVE_COLOR_DEFAULTS };
+try {
+  const saved = JSON.parse(localStorage.getItem("accordMemoLiveColors") || "null");
+  if (saved && typeof saved === "object") memoLiveColors = { ...MEMO_LIVE_COLOR_DEFAULTS, ...saved };
+} catch { /* 손상된 값은 기본값으로 */ }
+
 // 메모방 글꼴(글자 크기와 달리 모든 참가자에게 공유되는 문서 속성).
 // key만 서버로 주고받고, 실제 폰트 스택은 각 클라이언트가 매핑한다(안전 + 플랫폼별 대체).
 const MEMO_FONTS = {
@@ -10838,6 +10851,36 @@ function applyMemoFontSize(px) {
   const key = state.memo?.font || MEMO_FONT_DEFAULT_KEY;
   const { weight } = parseMemoFontKey(key);
   memoEditorController?.setTypography({ fontFamily: memoFontStack(key), fontWeight: weight || "400", fontSize: memoFontSize });
+}
+
+// 설정 > 메모장 탭의 색 선택값을 편집기(CSS 변수)에 반영.
+function applyMemoLiveColors() {
+  memoEditorController?.setPalette(memoLiveColors);
+  if (dom.memoColorEm) dom.memoColorEm.value = memoLiveColors.em;
+  if (dom.memoColorStrong) dom.memoColorStrong.value = memoLiveColors.strong;
+  if (dom.memoColorStrongEm) dom.memoColorStrongEm.value = memoLiveColors.strongem;
+  if (dom.memoColorMarker) dom.memoColorMarker.value = memoLiveColors.marker;
+}
+
+function bindMemoColorSettings() {
+  const inputs = [
+    [dom.memoColorEm, "em"],
+    [dom.memoColorStrong, "strong"],
+    [dom.memoColorStrongEm, "strongem"],
+    [dom.memoColorMarker, "marker"],
+  ];
+  for (const [input, key] of inputs) {
+    input?.addEventListener("input", () => {
+      memoLiveColors = { ...memoLiveColors, [key]: input.value };
+      localStorage.setItem("accordMemoLiveColors", JSON.stringify(memoLiveColors));
+      memoEditorController?.setPalette(memoLiveColors);
+    });
+  }
+  dom.resetMemoColorsButton?.addEventListener("click", () => {
+    memoLiveColors = { ...MEMO_LIVE_COLOR_DEFAULTS };
+    localStorage.removeItem("accordMemoLiveColors");
+    applyMemoLiveColors();
+  });
 }
 
 function openMemoRoom(roomId) {
@@ -11409,6 +11452,8 @@ function ensureMemoEditor() {
 
 function bindMemoEvents() {
   ensureMemoEditor();
+  bindMemoColorSettings();
+  applyMemoLiveColors();
   dom.memoViewSplit?.addEventListener("click", () => applyMemoView("split"));
   dom.memoViewEdit?.addEventListener("click", () => applyMemoView("edit"));
   dom.memoViewPreview?.addEventListener("click", () => applyMemoView("preview"));
