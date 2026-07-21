@@ -1305,36 +1305,8 @@ body.memo-open .log-panel {
 .memo-body.view-live {
   grid-template-columns: minmax(0, 1fr);
 }
-.memo-body.view-live .memo-editor-wrap,
 .memo-body.view-live .memo-preview {
   display: none;
-}
-.memo-live {
-  display: none;
-  min-width: 0;
-  overflow-y: auto;
-  padding: 16px 20px;
-  background: var(--bg-base);
-  cursor: text;
-}
-.memo-body.view-live .memo-live {
-  display: block;
-}
-/* 활성 줄(원문 그대로 편집 중)도 다른 줄과 같은 배경으로 보이게 한다(옵시디언 Live Preview).
-   예전엔 --bg-input(어두운 입력창 색)을 배경으로 써서 편집 중인 줄만 검게 도드라져 보였다. */
-.memo-live-raw {
-  display: block;
-  min-height: 1.4em;
-  margin: 0.1em 0;
-  padding: 1px 4px;
-  border-radius: 3px;
-  outline: none;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-}
-.memo-live-line {
-  cursor: text;
 }
 .memo-editor-wrap {
   position: relative;
@@ -1344,72 +1316,164 @@ body.memo-open .log-panel {
   background: var(--bg-base);
 }
 .memo-editor {
-  display: block;
   width: 100%;
   height: 100%;
   min-width: 0;
-  border: none;
-  outline: none;
-  resize: none;
-  padding: 16px;
-  background: transparent;
-  color: var(--text);
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 13px;
-  line-height: 1.6;
-  tab-size: 2;
+  --memo-font: var(--font, system-ui, sans-serif);
+  --memo-weight: 400;
+  --memo-size: 13px;
 }
-.memo-editor:disabled {
-  opacity: 0.5;
-}
-/* 줄번호 거터 — 편집기와 같은 폰트/줄높이로 원격커서와 동일한 미러 좌표계에 맞춰 배치 */
-.memo-gutter {
-  position: absolute;
-  left: 0;
-  top: 0;
+.memo-editor .cm-editor {
   height: 100%;
-  overflow: hidden;
-  pointer-events: none;
   background: var(--bg-base);
+  color: var(--text);
+  font-family: var(--memo-font);
+  font-size: var(--memo-size);
+  font-weight: var(--memo-weight);
+}
+.memo-editor .cm-editor.cm-focused {
+  outline: none;
+}
+.memo-editor .cm-cursor { border-left-color: var(--text); }
+.memo-editor .cm-scroller {
+  overflow: auto;
+  line-height: 1.6;
+  font-family: inherit;
+}
+.memo-editor .cm-content {
+  padding: 16px 18px;
+  caret-color: var(--text);
+}
+.memo-editor .cm-line {
+  padding: 0;
+}
+.memo-editor .cm-gutters {
+  min-width: 38px;
+  padding-top: 16px;
   border-right: 1px solid var(--line);
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 13px;
-  line-height: 1.6;
+  background: var(--bg-base);
   color: var(--muted);
-  user-select: none;
 }
-.memo-line-no {
-  position: absolute;
-  right: 8px;
-  line-height: 1.6;
-  text-align: right;
-  opacity: 0.65;
-  font-variant-numeric: tabular-nums;
+.memo-editor .cm-activeLine,
+.memo-editor .cm-activeLineGutter {
+  background: rgba(255, 255, 255, 0.025);
 }
-/* 원격 커서 오버레이 */
-.memo-cursors {
-  position: absolute;
-  inset: 0;
+.memo-editor .cm-selectionBackground,
+.memo-editor .cm-content ::selection {
+  background: rgba(240, 178, 50, 0.28) !important;
+}
+.memo-editor[data-memo-mode="live"] .cm-gutters {
+  display: none;
+}
+.memo-editor[data-memo-mode="live"] .cm-content {
+  padding: 16px 20px;
+}
+.memo-editor[data-memo-mode="live"] .cm-activeLine {
+  background: transparent;
+}
+.memo-editor .cm-live-heading {
+  font-weight: 750;
+  line-height: 1.3;
+  padding-top: 0.18em;
+  padding-bottom: 0.08em;
+}
+.memo-editor .cm-live-h1 { font-size: 1.75em; }
+.memo-editor .cm-live-h2 { font-size: 1.5em; }
+.memo-editor .cm-live-h3 { font-size: 1.3em; }
+.memo-editor .cm-live-h4 { font-size: 1.15em; }
+.memo-editor .cm-live-h5 { font-size: 1.05em; }
+.memo-editor .cm-live-h6 { font-size: 1em; color: var(--muted); }
+.memo-editor .cm-live-strong { font-weight: 750; }
+.memo-editor .cm-live-em { font-style: italic; }
+.memo-editor .cm-live-strike { text-decoration: line-through; color: var(--muted); }
+.memo-editor .cm-live-inline-code {
+  padding: 0.08em 0.28em;
+  border-radius: 4px;
+  background: var(--bg-input);
+  color: var(--warning);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.9em;
+}
+.memo-editor .cm-live-link {
+  color: var(--blurple);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.memo-editor .cm-live-quote {
+  border-left: 3px solid var(--warning);
+  padding-left: 10px;
+  color: var(--muted);
+}
+.memo-editor .cm-live-code-block {
+  padding: 0 10px;
+  background: var(--bg-input);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+.memo-editor .cm-live-code-fence {
+  height: 0;
+  min-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
   overflow: hidden;
+}
+.memo-editor .cm-live-bullet {
+  display: inline-block;
+  min-width: 1em;
+  color: var(--warning);
+  text-align: center;
+}
+.memo-editor .cm-live-check {
+  width: 14px;
+  height: 14px;
+  margin: 0 5px 0 1px;
+  accent-color: var(--warning);
+  vertical-align: -2px;
+}
+.memo-editor .cm-live-task-done { color: var(--muted); text-decoration: line-through; }
+.memo-editor .cm-live-fold {
+  width: 14px;
+  height: 16px;
+  margin: 0 2px 0 -16px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  vertical-align: -2px;
+}
+.memo-editor .cm-live-fold::before { content: "▾"; }
+.memo-editor .cm-live-fold.collapsed::before { content: "▸"; }
+.memo-editor .cm-live-rule {
+  display: inline-block;
+  width: 100%;
+  border-top: 1px solid var(--line-strong);
+  vertical-align: middle;
+}
+.memo-editor .cm-memo-remote-cursor {
+  position: relative;
+  display: inline-block;
+  width: 0;
+  height: 1.25em;
+  border-left: 2px solid var(--memo-cursor-color);
+  vertical-align: text-bottom;
   pointer-events: none;
+  z-index: 4;
 }
-.memo-remote-cursor {
+.memo-editor .cm-memo-remote-label {
   position: absolute;
-  width: 2px;
-  margin-left: -1px;
-}
-.memo-cursor-label {
-  position: absolute;
-  top: -15px;
-  left: -1px;
+  left: -2px;
+  bottom: 100%;
   padding: 1px 5px;
   border-radius: 4px 4px 4px 0;
+  background: var(--memo-cursor-color);
   color: #fff;
-  font-family: var(--font, inherit);
+  font-family: var(--font, sans-serif);
   font-size: 10px;
   font-weight: 700;
   line-height: 1.3;
   white-space: nowrap;
+}
+.memo-editor .cm-memo-remote-selection {
+  background: color-mix(in srgb, var(--memo-cursor-color) 24%, transparent);
 }
 .memo-preview {
   min-width: 0;
@@ -1417,31 +1481,19 @@ body.memo-open .log-panel {
   padding: 16px 20px;
   background: var(--bg-base);
 }
-/* 미리보기는 편집기 줄과 촘촘히 맞도록 문단·목록 간격을 좁힌다(나란히/미리보기/라이브 공통) */
-.memo-preview.markdown-body,
-.memo-live.markdown-body { line-height: 1.5; }
-.memo-preview.markdown-body p,
-.memo-live.markdown-body p { margin: 0.1em 0; }
+/* 미리보기는 편집기 줄과 촘촘히 맞도록 문단·목록 간격을 좁힌다. */
+.memo-preview.markdown-body { line-height: 1.5; }
+.memo-preview.markdown-body p { margin: 0.1em 0; }
 .memo-preview.markdown-body ul,
-.memo-preview.markdown-body ol,
-.memo-live.markdown-body ul,
-.memo-live.markdown-body ol { margin: 0.15em 0; }
-.memo-preview.markdown-body li,
-.memo-live.markdown-body li { margin: 0.05em 0; }
+.memo-preview.markdown-body ol { margin: 0.15em 0; }
+.memo-preview.markdown-body li { margin: 0.05em 0; }
 .memo-preview.markdown-body h1,
 .memo-preview.markdown-body h2,
 .memo-preview.markdown-body h3,
 .memo-preview.markdown-body h4,
 .memo-preview.markdown-body h5,
-.memo-preview.markdown-body h6,
-.memo-live.markdown-body h1,
-.memo-live.markdown-body h2,
-.memo-live.markdown-body h3,
-.memo-live.markdown-body h4,
-.memo-live.markdown-body h5,
-.memo-live.markdown-body h6 { margin: 0.6em 0 0.25em; }
-.memo-preview.markdown-body blockquote,
-.memo-live.markdown-body blockquote { margin: 0.25em 0; }
+.memo-preview.markdown-body h6 { margin: 0.6em 0 0.25em; }
+.memo-preview.markdown-body blockquote { margin: 0.25em 0; }
 
 /* ─── 공동 그림판 ─────────────────────────── */
 .draw-panel {

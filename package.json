@@ -11,14 +11,18 @@
     "server:open": "node scripts/start-server.js",
     "client": "electron .",
     "check": "node scripts/check-v2.js",
+    "build:memo-editor": "esbuild client/memo-editor.js --bundle --minify --format=iife --outfile=public/memo-editor.bundle.js",
     "icons": "node scripts/generate-icons.js",
     "build:mac": "node scripts/fix-mac-builder-permissions.js && npm run icons && node node_modules/electron-builder/cli.js --mac zip --arm64",
     "build:win": "node scripts/build-windows-helper.js && npm run icons && node node_modules/electron-builder/cli.js --win portable --x64",
     "build": "npm run check && npm run build:mac && npm run build:win && node scripts/prune-dist.js"
   },
   "devDependencies": {
+    "@codemirror/lang-markdown": "^6.5.1",
+    "codemirror": "^6.0.2",
     "electron": "^31.7.7",
-    "electron-builder": "^24.13.3"
+    "electron-builder": "^24.13.3",
+    "esbuild": "^0.28.1"
   },
   "build": {
     "appId": "craft374.accord",

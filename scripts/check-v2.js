@@ -8,6 +8,7 @@ const syntaxTargets = [
   "electron/preload.js",
   "shell/launcher.js",
   "public/app.js",
+  "client/memo-editor.js",
   "public/noise-gate-worklet.js",
   "public/program-audio-worklet.js",
   "scripts/generate-icons.js",
@@ -29,6 +30,7 @@ for (const target of syntaxTargets) {
 }
 
 const app = fs.readFileSync("public/app.js", "utf8");
+const memoEditor = fs.readFileSync("client/memo-editor.js", "utf8");
 const html = fs.readFileSync("public/index.html", "utf8");
 const css = fs.readFileSync("public/styles.css", "utf8");
 const worklet = fs.readFileSync("public/noise-gate-worklet.js", "utf8");
@@ -140,7 +142,7 @@ const checks = [
   [html.includes("roomModalParent") && app.includes("parentGroupId") && app.includes("fillRoomParentSelect"), "new rooms and groups can be created at a selected tree location"],
   [css.includes(".room-tree-empty") && css.includes(".room-tree-root") && !css.includes(".room-root.empty-root"), "the root drop target stays in normal flow without covering a group heading"],
   [css.includes(".room-group-head:hover .room-group-count") && css.includes("position: absolute"), "room group actions only shift the count on hover"],
-  [app.includes('execCommand?.("insertText"') && app.includes('inputType: "insertText"'), "memo color insertion uses undo-aware editing"],
+  [app.includes("memoEditorController.wrapSelection") && memoEditor.includes("EditorSelection.range"), "memo color insertion uses undo-aware editing"],
   [app.includes("colors.push({ color, inner })") && app.includes("inlineMarkdown(entry.inner)"), "memo color markup preserves nested markdown"],
   [app.includes("unwrapMemoBlockColor") && app.includes("guard < 32") && app.includes("memoBlockStyle(it.color"), "memo block colors preserve list markers and nested colors"],
   [main.includes('ipcMain.handle("copy-text"') && preload.includes('ipcRenderer.invoke("copy-text"') && app.includes("writeTextToClipboard(code)"), "invite code copy uses desktop clipboard fallback"],
