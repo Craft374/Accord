@@ -1349,7 +1349,6 @@ body.memo-open .log-panel {
 }
 .memo-editor .cm-gutters {
   min-width: 38px;
-  padding-top: 16px;
   border-right: 1px solid var(--line);
   background: var(--bg-base);
   color: var(--muted);

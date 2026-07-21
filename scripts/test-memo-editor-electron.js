@@ -42,6 +42,19 @@ async function run() {
     await wait();
   };
 
+  // 줄번호 거터와 실제 텍스트 줄의 세로 위치가 정확히 일치해야 한다(gutter padding-top 중복 회귀 방지).
+  // CDP debugger 부착(아래 IME 시뮬레이션)이 이후 측정에 부작용을 남기므로 그 전에 검사한다.
+  const alignDoc = "하나\n둘\n셋\n넷";
+  await evaluate(`memoEditor.reset(${JSON.stringify(alignDoc)}, 0); memoEditor.setReadOnly(false); memoEditor.setMode('source')`);
+  await wait(150);
+  const alignment = await evaluate(`JSON.stringify({
+    gutters: Array.from(document.querySelectorAll('.cm-lineNumbers .cm-gutterElement')).filter((el) => el.style.visibility !== 'hidden').map((el) => el.getBoundingClientRect().top),
+    lines: Array.from(document.querySelectorAll('.cm-line')).map((el) => el.getBoundingClientRect().top),
+  })`);
+  const { gutters: gutterTops, lines: lineTops } = JSON.parse(alignment);
+  assert(gutterTops.length === lineTops.length && gutterTops.every((top, i) => Math.abs(top - lineTops[i]) < 0.5),
+    "줄번호 거터의 세로 위치가 실제 텍스트 줄과 정확히 일치해야 함");
+
   await evaluate("memoEditor.reset(''); memoEditor.setReadOnly(false); memoEditor.setMode('live'); memoEditor.focus()");
   window.webContents.debugger.attach("1.3");
   try {
@@ -133,6 +146,25 @@ async function run() {
     (await evaluate("JSON.stringify(Array.from(document.querySelectorAll('.cm-live-bullet')).map((el) => el.textContent))"))
       === JSON.stringify(["1.", "2.", "•", "3.", "4."]),
     "번호목록 위젯이 원문 숫자 대신 실제 순서로 다시 매겨져야 함",
+  );
+
+  // 커서가 목록 항목의 "본문"에 있을 때는(마커 자체가 아니면) 옵시디언처럼 번호가 계속 정렬된 값으로 보여야 하고,
+  // 마커(숫자) 위에 커서가 있을 때만 원문 숫자를 드러내 편집 가능해야 한다.
+  const wrongNumberDoc = "10. a\n11. b\n12. c";
+  await evaluate(`memoEditor.reset(${JSON.stringify(wrongNumberDoc)}, ${wrongNumberDoc.length}); memoEditor.setReadOnly(false); memoEditor.setMode('live')`);
+  await wait();
+  assert(
+    (await evaluate("JSON.stringify(Array.from(document.querySelectorAll('.cm-line')).map((el) => el.textContent))"))
+      === JSON.stringify(["1. a", "2. b", "3. c"]),
+    "커서가 목록 항목 본문에 있어도 번호는 항상 순서대로 다시 매겨져야 함(옵시디언식 강제 재번호)",
+  );
+  const markerIndex = wrongNumberDoc.lastIndexOf("12.") + 1;
+  await evaluate(`memoEditor.setSelection(${markerIndex})`);
+  await wait();
+  assert(
+    (await evaluate("JSON.stringify(Array.from(document.querySelectorAll('.cm-line')).map((el) => el.textContent))"))
+      === JSON.stringify(["1. a", "2. b", "12. c"]),
+    "커서가 마커 숫자 위에 있을 때는 원문 숫자를 그대로 드러내 편집할 수 있어야 함",
   );
 
   await evaluate(`memoEditor.reset('색칠'); memoEditor.setReadOnly(false); memoEditor.setSelection(0, 2);

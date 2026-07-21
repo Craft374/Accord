@@ -335,7 +335,10 @@ function liveDecorations(view) {
           const listMark = childNodes(node, "ListMark")[0];
           const task = childNodes(node, "Task")[0];
           const taskMarker = task ? childNodes(task, "TaskMarker")[0] : null;
-          if (listMark && !active) {
+          // 목록 항목 전체(node)가 아니라 마커 자체(listMark)에 커서가 닿았을 때만 원문을 드러낸다.
+          // 항목 본문(예: "12. c"의 "c")을 편집 중일 땐 옵시디언처럼 번호가 계속 정렬된 값으로 보여야 한다.
+          const markerActive = listMark && selectionTouches(state, listMark.from, listMark.to);
+          if (listMark && !markerActive) {
             if (taskMarker) hide(listMark.from, listMark.to);
             else {
               const raw = state.doc.sliceString(listMark.from, listMark.to);
