@@ -58,10 +58,11 @@ vm.createContext(ctx);
 try { vm.runInContext(src, ctx, { filename: "app.js" }); }
 catch (e) { console.log("[load warning]", e.message); }
 
-const { renderMarkdown, docOffsetOfLine, lineIndexOfOffset } = ctx;
+const { renderMarkdown, docOffsetOfLine, lineIndexOfOffset, replaceDocLineRange } = ctx;
 ok(typeof renderMarkdown === "function", "renderMarkdown defined");
 ok(typeof docOffsetOfLine === "function", "docOffsetOfLine defined");
 ok(typeof lineIndexOfOffset === "function", "lineIndexOfOffset defined");
+ok(typeof replaceDocLineRange === "function", "replaceDocLineRange defined");
 
 const doc = "abc\nde\n\nfghi"; // line starts: 0,4,7,8
 eq(docOffsetOfLine(doc, 0), 0, "offset line0");
@@ -77,6 +78,9 @@ for (let o = 0; o <= doc.length; o++) {
   const li = lineIndexOfOffset(doc, o);
   ok(docOffsetOfLine(doc, li) <= o && o <= docOffsetOfLine(doc, li) + doc.split("\n")[li].length, `caret roundtrip @${o}`);
 }
+eq(replaceDocLineRange("", 0, 0, "blank"), "blank", "empty live line accepts text");
+eq(replaceDocLineRange("before\nalpha\nafter", 1, 1, "alpha\n"), "before\nalpha\n\nafter", "newline replaces active line once");
+eq(replaceDocLineRange("a\nb\nc\nd", 1, 2, "B\nC"), "a\nB\nC\nd", "multi-line raw range replacement");
 
 const md = "# Title\n\nhello **world**";
 ok(!/memo-live-raw/.test(renderMarkdown(md)), "preview: no raw block");
@@ -85,6 +89,7 @@ const live0 = renderMarkdown(md, 0);
 eq((live0.match(/memo-live-raw/g) || []).length, 1, "live: exactly one raw block");
 ok(/data-live-start="0" data-live-end="0"/.test(live0), "live: raw is active line 0");
 ok(!/<h1/.test(live0), "live: active heading shown raw, not also as <h1>");
+ok(/contenteditable="plaintext-only"/.test(live0), "live: raw uses plaintext-only editing");
 const live2 = renderMarkdown(md, 2);
 ok(/<h1[^>]*>Title<\/h1>/.test(live2), "live(2): other line still rendered");
 ok(/data-live-start="2"/.test(live2), "live(2): active line is raw");
@@ -97,6 +102,7 @@ ok(/data-live-start="1" data-live-end="4"/.test(renderMarkdown(codeDoc, 2)), "li
 ok(/<pre class="md-code"/.test(renderMarkdown(codeDoc, 0)), "live: inactive fence renders as <pre>");
 const cbLive = renderMarkdown("- [ ] a\n- [x] b\n- [ ] c", 9);
 eq([...cbLive.matchAll(/data-cb="(\d+)"/g)].map((m) => +m[1]), [0, 1, 2], "live: checkbox ordinals stay document-order");
+eq([...cbLive.matchAll(/<li[^>]*data-line="(\d+)"/g)].map((m) => +m[1]), [0, 1, 2], "live: rendered list items retain source lines");
 
 // ---------- layer 2: reconcileLive against a minimal fake DOM ----------
 function extractFn(source, name) {
