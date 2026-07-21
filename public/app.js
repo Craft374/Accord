@@ -25,6 +25,15 @@ const BANNER_GRADIENTS = [
 ];
 const BANNER_GRADIENT_MAP = Object.fromEntries(BANNER_GRADIENTS.map((g) => [g.key, g.css]));
 
+// 메모 라이브 모드 문법요소(기울임/볼드/기울임+볼드/마크기호) 색 — 개인 취향이라 방 동기화 없이 localStorage 만.
+// init() 이 bindMemoEvents 를 부르는 시점(동기 호출 경로)보다 먼저 초기화돼야 하므로 파일 최상단에 둔다(TDZ 방지, [[app-js-init-order-tdz]]).
+const MEMO_LIVE_COLOR_DEFAULTS = { em: "#dbdee1", strong: "#dbdee1", strongem: "#dbdee1", marker: "#f0b232" };
+let memoLiveColors = { ...MEMO_LIVE_COLOR_DEFAULTS };
+try {
+  const saved = JSON.parse(localStorage.getItem("accordMemoLiveColors") || "null");
+  if (saved && typeof saved === "object") memoLiveColors = { ...MEMO_LIVE_COLOR_DEFAULTS, ...saved };
+} catch { /* 손상된 값은 기본값으로 */ }
+
 const ROOM_TYPE_META = {
   voice: { icon: "🔊", label: "통화방" },
   chat: { icon: "#", label: "채팅방" },
@@ -10560,14 +10569,6 @@ let memoFontSize = clampMemoFont(Number(localStorage.getItem("accordMemoFontSize
 const MEMO_VIEWS = ["split", "edit", "preview", "live"];
 const savedMemoView = localStorage.getItem("accordMemoView");
 let memoViewPref = MEMO_VIEWS.includes(savedMemoView) ? savedMemoView : "split";
-
-// 라이브 모드 문법요소(기울임/볼드/기울임+볼드/마크기호) 색 — 개인 취향이라 방 동기화 없이 localStorage 만.
-const MEMO_LIVE_COLOR_DEFAULTS = { em: "#dbdee1", strong: "#dbdee1", strongem: "#dbdee1", marker: "#f0b232" };
-let memoLiveColors = { ...MEMO_LIVE_COLOR_DEFAULTS };
-try {
-  const saved = JSON.parse(localStorage.getItem("accordMemoLiveColors") || "null");
-  if (saved && typeof saved === "object") memoLiveColors = { ...MEMO_LIVE_COLOR_DEFAULTS, ...saved };
-} catch { /* 손상된 값은 기본값으로 */ }
 
 // 메모방 글꼴(글자 크기와 달리 모든 참가자에게 공유되는 문서 속성).
 // key만 서버로 주고받고, 실제 폰트 스택은 각 클라이언트가 매핑한다(안전 + 플랫폼별 대체).
