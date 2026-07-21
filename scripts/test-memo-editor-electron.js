@@ -125,6 +125,16 @@ async function run() {
   await evaluate("document.querySelector('.cm-live-fold').click()");
   assert(await evaluate("document.querySelector('.cm-live-fold').classList.contains('collapsed')"), "목록 접기가 편집기 상태 트랜잭션이어야 함");
 
+  // 번호목록 위젯은 원문 숫자를 그대로 보여주지 않고 미리보기(<ol>)처럼 항목 순서대로 다시 매겨야 하고,
+  // 중첩된 하위 불릿목록이 껴 있어도 바깥 번호는 계속 이어져야 한다.
+  const ordinalDoc = "커서\n1. 숫자\n6. 설정\n\t- 가\n8. 숫자\n1. 랑랑랑";
+  await evaluate(`memoEditor.reset(${JSON.stringify(ordinalDoc)}, 1); memoEditor.setReadOnly(false); memoEditor.setMode('live')`);
+  assert(
+    (await evaluate("JSON.stringify(Array.from(document.querySelectorAll('.cm-live-bullet')).map((el) => el.textContent))"))
+      === JSON.stringify(["1.", "2.", "•", "3.", "4."]),
+    "번호목록 위젯이 원문 숫자 대신 실제 순서로 다시 매겨져야 함",
+  );
+
   await evaluate(`memoEditor.reset('색칠'); memoEditor.setReadOnly(false); memoEditor.setSelection(0, 2);
     memoEditor.wrapSelection('{색:#00ff00}', '{/색}', '색 글자')`);
   assert(await evaluate("memoEditor.getText()") === "{색:#00ff00}색칠{/색}", "색상 적용이 선택 범위를 감싸야 함");

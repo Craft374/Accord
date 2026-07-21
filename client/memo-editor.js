@@ -201,6 +201,25 @@ function childNodes(node, name) {
   return found;
 }
 
+// 번호목록 항목의 표시 번호 = 같은 OrderedList 안에서 실제로 몇 번째 항목인지(문서 순서).
+// 사용자가 입력한 원문 숫자("1. 6. 8. 1.")는 무시 — 미리보기의 <ol> 이 그렇듯 항상 1부터 이어서 매긴다.
+// 중첩된 하위 목록은 부모 OrderedList 의 카운터에 영향을 주지 않는다(parent.from 으로 목록별로 분리 카운트).
+function listOrdinals(state) {
+  const counters = new Map();
+  const ordinals = new Map();
+  syntaxTree(state).iterate({
+    enter(ref) {
+      if (ref.name !== "ListItem") return;
+      const parent = ref.node.parent;
+      if (!parent || parent.name !== "OrderedList") return;
+      const next = counters.get(parent.from) || 1;
+      ordinals.set(ref.from, next);
+      counters.set(parent.from, next + 1);
+    },
+  });
+  return ordinals;
+}
+
 function lineDecorations(state, from, to, className, add) {
   let line = state.doc.lineAt(from);
   const last = state.doc.lineAt(Math.max(from, to - 1)).number;
@@ -254,6 +273,8 @@ function liveDecorations(view) {
     atomic.push(range);
   };
   const folded = (from, to) => folds.some((fold) => from >= fold.from && to <= fold.to);
+  let ordinals = null;
+  const getOrdinals = () => ordinals || (ordinals = listOrdinals(state));
 
   for (const visible of view.visibleRanges) {
     syntaxTree(state).iterate({
@@ -317,7 +338,9 @@ function liveDecorations(view) {
           if (listMark && !active) {
             if (taskMarker) hide(listMark.from, listMark.to);
             else {
-              const label = state.doc.sliceString(listMark.from, listMark.to);
+              const raw = state.doc.sliceString(listMark.from, listMark.to);
+              const ordinal = node.parent?.name === "OrderedList" ? getOrdinals().get(node.from) : null;
+              const label = ordinal != null ? `${ordinal}${/[.)]/.exec(raw)?.[0] || "."}` : raw;
               const range = Decoration.replace({ widget: new BulletWidget(label) }).range(listMark.from, listMark.to);
               ranges.push(range); atomic.push(range);
             }
