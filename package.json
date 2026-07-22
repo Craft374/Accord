@@ -32,6 +32,7 @@
       "electron/bin/AccordProcessLoopback.exe"
     ],
     "icon": "assets/icon",
+    "afterPack": "scripts/mac-resign.js",
     "files": [
       "electron/**/*",
       "!electron/bin/**",
