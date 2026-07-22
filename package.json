@@ -45,6 +45,7 @@
       ],
       "artifactName": "Accord Mac ${arch}.${ext}",
       "category": "public.app-category.utilities",
+      "identity": null,
       "extendInfo": {
         "NSMicrophoneUsageDescription": "Accord needs microphone access for calls.",
         "NSScreenCaptureUsageDescription": "Accord can capture system audio when sound sharing is enabled."
