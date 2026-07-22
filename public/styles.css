@@ -1357,7 +1357,7 @@ body.memo-open .log-panel {
 }
 /* 접기 화살표는 줄번호 옆(거터)이 아니라 cm-live-fold(접히는 문장 바로 왼쪽, 인라인)로만 표시한다. */
 .memo-editor .cm-foldGutter {
-  display: none;
+  display: none !important; /* CM6 baseTheme의 .cm-gutter{display:flex !important;}를 이겨야 함 */
 }
 .memo-editor .cm-activeLine,
 .memo-editor .cm-activeLineGutter {

@@ -181,6 +181,12 @@ async function run() {
     "Tab 한 번만으로 하위 불릿이 중첩되어 번호 재계산(2.)이 즉시 반영되어야 함",
   );
 
+  // 목록 접기 화살표는 줄번호 옆 네이티브 foldGutter가 아니라 cm-live-fold(문장 바로 왼쪽, 인라인)만 보여야 한다.
+  // CM6 baseTheme이 .cm-gutter{display:flex !important}를 강제해 !important 없인 안 먹는 함정이 있었다.
+  await evaluate(`memoEditor.reset(${JSON.stringify("# 제목\n1. 꼭\n\t- a")}); memoEditor.setReadOnly(false); memoEditor.setMode('live')`);
+  assert(await evaluate("getComputedStyle(document.querySelector('.cm-foldGutter')).display") === "none",
+    "네이티브 접기 거터는 숨겨져 있어야 함(중복·오정렬 방지)");
+
   await evaluate(`memoEditor.reset('색칠'); memoEditor.setReadOnly(false); memoEditor.setSelection(0, 2);
     memoEditor.wrapSelection('{색:#00ff00}', '{/색}', '색 글자')`);
   assert(await evaluate("memoEditor.getText()") === "{색:#00ff00}색칠{/색}", "색상 적용이 선택 범위를 감싸야 함");
