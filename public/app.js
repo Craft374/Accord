@@ -1708,7 +1708,7 @@ async function handleSocketMessage(message) {
     if (state.activeChat?.roomId === message.roomId) {
       state.chatMessages = message.messages || [];
       renderChatMessages();
-      scrollChatToBottom();
+      scrollChatToBottomSettled();
     }
     return;
   }
@@ -8907,7 +8907,7 @@ function handleIncomingChat(msg) {
     if (state.chatMessages.length > 1000) state.chatMessages.shift();
     removeChatTyper(msg.userId);
     renderChatMessages();
-    if (nearBottom || msg.userId === state.auth.user?.id) scrollChatToBottom();
+    if (nearBottom || msg.userId === state.auth.user?.id) scrollChatToBottomSettled();
   } else if (msg.userId !== state.auth.user?.id) {
     state.chatUnread[msg.roomId] = (state.chatUnread[msg.roomId] || 0) + 1;
     if (Array.isArray(msg.mentions) && msg.mentions.includes(state.auth.user?.id)) {
@@ -9935,6 +9935,15 @@ function isChatNearBottom() {
 function scrollChatToBottom() {
   const el = dom.chatScroll;
   if (el) el.scrollTop = el.scrollHeight;
+}
+
+// 이미지는 비동기로 늦게 로드돼 scrollChatToBottom 시점엔 아직 스크롤 높이에 안 잡혀 아래에 못 붙는다.
+// 로드 완료 후 한 번 더 붙인다.
+function scrollChatToBottomSettled() {
+  scrollChatToBottom();
+  dom.chatMessages?.querySelectorAll(".chat-image").forEach((img) => {
+    if (!img.complete) img.addEventListener("load", scrollChatToBottom, { once: true });
+  });
 }
 
 // ── 입력 중 표시 ──

@@ -167,6 +167,20 @@ async function run() {
     "커서가 마커 숫자 위에 있을 때는 원문 숫자를 그대로 드러내 편집할 수 있어야 함",
   );
 
+  // 번호목록 밑에 불릿을 Tab 한 번으로 중첩시킬 수 있어야 한다.
+  // 기본 들여쓰기(2칸)는 "1. " 마커 폭(3칸)보다 좁아 CommonMark가 하위 목록으로 인식하지 못해 두 번 눌러야 했다.
+  const tabDoc = "1. 꼭\n- a\n2. 글";
+  await evaluate(`memoEditor.reset(${JSON.stringify(tabDoc)}, ${tabDoc.indexOf("- a")}); memoEditor.setReadOnly(false); memoEditor.setMode('live'); memoEditor.focus()`);
+  await key("Tab");
+  assert(await evaluate("memoEditor.getText()") === "1. 꼭\n   - a\n2. 글", "리스트 항목에서 Tab 한 번이 위 번호목록 마커 폭만큼 들여써야 함");
+  // 커서가 방금 들여쓴 "- a" 의 마커 위에 그대로 있으므로(원문 노출) 다른 곳으로 옮겨 위젯 상태를 확인한다.
+  await evaluate("memoEditor.setSelection(9999)");
+  assert(
+    (await evaluate("JSON.stringify(Array.from(document.querySelectorAll('.cm-live-bullet')).map((el) => el.textContent))"))
+      === JSON.stringify(["1.", "•", "2."]),
+    "Tab 한 번만으로 하위 불릿이 중첩되어 번호 재계산(2.)이 즉시 반영되어야 함",
+  );
+
   await evaluate(`memoEditor.reset('색칠'); memoEditor.setReadOnly(false); memoEditor.setSelection(0, 2);
     memoEditor.wrapSelection('{색:#00ff00}', '{/색}', '색 글자')`);
   assert(await evaluate("memoEditor.getText()") === "{색:#00ff00}색칠{/색}", "색상 적용이 선택 범위를 감싸야 함");

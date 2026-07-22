@@ -239,6 +239,36 @@ function childNodes(node, name) {
 // 번호목록 항목의 표시 번호 = 같은 OrderedList 안에서 실제로 몇 번째 항목인지(문서 순서).
 // 사용자가 입력한 원문 숫자("1. 6. 8. 1.")는 무시 — 미리보기의 <ol> 이 그렇듯 항상 1부터 이어서 매긴다.
 // 중첩된 하위 목록은 부모 OrderedList 의 카운터에 영향을 주지 않는다(parent.from 으로 목록별로 분리 카운트).
+// 리스트 항목에서 Tab: 위 줄 마커의 내용 시작 칸에 맞춰 한 번에 들여쓴다.
+// 기본 indentMore(+2칸)만 쓰면 "1. "(3칸) 밑에 "- "를 하나만 눌러서는 CommonMark 중첩 폭에
+// 못 미쳐(2<3) 파서가 하위 목록으로 인식하지 못하고, 두 번 눌러야(4칸) 겨우 인식됐다.
+const LIST_MARK_RE = /^(\s*)([-*+]|\d+[.)])(\s+)/;
+function listAwareIndent(view) {
+  const { state } = view;
+  const sel = state.selection.main;
+  if (!sel.empty) return false;
+  const line = state.doc.lineAt(sel.head);
+  const curMatch = LIST_MARK_RE.exec(line.text);
+  if (!curMatch) return false;
+  let prevLine = null;
+  for (let n = line.number - 1; n >= 1; n--) {
+    const candidate = state.doc.line(n);
+    if (candidate.text.trim()) { prevLine = candidate; break; }
+  }
+  const prevMatch = prevLine && LIST_MARK_RE.exec(prevLine.text);
+  if (!prevMatch) return false;
+  const targetIndent = prevMatch[0].length;
+  const currentIndent = curMatch[1].length;
+  if (currentIndent >= targetIndent) return false;
+  const insert = " ".repeat(targetIndent - currentIndent);
+  view.dispatch({
+    changes: { from: line.from, insert },
+    selection: EditorSelection.cursor(sel.head + insert.length),
+    userEvent: "input.indent",
+  });
+  return true;
+}
+
 function listOrdinals(state) {
   const counters = new Map();
   const ordinals = new Map();
@@ -500,7 +530,7 @@ function createMemoEditor(options) {
     markdown({ base: markdownLanguage }),
     EditorView.lineWrapping,
     EditorState.tabSize.of(2),
-    keymap.of([{ key: "Tab", run: acceptCompletion }, indentWithTab]),
+    keymap.of([{ key: "Tab", run: acceptCompletion }, { key: "Tab", run: listAwareIndent }, indentWithTab]),
     placeholder("마크다운으로 메모를 작성하세요. 채널 멤버와 실시간으로 함께 편집됩니다."),
     readOnly.of(EditorState.readOnly.of(true)),
     liveModeField,
