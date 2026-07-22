@@ -34,6 +34,7 @@
     "icon": "assets/icon",
     "files": [
       "electron/**/*",
+      "!electron/bin/**",
       "shell/**/*",
       "assets/**/*",
       "package.json"
@@ -53,7 +54,10 @@
       "target": [
         "portable"
       ],
-      "artifactName": "Accord Windows ${arch} Portable.${ext}"
+      "artifactName": "Accord Windows ${arch} Portable.${ext}",
+      "files": [
+        "electron/bin/**/*"
+      ]
     }
   }
 }
