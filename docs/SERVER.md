@@ -1,5 +1,7 @@
 # 서버 여는 방법
 
+**한국어** · [English](SERVER.en.md)
+
 Accord 서버(`server.js`)는 시그널링(WebSocket)과 통화 UI(`public/`)를 함께 내려주는, 의존성 없는 Node.js 서버입니다.
 브라우저에서 마이크·화면공유를 쓰려면 **HTTPS(또는 localhost)** 가 필요해서, 실사용 서버는 HTTPS로 띄웁니다.
 

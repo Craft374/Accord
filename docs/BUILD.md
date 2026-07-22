@@ -1,5 +1,7 @@
 # 데스크톱 앱 빌드 방법
 
+**한국어** · [English](BUILD.en.md)
+
 데스크톱 앱(Electron)은 서버 주소를 입력해 통화 UI를 여는 얇은 껍데기입니다.
 빌드하면 배포용 실행 파일(Windows 포터블 exe / macOS zip)이 `dist/` 에 만들어집니다.
 
