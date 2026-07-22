@@ -346,6 +346,18 @@ const reviews = [
         && fn("L") === 300 && fn("") === 400;
     } catch { return false; }
   })(), "resolveWeightText maps Korean/English/letter/number labels to weights (runtime)"],
+  [(() => {
+    // 미리보기 <ol> 은 라이브뷰·원문 재번호와 같은 규칙으로 첫 항목 번호에서 시작해야 한다(실제 렌더로 확인).
+    try {
+      const names = ["memoIndentLevel", "unwrapMemoBlockColor", "parseMemoListLine", "renderMemoList", "renderMemoListNodes"];
+      const sources = names.map((name) => app.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n\\}`)));
+      if (sources.some((source) => !source)) return false;
+      const api = new Function("inlineMarkdown", "memoBlockStyle",
+        `${sources.map((source) => source[0]).join("\n")}\nreturn { renderMemoList, parseMemoListLine };`)((text) => text, () => "");
+      const render = (lines) => api.renderMemoList(lines.map(api.parseMemoListLine), { fold: 0, cb: 0 }, null);
+      return render(["10. a", "17. b"]).startsWith('<ol class="md-list" start="10">') && !render(["1. a", "3. b"]).includes("start=");
+    } catch { return false; }
+  })(), "preview ordered list starts at the first item's number (runtime)"],
 ];
 
 for (const [ok, label] of reviews) {

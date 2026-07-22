@@ -242,16 +242,16 @@ function childNodes(node, name) {
 // 리스트 항목에서 Tab: 위 줄 마커의 내용 시작 칸에 맞춰 한 번에 들여쓴다.
 // 기본 indentMore(+2칸)만 쓰면 "1. "(3칸) 밑에 "- "를 하나만 눌러서는 CommonMark 중첩 폭에
 // 못 미쳐(2<3) 파서가 하위 목록으로 인식하지 못하고, 두 번 눌러야(4칸) 겨우 인식됐다.
+// 여러 줄을 선택하고 Tab 을 눌렀을 때도 같은 폭만큼(첫 줄 기준) 한꺼번에 밀어 상대 구조를 유지한다.
 const LIST_MARK_RE = /^(\s*)([-*+]|\d+[.)])(\s+)/;
 function listAwareIndent(view) {
   const { state } = view;
   const sel = state.selection.main;
-  if (!sel.empty) return false;
-  const line = state.doc.lineAt(sel.head);
-  const curMatch = LIST_MARK_RE.exec(line.text);
+  const first = state.doc.lineAt(sel.from);
+  const curMatch = LIST_MARK_RE.exec(first.text);
   if (!curMatch) return false;
   let prevLine = null;
-  for (let n = line.number - 1; n >= 1; n--) {
+  for (let n = first.number - 1; n >= 1; n--) {
     const candidate = state.doc.line(n);
     if (candidate.text.trim()) { prevLine = candidate; break; }
   }
@@ -261,9 +261,14 @@ function listAwareIndent(view) {
   const currentIndent = curMatch[1].length;
   if (currentIndent >= targetIndent) return false;
   const insert = " ".repeat(targetIndent - currentIndent);
+  const changes = [];
+  for (let n = first.number; n <= state.doc.lineAt(sel.to).number; n++) {
+    const line = state.doc.line(n);
+    if (line.text.trim()) changes.push({ from: line.from, insert });
+  }
   view.dispatch({
-    changes: { from: line.from, insert },
-    selection: EditorSelection.cursor(sel.head + insert.length),
+    changes,
+    selection: sel.empty ? EditorSelection.cursor(sel.head + insert.length) : undefined,
     userEvent: "input.indent",
   });
   return true;
@@ -277,13 +282,31 @@ function listOrdinals(state) {
       if (ref.name !== "ListItem") return;
       const parent = ref.node.parent;
       if (!parent || parent.name !== "OrderedList") return;
-      const next = counters.get(parent.from) || 1;
+      // 목록의 시작 번호는 사용자가 정한 값이므로 첫 항목은 그대로 두고 그 뒤만 이어서 매긴다.
+      const next = counters.get(parent.from) ?? (parseInt(state.doc.sliceString(ref.from, ref.from + 10), 10) || 1);
       ordinals.set(ref.from, next);
       counters.set(parent.from, next + 1);
     },
   });
   return ordinals;
 }
+
+// 라이브뷰·미리보기가 보여주는 번호를 원문에도 그대로 반영한다(편집할 때마다 마커 숫자를 고쳐 씀).
+// ponytail: 목록의 첫 항목만 보호하므로 "2026. 7. 22" 같은 날짜 줄이 연달아 두 줄 이상이면
+//           둘째 줄 숫자가 바뀐다. 실제로 문제되면 목록 판정에서 날짜 형태를 빼는 식으로 올릴 것.
+const renumberLists = EditorState.transactionFilter.of((transaction) => {
+  if (!transaction.docChanged || transaction.startState.readOnly || transaction.annotation(externalChange)) return transaction;
+  const state = transaction.state;
+  const changes = [];
+  for (const [from, ordinal] of listOrdinals(state)) {
+    const digits = /^\d+/.exec(state.doc.sliceString(from, from + 10))?.[0];
+    if (!digits || Number(digits) === ordinal) continue;
+    changes.push({ from, to: from + digits.length, insert: String(ordinal) });
+  }
+  if (!changes.length) return transaction;
+  // 재번호는 실행 취소 기록에 남기지 않는다 — 되돌린 문서에 다시 적용되므로 Ctrl+Z 한 번으로 편집 전으로 돌아간다.
+  return [transaction, { changes, sequential: true, annotations: Transaction.addToHistory.of(false) }];
+});
 
 function lineDecorations(state, from, to, className, add) {
   let line = state.doc.lineAt(from);
@@ -423,7 +446,8 @@ function liveDecorations(view) {
           if (listMark && nested) {
             const fold = { key: node.from, from: state.doc.lineAt(node.from).to, to: node.to };
             const collapsed = folds.some((entry) => entry.key === fold.key);
-            add(Decoration.widget({ widget: new FoldWidget(fold, collapsed), side: 1 }).range(listMark.to));
+            // 마커 왼쪽(여백)에 띄운다 — 마커 뒤에 두면 숫자 위에 겹쳐 보였다(CSS 로 흐름 밖에 배치).
+            add(Decoration.widget({ widget: new FoldWidget(fold, collapsed), side: -1 }).range(listMark.from));
           }
           return;
         }
@@ -533,6 +557,7 @@ function createMemoEditor(options) {
     keymap.of([{ key: "Tab", run: acceptCompletion }, { key: "Tab", run: listAwareIndent }, indentWithTab]),
     placeholder("마크다운으로 메모를 작성하세요. 채널 멤버와 실시간으로 함께 편집됩니다."),
     readOnly.of(EditorState.readOnly.of(true)),
+    renumberLists,
     liveModeField,
     foldField,
     foldAtomicRanges,

@@ -4,7 +4,7 @@ const serverUrl = location.origin;
 // 클라이언트(앱) 버전. 서버 버전(server.js VERSION, n.n.n)과 헷갈리지 않도록 **그냥 정수**(1, 2, 3 …)로 올린다.
 // package.json 의 version 은 electron-builder 가 semver 를 요구해 "N.0.0" 형태로 두고, 그 major 가 이 값과 같아야 한다.
 // (scripts/check-v2.js 가 둘이 어긋나지 않는지 검사한다)
-const CLIENT_VERSION = "8";
+const CLIENT_VERSION = "9";
 
 function getClientVersion() {
   // 표시는 항상 단일 정수 CLIENT_VERSION 을 쓴다(package.json 의 semver appVersion 대신).
@@ -13949,7 +13949,7 @@ function parseMemoListLine(line) {
     const cb = content.match(/^\[([ xX])\](?:[ \t]+([\s\S]*)|\s*)$/);
     if (cb) { checkbox = cb[1].toLowerCase() === "x" ? "checked" : "unchecked"; content = cb[2] || ""; }
   }
-  return { level: memoIndentLevel(m[1]), ordered, checkbox, content, color: coloredLine.color };
+  return { level: memoIndentLevel(m[1]), ordered, start: parseInt(m[2], 10), checkbox, content, color: coloredLine.color };
 }
 
 // 평탄한 목록 항목 배열을 상대 들여쓰기로 중첩 트리로 만든 뒤 HTML 로 렌더.
@@ -13968,7 +13968,9 @@ function renderMemoList(items, counters, foldSet) {
 function renderMemoListNodes(nodes, counters, foldSet) {
   if (!nodes.length) return "";
   const tag = nodes[0].item.ordered ? "ol" : "ul";
-  const parts = [`<${tag} class="md-list">`];
+  // 목록의 시작 번호는 첫 항목이 정한다(라이브뷰·원문 재번호와 같은 규칙).
+  const start = tag === "ol" && nodes[0].item.start > 1 ? ` start="${nodes[0].item.start}"` : "";
+  const parts = [`<${tag} class="md-list"${start}>`];
   for (const node of nodes) {
     const it = node.item;
     const hasChildren = node.children.length > 0;

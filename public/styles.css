@@ -1431,15 +1431,19 @@ body.memo-open .log-panel {
   vertical-align: -2px;
 }
 .memo-editor .cm-live-task-done { color: var(--muted); text-decoration: line-through; }
+/* 마커 왼쪽 여백에 띄운다. 흐름 안에 두면 숫자와 겹치고, 전역 button min-height 가 줄 높이까지 늘린다. */
 .memo-editor .cm-live-fold {
+  position: absolute;
   width: 14px;
   height: 16px;
-  margin: 0 2px 0 -16px;
+  min-height: 0;
+  margin-left: -15px;
   padding: 0;
   border: 0;
   background: transparent;
   color: var(--muted);
-  vertical-align: -2px;
+  font-size: 12px;
+  line-height: 16px;
 }
 .memo-editor .cm-live-fold::before { content: "▾"; }
 .memo-editor .cm-live-fold.collapsed::before { content: "▸"; }
@@ -1476,6 +1480,33 @@ body.memo-open .log-panel {
 .memo-editor .cm-memo-remote-selection {
   background: color-mix(in srgb, var(--memo-cursor-color) 24%, transparent);
 }
+/* 자동완성 팝업: CM6 기본 테마가 밝은 배경 + 파란 선택줄 + 🔑 아이콘이라 앱 UI 와 따로 놀았다.
+   CM6 baseTheme(.ͼx.cm-light …)과 특이도가 같거나 높아야 이긴다(.cm-editor 를 한 단계 더 씀). */
+.memo-editor .cm-editor .cm-tooltip {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.32);
+}
+.memo-editor .cm-editor .cm-tooltip.cm-tooltip-autocomplete > ul {
+  padding: 4px;
+  font-family: "gg sans", Inter, system-ui, sans-serif; /* 편집기 글꼴이 아니라 앱 UI 글꼴(body)로 */
+  font-size: 13px;
+}
+.memo-editor .cm-editor .cm-tooltip.cm-tooltip-autocomplete > ul > li {
+  border-radius: var(--radius-xs);
+  padding: 4px 8px;
+  line-height: 1.5;
+}
+.memo-editor .cm-editor .cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected] {
+  background: var(--blurple);
+  color: #fff;
+}
+.memo-editor .cm-editor .cm-completionIcon { display: none; }
+.memo-editor .cm-editor .cm-completionMatchedText { text-decoration: none; font-weight: 700; }
+.memo-editor .cm-editor .cm-completionDetail { margin-left: 0.6em; color: var(--muted); font-style: normal; }
+.memo-editor .cm-editor li[aria-selected] .cm-completionDetail { color: rgba(255, 255, 255, 0.72); }
 .memo-preview {
   min-width: 0;
   overflow-y: auto;

@@ -150,22 +150,44 @@ async function run() {
 
   // 커서가 목록 항목의 "본문"에 있을 때는(마커 자체가 아니면) 옵시디언처럼 번호가 계속 정렬된 값으로 보여야 하고,
   // 마커(숫자) 위에 커서가 있을 때만 원문 숫자를 드러내 편집 가능해야 한다.
-  const wrongNumberDoc = "10. a\n11. b\n12. c";
+  // 목록의 시작 번호(첫 항목)는 사용자가 정한 값이라 그대로 두고 그 뒤만 이어 붙인다.
+  const wrongNumberDoc = "10. a\n17. b\n3. c";
   await evaluate(`memoEditor.reset(${JSON.stringify(wrongNumberDoc)}, ${wrongNumberDoc.length}); memoEditor.setReadOnly(false); memoEditor.setMode('live')`);
   await wait();
   assert(
     (await evaluate("JSON.stringify(Array.from(document.querySelectorAll('.cm-line')).map((el) => el.textContent))"))
-      === JSON.stringify(["1. a", "2. b", "3. c"]),
-    "커서가 목록 항목 본문에 있어도 번호는 항상 순서대로 다시 매겨져야 함(옵시디언식 강제 재번호)",
+      === JSON.stringify(["10. a", "11. b", "12. c"]),
+    "커서가 목록 항목 본문에 있어도 번호는 첫 항목부터 이어서 다시 매겨져야 함",
   );
-  const markerIndex = wrongNumberDoc.lastIndexOf("12.") + 1;
+  const markerIndex = wrongNumberDoc.lastIndexOf("3.") + 1;
   await evaluate(`memoEditor.setSelection(${markerIndex})`);
   await wait();
   assert(
     (await evaluate("JSON.stringify(Array.from(document.querySelectorAll('.cm-line')).map((el) => el.textContent))"))
-      === JSON.stringify(["1. a", "2. b", "12. c"]),
+      === JSON.stringify(["10. a", "11. b", "3. c"]),
     "커서가 마커 숫자 위에 있을 때는 원문 숫자를 그대로 드러내 편집할 수 있어야 함",
   );
+
+  // 라이브뷰가 다시 매긴 번호는 원문에도 그대로 적용되어야 한다(편집이 일어날 때).
+  await evaluate(`memoEditor.reset("1. a\\n1. b\\n1. c", 15); memoEditor.setReadOnly(false); memoEditor.setMode('live'); memoEditor.focus()`);
+  await type("!");
+  assert(await evaluate("memoEditor.getText()") === "1. a\n2. b\n3. c!", "재번호가 원문에도 적용되어야 함");
+  await evaluate(`memoEditor.reset("10. a\\n17. b", 9999); memoEditor.setReadOnly(false); memoEditor.focus()`);
+  await type("!");
+  assert(await evaluate("memoEditor.getText()") === "10. a\n11. b!", "목록 시작 번호(첫 항목)는 원문에서도 유지되어야 함");
+  // "2026. 7. 22" 같은 날짜 줄은 그 자체가 목록의 첫 항목이라 절대 고쳐 쓰면 안 된다.
+  await evaluate(`memoEditor.reset("2026. 7. 22 회의", 16); memoEditor.setReadOnly(false); memoEditor.focus()`);
+  await type("!");
+  assert(await evaluate("memoEditor.getText()") === "2026. 7. 22 회의!", "날짜처럼 보이는 단일 항목 숫자는 바뀌지 않아야 함");
+  // 재번호는 실행 취소 기록에 남지 않아야 한다 — Ctrl+Z 한 번으로 편집 직전으로 돌아가야 함.
+  await evaluate(`memoEditor.reset("1. a\\n2. b", 4); memoEditor.setReadOnly(false); memoEditor.setMode('source'); memoEditor.focus()`);
+  await key("ENTER");
+  assert(await evaluate("memoEditor.getText()") === "1. a\n2. \n3. b", "새 항목을 끼우면 뒤 번호가 밀려야 함");
+  await key("Z", ["control"]);
+  assert(await evaluate("memoEditor.getText()") === "1. a\n2. b", "실행 취소 한 번으로 재번호까지 편집 직전으로 돌아가야 함");
+  // 원격(OT) 변경으로는 재번호하지 않는다 — 서로 고쳐 쓰며 되받아치는 걸 막는다.
+  await evaluate(`memoEditor.reset("1. a\\n5. b"); memoEditor.setReadOnly(false); memoEditor.applyOperations([9,'X'], {anchor:0,head:0})`);
+  assert(await evaluate("memoEditor.getText()") === "1. a\n5. bX", "원격 변경은 재번호를 유발하지 않아야 함");
 
   // 번호목록 밑에 불릿을 Tab 한 번으로 중첩시킬 수 있어야 한다.
   // 기본 들여쓰기(2칸)는 "1. " 마커 폭(3칸)보다 좁아 CommonMark가 하위 목록으로 인식하지 못해 두 번 눌러야 했다.
@@ -181,11 +203,58 @@ async function run() {
     "Tab 한 번만으로 하위 불릿이 중첩되어 번호 재계산(2.)이 즉시 반영되어야 함",
   );
 
+  // 여러 줄을 선택하고 Tab 을 눌러도 한 번에 위 번호목록 밑으로 중첩되어야 한다(기본 2칸은 "1. " 폭 3칸에 못 미침).
+  const tabRangeDoc = "1. 꼭\n- a\n- b\n2. 글";
+  await evaluate(`memoEditor.reset(${JSON.stringify(tabRangeDoc)}); memoEditor.setReadOnly(false); memoEditor.setMode('live');
+    memoEditor.setSelection(${tabRangeDoc.indexOf("- a")}, ${tabRangeDoc.indexOf("- b") + 3}); memoEditor.focus()`);
+  await key("Tab");
+  assert(await evaluate("memoEditor.getText()") === "1. 꼭\n   - a\n   - b\n2. 글",
+    "여러 줄을 선택한 Tab 한 번이 선택 줄 전체를 같은 폭만큼 들여써야 함");
+  await evaluate("memoEditor.setSelection(0)");
+  assert(
+    (await evaluate("JSON.stringify(Array.from(document.querySelectorAll('.cm-live-bullet')).map((el) => el.textContent))"))
+      === JSON.stringify(["•", "•", "2."]),
+    "여러 줄 Tab 한 번으로 하위 불릿이 중첩되고 바깥 번호목록이 유지되어야 함",
+  );
+
   // 목록 접기 화살표는 줄번호 옆 네이티브 foldGutter가 아니라 cm-live-fold(문장 바로 왼쪽, 인라인)만 보여야 한다.
   // CM6 baseTheme이 .cm-gutter{display:flex !important}를 강제해 !important 없인 안 먹는 함정이 있었다.
   await evaluate(`memoEditor.reset(${JSON.stringify("# 제목\n1. 꼭\n\t- a")}); memoEditor.setReadOnly(false); memoEditor.setMode('live')`);
   assert(await evaluate("getComputedStyle(document.querySelector('.cm-foldGutter')).display") === "none",
     "네이티브 접기 거터는 숨겨져 있어야 함(중복·오정렬 방지)");
+
+  // 접기 화살표는 마커 왼쪽 여백에 떠 있어야 한다 — 숫자 위에 겹치거나 줄 높이를 늘리면 안 된다.
+  await evaluate(`memoEditor.reset(${JSON.stringify("1. 부모\n   - 자식\n10. 부모2\n    - 자식2")}, 9999); memoEditor.setReadOnly(false); memoEditor.setMode('live')`);
+  await wait(80);
+  const foldGeometry = JSON.parse(await evaluate(`JSON.stringify({
+    folds: Array.from(document.querySelectorAll('.cm-live-fold')).map((el) => { const r = el.getBoundingClientRect(); return { right: r.right, top: r.top, height: r.height } }),
+    marks: Array.from(document.querySelectorAll('.cm-live-bullet')).filter((el) => /\\d/.test(el.textContent)).map((el) => { const r = el.getBoundingClientRect(); return { left: r.left, top: r.top } }),
+    lineHeights: Array.from(document.querySelectorAll('.cm-line')).map((el) => el.getBoundingClientRect().height),
+  })`));
+  assert(foldGeometry.folds.length === 2 && foldGeometry.marks.length === 2, "번호목록 두 항목 모두 접기 화살표가 있어야 함");
+  assert(foldGeometry.folds.every((fold, i) => fold.right <= foldGeometry.marks[i].left && Math.abs(fold.top - foldGeometry.marks[i].top) < 4),
+    "접기 화살표가 마커 숫자와 겹치지 않고 같은 줄 왼쪽에 있어야 함");
+  assert(Math.max(...foldGeometry.lineHeights) - Math.min(...foldGeometry.lineHeights) < 1,
+    "접기 화살표가 있는 줄의 높이가 다른 줄과 같아야 함(전역 button min-height 회귀 방지)");
+
+  // 자동완성 팝업은 CM6 기본 밝은 테마가 아니라 앱 다크 테마를 따라야 한다.
+  await evaluate("memoEditor.reset(''); memoEditor.setReadOnly(false); memoEditor.setMode('live'); memoEditor.focus()");
+  await type("-");
+  await wait(200);
+  const popup = JSON.parse(await evaluate(`(() => {
+    const tip = document.querySelector('.cm-tooltip-autocomplete');
+    if (!tip) return '{}';
+    const selected = tip.querySelector('li[aria-selected]');
+    const icon = tip.querySelector('.cm-completionIcon');
+    return JSON.stringify({
+      background: getComputedStyle(tip).backgroundColor,
+      selected: selected && getComputedStyle(selected).backgroundColor,
+      icon: icon ? getComputedStyle(icon).display : 'none',
+    });
+  })()`));
+  assert(popup.background === "rgb(56, 58, 64)" && popup.selected === "rgb(88, 101, 242)" && popup.icon === "none",
+    "자동완성 팝업이 앱 다크 테마(배경 --bg-elevated, 선택 --blurple, 아이콘 숨김)를 써야 함");
+  await key("Escape");
 
   await evaluate(`memoEditor.reset('색칠'); memoEditor.setReadOnly(false); memoEditor.setSelection(0, 2);
     memoEditor.wrapSelection('{색:#00ff00}', '{/색}', '색 글자')`);
