@@ -2,6 +2,10 @@ const header = document.querySelector("[data-header]");
 const menu = document.querySelector("[data-menu]");
 const menuToggle = document.querySelector("[data-menu-toggle]");
 const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+const menuLabel =
+  document.documentElement.lang === "en"
+    ? { open: "Open menu", close: "Close menu" }
+    : { open: "메뉴 열기", close: "메뉴 닫기" };
 
 function updateHeader() {
   header?.classList.toggle("is-scrolled", window.scrollY > 18);
@@ -11,14 +15,14 @@ function closeMenu() {
   if (!menu || !menuToggle) return;
   menu.classList.remove("is-open");
   menuToggle.setAttribute("aria-expanded", "false");
-  menuToggle.setAttribute("aria-label", "메뉴 열기");
+  menuToggle.setAttribute("aria-label", menuLabel.open);
 }
 
 menuToggle?.addEventListener("click", () => {
   const open = menuToggle.getAttribute("aria-expanded") !== "true";
   menu?.classList.toggle("is-open", open);
   menuToggle.setAttribute("aria-expanded", String(open));
-  menuToggle.setAttribute("aria-label", open ? "메뉴 닫기" : "메뉴 열기");
+  menuToggle.setAttribute("aria-label", open ? menuLabel.close : menuLabel.open);
 });
 
 menu?.querySelectorAll("a").forEach((link) => link.addEventListener("click", closeMenu));

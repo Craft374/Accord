@@ -1,38 +1,38 @@
 <!doctype html>
-<html lang="ko">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#080b16" />
     <meta
       name="description"
-      content="Accord는 저지연 통화, 화면 공유, 채팅, 마크다운 메모, 공동 그림판을 한곳에 담은 셀프 호스팅 협업 앱입니다."
+      content="Accord is a self-hosted collaboration app that combines low-latency voice calls, screen sharing, chat, collaborative markdown notes and a shared canvas. Open source, runs on Node.js 18+."
     />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Accord" />
-    <meta property="og:title" content="Accord — 대화와 기록, 협업이 하나의 흐름으로" />
+    <meta property="og:title" content="Accord — Talk, write and build in one place" />
     <meta
       property="og:description"
-      content="말하고, 기록하고, 함께 만드는 셀프 호스팅 협업 공간."
+      content="A self-hosted workspace where the call, the chat, the notes and the canvas all live together."
     />
-    <meta property="og:url" content="https://craft374.github.io/Accord/" />
-    <meta property="og:image" content="https://craft374.github.io/Accord/og.png" />
+    <meta property="og:url" content="https://craft374.github.io/Accord/en/" />
+    <meta property="og:image" content="https://craft374.github.io/Accord/og-en.png" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
-    <meta property="og:locale" content="ko_KR" />
+    <meta property="og:locale" content="en_US" />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="Accord — 대화와 기록, 협업이 하나의 흐름으로" />
-    <meta name="twitter:description" content="말하고, 기록하고, 함께 만드는 셀프 호스팅 협업 공간." />
-    <meta name="twitter:image" content="https://craft374.github.io/Accord/og.png" />
-    <link rel="canonical" href="https://craft374.github.io/Accord/" />
+    <meta name="twitter:title" content="Accord — Talk, write and build in one place" />
+    <meta name="twitter:description" content="A self-hosted workspace where the call, the chat, the notes and the canvas all live together." />
+    <meta name="twitter:image" content="https://craft374.github.io/Accord/og-en.png" />
+    <link rel="canonical" href="https://craft374.github.io/Accord/en/" />
     <link rel="alternate" hreflang="ko" href="https://craft374.github.io/Accord/" />
     <link rel="alternate" hreflang="en" href="https://craft374.github.io/Accord/en/" />
     <link rel="alternate" hreflang="x-default" href="https://craft374.github.io/Accord/en/" />
-    <link rel="icon" type="image/svg+xml" href="icon.svg" />
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="icon" type="image/svg+xml" href="../icon.svg" />
+    <link rel="stylesheet" href="../styles.css" />
     <script>document.documentElement.classList.add("js");</script>
     <noscript><style>.reveal { opacity: 1 !important; transform: none !important; }</style></noscript>
-    <title>Accord — 대화와 기록, 협업이 하나의 흐름으로</title>
+    <title>Accord — Talk, write and build in one place</title>
   </head>
   <body>
     <svg class="icon-sprite" aria-hidden="true">
@@ -69,43 +69,46 @@
         <path d="M7 6.5h.01M7 17.5h.01M11 6.5h6M11 17.5h6" />
       </symbol>
       <symbol id="icon-shield" viewBox="0 0 24 24">
-        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+        <path d="M12 3l8 3v6c0 5-3.4 8.2-8 9-4.6-.8-8-4-8-9V6z" />
         <path d="m9 12 2 2 4-4" />
       </symbol>
-      <symbol id="icon-focus" viewBox="0 0 24 24">
-        <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />
-      </symbol>
       <symbol id="icon-users" viewBox="0 0 24 24">
-        <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8" />
+        <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+        <circle cx="9" cy="7" r="4" />
+        <path d="M22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8" />
+      </symbol>
+      <symbol id="icon-focus" viewBox="0 0 24 24">
+        <path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3" />
+        <circle cx="12" cy="12" r="3" />
       </symbol>
       <symbol id="icon-activity" viewBox="0 0 24 24">
         <path d="M3 12h4l3-9 4 18 3-9h4" />
       </symbol>
     </svg>
 
-    <a class="skip-link" href="#main">본문으로 건너뛰기</a>
+    <a class="skip-link" href="#main">Skip to content</a>
 
     <header class="site-header" data-header>
-      <nav class="nav-shell" aria-label="주요 메뉴">
-        <a class="wordmark" href="#top" aria-label="Accord 홈">
-          <img src="icon.svg" alt="" width="36" height="36" />
+      <nav class="nav-shell" aria-label="Main menu">
+        <a class="wordmark" href="#top" aria-label="Accord home">
+          <img src="../icon.svg" alt="" width="36" height="36" />
           <span>Accord</span>
         </a>
 
         <div class="nav-links" id="siteMenu" data-menu>
-          <a href="#features">기능</a>
-          <a href="#workspace">작업 공간</a>
-          <a href="#start">시작하기</a>
+          <a href="#features">Features</a>
+          <a href="#workspace">Workspace</a>
+          <a href="#start">Get started</a>
           <a href="https://github.com/Craft374/Accord" target="_blank" rel="noreferrer">GitHub</a>
-          <a href="en/" hreflang="en" lang="en">English</a>
+          <a href="../" hreflang="ko" lang="ko">한국어</a>
         </div>
 
         <a class="nav-cta" href="https://github.com/Craft374/Accord" target="_blank" rel="noreferrer">
-          저장소 보기
+          View repository
           <svg aria-hidden="true"><use href="#icon-arrow"></use></svg>
         </a>
 
-        <button class="menu-toggle" type="button" aria-label="메뉴 열기" aria-controls="siteMenu" aria-expanded="false" data-menu-toggle>
+        <button class="menu-toggle" type="button" aria-label="Open menu" aria-controls="siteMenu" aria-expanded="false" data-menu-toggle>
           <span></span><span></span><span></span>
         </button>
       </nav>
@@ -120,22 +123,22 @@
         <div class="section-shell hero-shell">
           <div class="hero-copy reveal">
             <div class="eyebrow"><span></span> SELF-HOSTED WORKSPACE</div>
-            <h1>대화와 작업이<br /><em>한곳에서 이어집니다.</em></h1>
+            <h1>Talk, write and build<br /><em>without switching apps.</em></h1>
             <p class="hero-lede">
-              Accord는 저지연 음성 통화와 화면 공유에서 시작해 채팅, 마크다운 메모,
-              공동 창작 도구까지 한곳에 담은 협업 앱입니다.
+              Accord starts with low-latency voice and screen sharing, then keeps going —
+              chat, collaborative markdown notes and a shared canvas, all in one self-hosted app.
             </p>
             <div class="hero-actions">
               <a class="button button-primary" href="https://github.com/Craft374/Accord" target="_blank" rel="noreferrer">
                 <svg aria-hidden="true"><use href="#icon-github"></use></svg>
-                GitHub에서 시작하기
+                Start on GitHub
               </a>
               <a class="button button-secondary" href="#features">
-                기능 둘러보기
+                See the features
                 <svg aria-hidden="true"><use href="#icon-arrow"></use></svg>
               </a>
             </div>
-            <div class="hero-meta" aria-label="지원 환경">
+            <div class="hero-meta" aria-label="Supported platforms">
               <span>Windows</span><i></i><span>macOS</span><i></i><span>Browser</span><i></i><span>Node.js 18+</span>
             </div>
           </div>
@@ -147,7 +150,7 @@
               <div class="window-bar">
                 <div class="window-dots"><span></span><span></span><span></span></div>
                 <div class="window-title"><span class="window-mark">A</span> Accord</div>
-                <div class="window-state"><span></span> 연결됨</div>
+                <div class="window-state"><span></span> Connected</div>
               </div>
               <div class="app-body">
                 <div class="server-rail" aria-hidden="true">
@@ -159,22 +162,22 @@
                 <div class="room-sidebar">
                   <div class="workspace-name">Project Aria <span>⌄</span></div>
                   <p class="room-label">VOICE</p>
-                  <div class="room-row active"><svg><use href="#icon-mic"></use></svg>라운지</div>
+                  <div class="room-row active"><svg><use href="#icon-mic"></use></svg>Lounge</div>
                   <div class="voice-user"><span class="avatar mint">J</span><span>jeongwoo</span><i></i></div>
                   <div class="voice-user"><span class="avatar purple">M</span><span>min</span><i></i></div>
                   <p class="room-label">WORKSPACE</p>
                   <div class="room-row"><svg><use href="#icon-chat"></use></svg>general</div>
-                  <div class="room-row"><svg><use href="#icon-note"></use></svg>회의 노트</div>
-                  <div class="room-row"><svg><use href="#icon-brush"></use></svg>아이디어 보드</div>
+                  <div class="room-row"><svg><use href="#icon-note"></use></svg>meeting-notes</div>
+                  <div class="room-row"><svg><use href="#icon-brush"></use></svg>idea-board</div>
                   <div class="sidebar-profile"><span class="avatar mint">J</span><b>jeongwoo</b><span class="mic-dot"></span></div>
                 </div>
                 <div class="call-stage">
                   <div class="stage-head">
-                    <div><b>라운지</b><span>2명이 함께하는 중</span></div>
+                    <div><b>Lounge</b><span>2 people in the call</span></div>
                     <span class="live-pill"><i></i> LIVE</span>
                   </div>
                   <div class="screen-card">
-                    <div class="screen-toolbar"><span></span><span></span><span></span><b>화면 공유</b></div>
+                    <div class="screen-toolbar"><span></span><span></span><span></span><b>Screen share</b></div>
                     <div class="screen-code">
                       <span><i class="code-purple">const</i> workspace = <i class="code-mint">"Accord"</i>;</span>
                       <span><i class="code-purple">await</i> team.<i class="code-blue">create</i>({</span>
@@ -190,9 +193,9 @@
                     <div class="participant"><span class="avatar purple">M</span><b>min</b></div>
                   </div>
                   <div class="call-controls">
-                    <button type="button" aria-label="마이크"><svg><use href="#icon-mic"></use></svg></button>
-                    <button type="button" aria-label="화면 공유"><svg><use href="#icon-screen"></use></svg></button>
-                    <button class="hangup" type="button" aria-label="통화 종료">×</button>
+                    <button type="button" aria-label="Microphone"><svg><use href="#icon-mic"></use></svg></button>
+                    <button type="button" aria-label="Screen share"><svg><use href="#icon-screen"></use></svg></button>
+                    <button class="hangup" type="button" aria-label="Leave call">×</button>
                   </div>
                 </div>
               </div>
@@ -201,7 +204,7 @@
         </div>
       </section>
 
-      <section class="flow-strip" aria-label="Accord의 네 가지 흐름">
+      <section class="flow-strip" aria-label="The four flows of Accord">
         <div class="flow-track">
           <span><svg><use href="#icon-mic"></use></svg>VOICE</span><i></i>
           <span><svg><use href="#icon-chat"></use></svg>CHAT</span><i></i>
@@ -214,52 +217,52 @@
         <div class="section-shell">
           <div class="section-heading reveal">
             <p class="section-kicker">ONE PLACE, EVERY FLOW</p>
-            <h2>대화가 끝나도,<br />작업은 계속됩니다.</h2>
-            <p>도구 사이를 오가며 흐름을 잃지 마세요. 방을 고르는 것만으로 지금 필요한 공간이 열립니다.</p>
+            <h2>The call ends.<br />The work keeps going.</h2>
+            <p>Stop losing the thread between tools. Picking a room is all it takes to open the space you need right now.</p>
           </div>
 
           <div class="feature-grid">
             <article class="feature-card feature-voice reveal">
               <div class="feature-copy">
                 <span class="feature-index">01 · TALK</span>
-                <h3>통화에 진심인<br />협업 공간</h3>
-                <p>WebRTC P2P 기반 저지연 통화에 화면 공유와 컴퓨터 사운드까지. 상대별 볼륨과 품질 진단도 한곳에서 다룹니다.</p>
-                <ul class="feature-tags"><li>최대 4K · 60fps</li><li>프로그램별 오디오</li><li>자동 복구</li></ul>
+                <h3>Voice that the<br />workspace is built around</h3>
+                <p>Low-latency WebRTC P2P calls with screen sharing and computer audio. Per-user volume and live quality diagnostics live in the same place.</p>
+                <ul class="feature-tags"><li>Up to 4K · 60fps</li><li>Per-app audio</li><li>Auto recovery</li></ul>
               </div>
               <div class="voice-visual" aria-hidden="true">
                 <div class="voice-orbit orbit-a"></div><div class="voice-orbit orbit-b"></div>
                 <div class="voice-core"><svg><use href="#icon-mic"></use></svg></div>
                 <div class="wave wave-left"><i></i><i></i><i></i><i></i><i></i></div>
                 <div class="wave wave-right"><i></i><i></i><i></i><i></i><i></i></div>
-                <div class="quality-card"><span><i></i> 연결 안정</span><b>18 ms</b><small>RTT</small></div>
-                <div class="share-card"><svg><use href="#icon-screen"></use></svg><span><b>Design.fig</b><small>화면 공유 중</small></span></div>
+                <div class="quality-card"><span><i></i> Stable</span><b>18 ms</b><small>RTT</small></div>
+                <div class="share-card"><svg><use href="#icon-screen"></use></svg><span><b>Design.fig</b><small>Sharing screen</small></span></div>
               </div>
             </article>
 
             <article class="feature-card feature-chat reveal">
               <div class="feature-copy compact">
                 <span class="feature-index">02 · CHAT</span>
-                <h3>맥락이 살아 있는 채팅</h3>
-                <p>마크다운, 이미지, 파일, 커스텀 이모지와 1:1 DM까지 자연스럽게 이어집니다.</p>
+                <h3>Chat that keeps context</h3>
+                <p>Markdown, images, files, custom emoji and 1:1 DMs — all part of the same thread of work.</p>
               </div>
               <div class="chat-visual" aria-hidden="true">
-                <div class="chat-line"><span class="avatar purple">M</span><p><b>min <small>오후 4:12</small></b>새 구조 정리해뒀어요.<em>`workspace` 기준으로 보면 됩니다.</em></p></div>
-                <div class="chat-line"><span class="avatar mint">J</span><p><b>jeongwoo <small>오후 4:13</small></b>좋아요. 통화 끝나고 메모방에서 이어갈게요.</p></div>
-                <div class="typing"><i></i><i></i><i></i><span>답변을 입력하세요</span></div>
+                <div class="chat-line"><span class="avatar purple">M</span><p><b>min <small>4:12 PM</small></b>Wrote up the new structure.<em>Read it against `workspace`.</em></p></div>
+                <div class="chat-line"><span class="avatar mint">J</span><p><b>jeongwoo <small>4:13 PM</small></b>Nice. Let's continue in the notes room after the call.</p></div>
+                <div class="typing"><i></i><i></i><i></i><span>Type a reply</span></div>
               </div>
             </article>
 
             <article class="feature-card feature-note reveal">
               <div class="feature-copy compact">
                 <span class="feature-index">03 · NOTE</span>
-                <h3>함께 쓰는 마크다운</h3>
-                <p>실시간 공동 편집, 원격 커서, 코드 강조와 나란히 미리보기로 생각을 바로 문서로 만듭니다.</p>
+                <h3>Markdown, written together</h3>
+                <p>Real-time co-editing, remote cursors, code highlighting and a side-by-side preview turn talk into documents.</p>
               </div>
               <div class="memo-visual" aria-hidden="true">
-                <div class="memo-top"><span>편집</span><span class="active">나란히</span><span>미리보기</span><b>2명 접속</b></div>
+                <div class="memo-top"><span>Edit</span><span class="active">Split</span><span>Preview</span><b>2 online</b></div>
                 <div class="memo-columns">
-                  <div class="memo-code"><span><i>1</i><b># 출시 체크리스트</b></span><span><i>2</i></span><span><i>3</i>- [x] 통화 테스트</span><span><i>4</i>- [ ] 홈페이지 공개</span><span><i>5</i>- [ ] 피드백 정리</span><em>min</em></div>
-                  <div class="memo-preview"><strong>출시 체크리스트</strong><label><i>✓</i>통화 테스트</label><label><i></i>홈페이지 공개</label><label><i></i>피드백 정리</label></div>
+                  <div class="memo-code"><span><i>1</i><b># Release checklist</b></span><span><i>2</i></span><span><i>3</i>- [x] Voice test</span><span><i>4</i>- [ ] Publish the site</span><span><i>5</i>- [ ] Collect feedback</span><em>min</em></div>
+                  <div class="memo-preview"><strong>Release checklist</strong><label><i>✓</i>Voice test</label><label><i></i>Publish the site</label><label><i></i>Collect feedback</label></div>
                 </div>
               </div>
             </article>
@@ -267,11 +270,11 @@
             <article class="feature-card feature-canvas reveal">
               <div class="feature-copy compact">
                 <span class="feature-index">04 · CANVAS</span>
-                <h3>아이디어를 바로 캔버스로</h3>
-                <p>펜, 지우개, 채우기, 이미지 붙여넣기와 레이어를 갖춘 공동 그림판에서 함께 그립니다.</p>
+                <h3>Ideas straight onto a canvas</h3>
+                <p>Draw together with pen, eraser, fill, pasted images and layers on a shared canvas.</p>
               </div>
               <div class="canvas-visual" aria-hidden="true">
-                <div class="canvas-toolbar"><b>아이디어 보드</b><span class="tool active">⌁</span><span class="tool">◇</span><span class="tool">✥</span><i class="color-dot"></i><small>4 px</small></div>
+                <div class="canvas-toolbar"><b>Idea board</b><span class="tool active">⌁</span><span class="tool">◇</span><span class="tool">✥</span><i class="color-dot"></i><small>4 px</small></div>
                 <div class="canvas-board">
                   <svg viewBox="0 0 440 210">
                     <defs><pattern id="dots" width="16" height="16" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#c7cbe2" opacity=".4" /></pattern></defs>
@@ -281,7 +284,7 @@
                     <circle class="board-circle" cx="310" cy="99" r="42" />
                     <text x="270" y="104">ACCORD</text>
                   </svg>
-                  <div class="canvas-layers"><b>레이어</b><span><i class="thumb mint-bg"></i>메모</span><span><i class="thumb purple-bg"></i>스케치</span><span><i class="thumb white-bg"></i>배경</span></div>
+                  <div class="canvas-layers"><b>Layers</b><span><i class="thumb mint-bg"></i>Notes</span><span><i class="thumb purple-bg"></i>Sketch</span><span><i class="thumb white-bg"></i>Background</span></div>
                 </div>
               </div>
             </article>
@@ -293,37 +296,37 @@
         <div class="section-shell workspace-grid">
           <div class="workspace-copy reveal">
             <p class="section-kicker">ROOMS THAT FIT THE MOMENT</p>
-            <h2>방을 바꾸면,<br />도구가 바뀝니다.</h2>
+            <h2>Change the room,<br />change the tool.</h2>
             <p>
-              하나의 채널 안에 통화방, 채팅방, 메모장, 그림판, 전역 로그를 원하는 만큼 구성하세요.
-              팀의 대화와 결과물이 같은 맥락 안에 남습니다.
+              Build as many voice rooms, chat rooms, notepads, canvases and activity logs as you want inside a single channel.
+              Your conversations and your output stay in the same context.
             </p>
             <div class="workspace-points">
-              <span><svg><use href="#icon-shield"></use></svg><b>역할과 방별 권한</b><small>접근·작성·통화·화면 공유를 세밀하게</small></span>
-              <span><svg><use href="#icon-users"></use></svg><b>초대 코드와 멤버 관리</b><small>개인 공간부터 작은 팀까지</small></span>
-              <span><svg><use href="#icon-focus"></use></svg><b>집중 모드</b><small>채팅, 메모, 그림에 온전히 몰입</small></span>
+              <span><svg><use href="#icon-shield"></use></svg><b>Roles and per-room permissions</b><small>Fine-grained access, posting, voice and screen sharing</small></span>
+              <span><svg><use href="#icon-users"></use></svg><b>Invite codes and member management</b><small>From a personal space to a small team</small></span>
+              <span><svg><use href="#icon-focus"></use></svg><b>Focus mode</b><small>Give the chat, notes or canvas the whole screen</small></span>
             </div>
           </div>
 
-          <div class="room-stack reveal" aria-label="Accord 방 종류 예시">
+          <div class="room-stack reveal" aria-label="Examples of Accord room types">
             <article class="room-card room-voice">
               <span class="room-card-icon"><svg><use href="#icon-mic"></use></svg></span>
-              <div><small>VOICE ROOM</small><h3>데일리 라운지</h3><p>저지연 통화 · 화면 공유 · 컴퓨터 사운드</p></div>
+              <div><small>VOICE ROOM</small><h3>Daily lounge</h3><p>Low-latency voice · Screen share · Computer audio</p></div>
               <div class="room-members"><span>J</span><span>M</span><span>+3</span></div>
             </article>
             <article class="room-card room-chat">
               <span class="room-card-icon"><svg><use href="#icon-chat"></use></svg></span>
-              <div><small>CHAT ROOM</small><h3>프로젝트 대화</h3><p>마크다운 · 파일 · 커스텀 이모지</p></div>
+              <div><small>CHAT ROOM</small><h3>Project talk</h3><p>Markdown · Files · Custom emoji</p></div>
               <b class="unread">8</b>
             </article>
             <article class="room-card room-note">
               <span class="room-card-icon"><svg><use href="#icon-note"></use></svg></span>
-              <div><small>MEMO ROOM</small><h3>기획과 회의록</h3><p>공동 편집 · 원격 커서 · 코드 강조</p></div>
-              <span class="editing"><i></i> 편집 중</span>
+              <div><small>MEMO ROOM</small><h3>Specs and meeting notes</h3><p>Co-editing · Remote cursors · Code highlighting</p></div>
+              <span class="editing"><i></i> Editing</span>
             </article>
             <article class="room-card room-draw">
               <span class="room-card-icon"><svg><use href="#icon-brush"></use></svg></span>
-              <div><small>CANVAS ROOM</small><h3>비주얼 워크숍</h3><p>레이어 · 이미지 붙여넣기 · PNG 저장</p></div>
+              <div><small>CANVAS ROOM</small><h3>Visual workshop</h3><p>Layers · Paste images · Save as PNG</p></div>
               <span class="layer-count">3 layers</span>
             </article>
           </div>
@@ -334,15 +337,15 @@
         <div class="section-shell">
           <div class="section-heading centered reveal">
             <p class="section-kicker">BUILT BEYOND THE BASICS</p>
-            <h2>작은 차이가<br />긴 대화를 편하게.</h2>
+            <h2>Small details that make<br />long conversations easy.</h2>
           </div>
           <div class="detail-grid">
-            <article class="detail-card reveal"><span><svg><use href="#icon-activity"></use></svg></span><h3>보이는 통화 품질</h3><p>RTT, 지터, 손실, 코덱을 확인하고 끊어진 오디오를 자동으로 복구합니다.</p></article>
-            <article class="detail-card reveal"><span><svg><use href="#icon-screen"></use></svg></span><h3>필요한 소리만 공유</h3><p>Windows에서는 전체 컴퓨터뿐 아니라 선택한 프로그램의 소리만 골라 공유할 수 있습니다.</p></article>
-            <article class="detail-card reveal"><span><svg><use href="#icon-shield"></use></svg></span><h3>팀에 맞는 권한</h3><p>역할과 사용자별로 접근, 작성, 음성, 사운드, 화면 공유 권한을 나눕니다.</p></article>
-            <article class="detail-card reveal"><span><svg><use href="#icon-server"></use></svg></span><h3>내가 소유하는 서버</h3><p>Node.js 18+만으로 서버를 열고, 필요할 때 TURN을 더해 외부 연결을 안정화합니다.</p></article>
-            <article class="detail-card reveal"><span><svg><use href="#icon-chat"></use></svg></span><h3>채널 밖에서도 DM</h3><p>고유 사용자 코드로 1:1 대화를 시작하고 중요한 맥락을 이어갑니다.</p></article>
-            <article class="detail-card reveal"><span><svg><use href="#icon-focus"></use></svg></span><h3>흐름을 지키는 집중 모드</h3><p>사이드바를 접고 지금 쓰는 채팅, 메모, 그림판만 화면 가득 펼칩니다.</p></article>
+            <article class="detail-card reveal"><span><svg><use href="#icon-activity"></use></svg></span><h3>Call quality you can see</h3><p>Check RTT, jitter, packet loss and codec, and let broken audio recover automatically.</p></article>
+            <article class="detail-card reveal"><span><svg><use href="#icon-screen"></use></svg></span><h3>Share only the audio you mean</h3><p>On Windows you can share the audio of one selected application instead of the whole machine.</p></article>
+            <article class="detail-card reveal"><span><svg><use href="#icon-shield"></use></svg></span><h3>Permissions that fit the team</h3><p>Split access, posting, voice, audio and screen sharing rights by role and by user.</p></article>
+            <article class="detail-card reveal"><span><svg><use href="#icon-server"></use></svg></span><h3>A server you own</h3><p>Run the server with nothing but Node.js 18+, and add TURN when you need external connections to hold up.</p></article>
+            <article class="detail-card reveal"><span><svg><use href="#icon-chat"></use></svg></span><h3>DMs outside the channel</h3><p>Start a 1:1 conversation with a unique user code and keep the important context going.</p></article>
+            <article class="detail-card reveal"><span><svg><use href="#icon-focus"></use></svg></span><h3>Focus mode that protects the flow</h3><p>Collapse the sidebars and let the chat, notes or canvas fill the screen.</p></article>
           </div>
         </div>
       </section>
@@ -352,17 +355,17 @@
           <div class="start-panel reveal">
             <div class="start-copy">
               <p class="section-kicker">YOUR SPACE, YOUR SERVER</p>
-              <h2>서버 하나로,<br />우리만의 공간을.</h2>
-              <p>별도의 서버 패키지 없이 Node.js로 시작하고, 데스크톱 앱이나 브라우저에서 접속하세요.</p>
+              <h2>One server,<br />a space of your own.</h2>
+              <p>No separate server package — start with Node.js and connect from the desktop app or a browser.</p>
               <a class="button button-dark" href="https://github.com/Craft374/Accord/blob/main/docs/SERVER.md" target="_blank" rel="noreferrer">
-                서버 가이드 열기
+                Open the server guide
                 <svg aria-hidden="true"><use href="#icon-arrow"></use></svg>
               </a>
             </div>
             <div class="start-steps">
-              <article><span>01</span><div><b>서버 실행</b><p>Node.js 18+ 환경에서 시작합니다.</p><code><i>$</i> node server.js</code></div></article>
-              <article><span>02</span><div><b>주소로 접속</b><p>데스크톱 앱 또는 Chrome에서 서버 주소를 엽니다.</p></div></article>
-              <article><span>03</span><div><b>채널 만들기</b><p>필요한 방을 만들고 초대 코드를 공유합니다.</p></div></article>
+              <article><span>01</span><div><b>Run the server</b><p>Anywhere with Node.js 18+.</p><code><i>$</i> node server.js</code></div></article>
+              <article><span>02</span><div><b>Connect by address</b><p>Open the server address in the desktop app or Chrome.</p></div></article>
+              <article><span>03</span><div><b>Create a channel</b><p>Add the rooms you need and share the invite code.</p></div></article>
             </div>
           </div>
         </div>
@@ -370,10 +373,10 @@
 
       <section class="closing">
         <div class="section-shell closing-shell reveal">
-          <img src="icon.svg" alt="" width="84" height="84" />
-          <p>대화만 남는 앱을 넘어,<br /><strong>작업이 이어지는 공간으로.</strong></p>
+          <img src="../icon.svg" alt="" width="84" height="84" />
+          <p>More than an app where talk disappears —<br /><strong>a place where the work continues.</strong></p>
           <a class="button button-light" href="https://github.com/Craft374/Accord" target="_blank" rel="noreferrer">
-            Accord 살펴보기
+            Explore Accord
             <svg aria-hidden="true"><use href="#icon-arrow"></use></svg>
           </a>
         </div>
@@ -383,17 +386,17 @@
     <footer class="site-footer">
       <div class="section-shell footer-grid">
         <div class="footer-brand">
-          <a class="wordmark" href="#top"><img src="icon.svg" alt="" width="34" height="34" /><span>Accord</span></a>
-          <p>대화와 기록, 협업이 하나의 흐름으로.</p>
+          <a class="wordmark" href="#top"><img src="../icon.svg" alt="" width="34" height="34" /><span>Accord</span></a>
+          <p>Conversation and record, collaboration in one flow.</p>
         </div>
         <div class="footer-links">
           <div><b>Project</b><a href="https://github.com/Craft374/Accord" target="_blank" rel="noreferrer">GitHub</a><a href="https://github.com/Craft374/Accord/blob/main/README.md" target="_blank" rel="noreferrer">README</a></div>
-          <div><b>Guides</b><a href="https://github.com/Craft374/Accord/blob/main/docs/SERVER.md" target="_blank" rel="noreferrer">서버 열기</a><a href="https://github.com/Craft374/Accord/blob/main/docs/BUILD.md" target="_blank" rel="noreferrer">앱 빌드</a></div>
+          <div><b>Guides</b><a href="https://github.com/Craft374/Accord/blob/main/docs/SERVER.md" target="_blank" rel="noreferrer">Run a server</a><a href="https://github.com/Craft374/Accord/blob/main/docs/BUILD.md" target="_blank" rel="noreferrer">Build the app</a></div>
         </div>
       </div>
       <div class="section-shell footer-bottom"><span>© <span data-year></span> Accord.</span><span>Crafted for conversations that become work.</span></div>
     </footer>
 
-    <script src="app.js" defer></script>
+    <script src="../app.js" defer></script>
   </body>
 </html>
