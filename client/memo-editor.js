@@ -2,6 +2,7 @@ import { EditorView, basicSetup } from "codemirror";
 import { Annotation, Compartment, EditorSelection, EditorState, StateEffect, StateField, Transaction } from "@codemirror/state";
 import { Decoration, ViewPlugin, WidgetType, keymap, placeholder } from "@codemirror/view";
 import { indentWithTab } from "@codemirror/commands";
+import { acceptCompletion } from "@codemirror/autocomplete";
 import { HighlightStyle, syntaxHighlighting, syntaxTree } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
@@ -22,6 +23,40 @@ const memoHighlightStyle = HighlightStyle.define([
 const memoCloseBrackets = EditorState.languageData.of(() => [
   { closeBrackets: { brackets: ["(", "[", "{", "'", '"', "*"] } },
 ]);
+
+// 설정(탭키 마크다운 자동완성) 켬/꺼짐. 에디터 인스턴스와 무관한 전역 상태(문서엔 하나만 떠 있음).
+const memoAutocompleteState = { enabled: true };
+
+// 줄 맨 앞에서 #, -, 1., >, ``` 등을 치면 나머지를 채워 주는 블록 마크다운 스니펫(basicSetup의 autocompletion()이 이미
+// 켜져 있으므로 여기선 languageData 로 completion source만 얹는다 — autocompletion()을 또 호출할 필요 없음).
+const MEMO_BLOCK_SNIPPETS = [
+  { label: "# ", detail: "제목 1" },
+  { label: "## ", detail: "제목 2" },
+  { label: "### ", detail: "제목 3" },
+  { label: "- ", detail: "글머리 목록" },
+  { label: "1. ", detail: "번호 목록" },
+  { label: "- [ ] ", detail: "체크박스" },
+  { label: "> ", detail: "인용" },
+];
+const MEMO_SNIPPET_TRIGGER = /[#>\-\d.[\] `]*/;
+function memoMarkdownCompletions(context) {
+  if (!memoAutocompleteState.enabled) return null;
+  const line = context.state.doc.lineAt(context.pos);
+  const word = context.matchBefore(MEMO_SNIPPET_TRIGGER);
+  if (!word || word.from !== line.from) return null;
+  if (word.from === word.to && !context.explicit) return null;
+  const options = MEMO_BLOCK_SNIPPETS.map((s) => ({ label: s.label, detail: s.detail, type: "keyword" }));
+  options.push({
+    label: "```",
+    detail: "코드 블록",
+    type: "keyword",
+    apply(view, completion, from, to) {
+      view.dispatch({ changes: { from, to, insert: "```\n\n```" }, selection: EditorSelection.single(from + 4) });
+    },
+  });
+  return { from: word.from, options, validFor: MEMO_SNIPPET_TRIGGER };
+}
+const memoAutocomplete = EditorState.languageData.of(() => [{ autocomplete: memoMarkdownCompletions }]);
 
 const setLiveMode = StateEffect.define();
 const toggleFold = StateEffect.define();
@@ -461,10 +496,11 @@ function createMemoEditor(options) {
     basicSetup,
     syntaxHighlighting(memoHighlightStyle),
     memoCloseBrackets,
+    memoAutocomplete,
     markdown({ base: markdownLanguage }),
     EditorView.lineWrapping,
     EditorState.tabSize.of(2),
-    keymap.of([indentWithTab]),
+    keymap.of([{ key: "Tab", run: acceptCompletion }, indentWithTab]),
     placeholder("마크다운으로 메모를 작성하세요. 채널 멤버와 실시간으로 함께 편집됩니다."),
     readOnly.of(EditorState.readOnly.of(true)),
     liveModeField,
@@ -582,4 +618,7 @@ function createMemoEditor(options) {
   };
 }
 
-window.AccordMemoEditor = { create: createMemoEditor };
+window.AccordMemoEditor = {
+  create: createMemoEditor,
+  setAutocomplete: (enabled) => { memoAutocompleteState.enabled = Boolean(enabled); },
+};

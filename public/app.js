@@ -4,7 +4,7 @@ const serverUrl = location.origin;
 // 클라이언트(앱) 버전. 서버 버전(server.js VERSION, n.n.n)과 헷갈리지 않도록 **그냥 정수**(1, 2, 3 …)로 올린다.
 // package.json 의 version 은 electron-builder 가 semver 를 요구해 "N.0.0" 형태로 두고, 그 major 가 이 값과 같아야 한다.
 // (scripts/check-v2.js 가 둘이 어긋나지 않는지 검사한다)
-const CLIENT_VERSION = "7";
+const CLIENT_VERSION = "8";
 
 function getClientVersion() {
   // 표시는 항상 단일 정수 CLIENT_VERSION 을 쓴다(package.json 의 semver appVersion 대신).
@@ -467,6 +467,7 @@ const dom = {
   membersCollapseToggle: document.querySelector("#membersCollapseToggle"),
   drawLayerNamesToggle: document.querySelector("#drawLayerNamesToggle"),
   resetLayoutButton: document.querySelector("#resetLayoutButton"),
+  memoAutocompleteToggle: document.querySelector("#memoAutocompleteToggle"),
   memoColorEm: document.querySelector("#memoColorEm"),
   memoColorStrong: document.querySelector("#memoColorStrong"),
   memoColorStrongEm: document.querySelector("#memoColorStrongEm"),
@@ -559,7 +560,12 @@ function bindEvents() {
       if (nameEl) nameEl.textContent = input.files?.[0]?.name || "선택된 파일 없음";
     });
   });
-  dom.launcherButton.addEventListener("click", () => desktop.backToLauncher?.());
+  dom.launcherButton.addEventListener("click", confirmServerChange);
+  if (desktop.isDesktop) {
+    dom.statusBadge.classList.add("clickable");
+    dom.statusBadge.title = "눌러서 다른 서버로 변경";
+    dom.statusBadge.addEventListener("click", confirmServerChange);
+  }
   dom.settingsButton?.addEventListener("click", () => toggleSettingsModal(true));
   dom.settingsCloseButton?.addEventListener("click", () => toggleSettingsModal(false));
   dom.settingsModal?.addEventListener("click", (event) => {
@@ -794,6 +800,13 @@ function setSystemCaptureMode(mode) {
   updateTrackStats();
   if (nextMode === "program") refreshProgramAudioSources({ silent: true });
   if (state.systemSharing) restartSystemAudio();
+}
+
+// 우상단 상태 표시(statusBadge)나 설정 > 서버 변경 버튼을 눌렀을 때: 통화·DM 알림이 끊긴다는 걸 미리 알린다.
+function confirmServerChange() {
+  if (!desktop.backToLauncher) return;
+  if (!window.confirm("서버를 변경하면 지금 통화가 끊기고, 나가 있는 동안 DM 알림도 받을 수 없습니다. 서버 선택 화면으로 나갈까요?")) return;
+  desktop.backToLauncher();
 }
 
 async function connect() {
@@ -1818,6 +1831,12 @@ async function handleSocketMessage(message) {
     return;
   }
 
+  if (message.type === "media:intent") {
+    // 다른 사람이 화면/카메라/컴퓨터 사운드 공유 버튼을 누른 순간의 알림(실제 트랙 협상보다 먼저 도착).
+    playUiSound(message.sound, state.currentRoom?.id);
+    return;
+  }
+
   if (message.type === "joined") {
     state.clientId = message.id || state.clientId;
     state.currentRoom = message.room;
@@ -2195,7 +2214,10 @@ function rebuildLocalStream() {
 
 async function handleSystemAudioToggle() {
   if (!dom.systemAudioToggle.checked) {
-    if (state.currentRoom) await stopSystemAudio();
+    if (state.currentRoom) {
+      announceMediaIntent("soundOff");
+      await stopSystemAudio();
+    }
     return;
   }
 
@@ -2204,6 +2226,7 @@ async function handleSystemAudioToggle() {
     return;
   }
 
+  announceMediaIntent("soundOn");
   await startSystemAudioShare();
 }
 
@@ -2550,12 +2573,12 @@ async function attachSystemTrack(stream, track, message, captureKind = "device",
   state.systemSharing = true;
   state.systemCaptureTrack.addEventListener("ended", () => {
     if (Date.now() < state.ignoreSystemEndedUntil) return;
+    announceMediaIntent("soundOff"); // OS/브라우저가 직접 공유를 끊은 경우(우리 토글을 안 거침)라 여기서도 알려야 함
     stopSystemAudio();
   });
   startSystemShareMeter();
   await ensureSystemBleedSuppressor();
   rebuildLocalStream();
-  playUiSound("soundOn", state.currentRoom?.id); // 상대에게 들리는 시점이 아니라 로컬 캡처가 준비된 시점에 바로 재생(렌고시에이션 대기 시 한박자 늦게 들리던 문제)
 
   for (const peer of state.peers.values()) {
     peer.senders.system = addLocalTrack(peer, state.systemTrack, "system");
@@ -2600,7 +2623,6 @@ async function enforceSystemAudioTrackConstraints(track) {
 }
 
 async function stopSystemAudio({ renegotiate = true, notify = true } = {}) {
-  if (state.systemSharing) playUiSound("soundOff", state.currentRoom?.id);
   state.ignoreSystemEndedUntil = Date.now() + 1200;
   clearProgramAudioSilenceWarning();
   stopSystemShareMeter();
@@ -2661,9 +2683,11 @@ async function restartSystemAudio() {
 
 async function toggleScreenShare() {
   if (state.screenSharing) {
+    announceMediaIntent("screenOff");
     await stopScreenShare();
     return;
   }
+  announceMediaIntent("screenOn");
   await requestScreenShare();
 }
 
@@ -2801,9 +2825,11 @@ async function chooseMonitorAndShare(displayId) {
 // 화면 공유 슬롯으로 내보낼 수 있게 한다. OBS 가상카메라를 켜면 카메라 목록에 잡혀 그대로 공유된다.
 async function toggleCameraShare() {
   if (state.screenSharing && state.screenSource === "camera") {
+    announceMediaIntent("screenOff");
     await stopScreenShare({ message: "카메라 공유를 껐습니다." });
     return;
   }
+  announceMediaIntent("screenOn");
   await requestCameraShare();
 }
 
@@ -2885,10 +2911,10 @@ async function startCameraShare(deviceId) {
     track.contentHint = "motion";
     track.addEventListener("ended", () => {
       if (Date.now() < state.ignoreScreenEndedUntil) return;
+      announceMediaIntent("screenOff");
       stopScreenShare().catch(() => {});
     });
     rebuildLocalStream();
-    playUiSound("screenOn", state.currentRoom?.id); // 렌고시에이션 전에 바로 재생(한박자 늦게 들리던 문제)
     for (const peer of state.peers.values()) {
       peer.senders.screen = addLocalTrack(peer, state.screenTrack, "screen");
       tuneSender(peer.senders.screen, "screen");
@@ -2937,11 +2963,11 @@ async function startScreenShare() {
     track.contentHint = Number(state.screenFps || 30) >= 60 ? "motion" : "detail";
     track.addEventListener("ended", () => {
       if (Date.now() < state.ignoreScreenEndedUntil) return;
+      announceMediaIntent("screenOff");
       stopScreenShare().catch(() => {});
     });
     startScreenCaptureProbe(track);
     rebuildLocalStream();
-    playUiSound("screenOn", state.currentRoom?.id); // 렌고시에이션·디스크톱 IPC 대기 전에 바로 재생(한박자 늦게 들리던 문제)
     await setDesktopScreenShareActive(true);
     state.screenStats.capture = getScreenCaptureStatsText();
     updateScreenStatsLabel();
@@ -2977,7 +3003,6 @@ async function startScreenShare() {
 async function stopScreenShare({ renegotiate = true, message = "화면 공유를 껐습니다." } = {}) {
   if (!state.screenSharing && !state.screenTrack && !state.screenStream) return;
   cleanupLocalScreenShare();
-  playUiSound("screenOff", state.currentRoom?.id);
 
   for (const peer of state.peers.values()) {
     if (!peer.senders.screen) continue;
@@ -5761,8 +5786,6 @@ function sendMediaStatus(peer) {
 async function handleMediaStatus(peer, status) {
   const isFirstUpdate = peer.remoteStatus.updatedAt === 0;
   const wasMicMuted = Boolean(peer.remoteStatus?.mic?.muted);
-  const wasSystemLive = Boolean(peer.remoteStatus?.system?.live);
-  const wasScreenLive = Boolean(peer.remoteStatus?.screen?.live);
   peer.remoteStatus.updatedAt = Date.now();
   for (const role of ["mic", "system", "screen"]) {
     const value = normalizeRemoteMediaStatus(status[role]);
@@ -5780,13 +5803,10 @@ async function handleMediaStatus(peer, status) {
     }
   }
   const nowMicMuted = Boolean(peer.remoteStatus?.mic?.muted);
-  const nowSystemLive = Boolean(peer.remoteStatus?.system?.live);
-  const nowScreenLive = Boolean(peer.remoteStatus?.screen?.live);
-  if (!isFirstUpdate) {
-    const roomId = state.currentRoom?.id;
-    if (wasMicMuted !== nowMicMuted) playUiSound(nowMicMuted ? "micOff" : "micOn", roomId);
-    if (wasSystemLive !== nowSystemLive) playUiSound(nowSystemLive ? "soundOn" : "soundOff", roomId);
-    if (wasScreenLive !== nowScreenLive) playUiSound(nowScreenLive ? "screenOn" : "screenOff", roomId);
+  // 화면·컴퓨터 사운드 공유는 media:intent(버튼 클릭 즉시 방 전체 브로드캐스트)가 소리를 전담한다.
+  // 여기서 또 재생하면 실제 트랙 협상이 끝난 뒤 소리가 한 번 더 늦게 울린다. 마이크는 협상 지연이 없어 그대로 둔다.
+  if (!isFirstUpdate && wasMicMuted !== nowMicMuted) {
+    playUiSound(nowMicMuted ? "micOff" : "micOn", state.currentRoom?.id);
   }
   if (wasMicMuted !== nowMicMuted) renderParticipants();
   checkRemoteMediaExpectation(peer);
@@ -11028,7 +11048,7 @@ function openFontManager() {
       <button class="ghost small" data-font-close="1" type="button">닫기</button>
     </header>
     <div class="modal-body">
-      <p class="modal-hint">파일을 올린 뒤 <b>같은 글꼴끼리 이름을 똑같이</b> 맞추면 한 글꼴로 묶이고, 파일마다 <b>굵기</b>를 직접 적어(가늘게·중간·굵게 등) 구분해요. 자동 인식이 안 되는 글꼴도 이렇게 손수 세팅할 수 있어요. 창으로 파일을 끌어다 놓아도 올라가요. (ttf·otf·woff·woff2)</p>
+      <p class="modal-hint">파일을 올린 뒤 <b>같은 글꼴끼리 이름을 똑같이</b> 맞추면 한 글꼴로 묶이고, 파일마다 <b>굵기</b>를 직접 적어(가늘게·중간·굵게 등) 구분해요. 자동 인식이 안 되는 글꼴도 이렇게 손수 세팅할 수 있어요. 파일 행을 <b>다른 카드로 끌어다 놓으면</b> 그 글꼴로 옮겨 붙어요. 창으로 파일을 끌어다 놓아도 올라가요. (ttf·otf·woff·woff2)</p>
       <div class="font-list" data-font-list></div>
       <div class="font-manager-foot">
         <button class="primary small" data-font-upload="1" type="button">＋ 글꼴 올리기</button>
@@ -11110,6 +11130,7 @@ function renderFontManagerList() {
 
     const card = document.createElement("div");
     card.className = "font-group";
+    card.dataset.fontFamily = group.family;
 
     const head = document.createElement("div");
     head.className = "font-group-head";
@@ -11128,6 +11149,10 @@ function renderFontManagerList() {
       const font = item.font;
       const row = document.createElement("div");
       row.className = "font-row";
+      row.addEventListener("pointerdown", (e) => {
+        if (e.button !== 0 || e.target.closest("input, button")) return;
+        startFontRowDrag(e, font.id);
+      });
 
       const info = document.createElement("div");
       info.className = "font-row-info";
@@ -11157,6 +11182,44 @@ function renderFontManagerList() {
     }
     list.append(card);
   }
+}
+// 파일 행을 다른 카드로 끌어다 놓으면 그 카드의 family로 옮겨 붙여(흩어진 굵기 파일들을 한 글꼴로 합침).
+// 네이티브 HTML5 드래그(dragstart)는 이 프로젝트에서 방목록 드래그 때 문제가 있어 포인터 이벤트로 바꾼 전례가 있어(room-tree),
+// 여기도 같은 방식(pointerdown/pointermove/pointerup)으로 맞춘다.
+let fontRowDrag = null;
+function startFontRowDrag(startEvent, fontId) {
+  startEvent.preventDefault();
+  fontRowDrag = { fontId };
+  document.body.classList.add("font-row-dragging");
+  window.addEventListener("pointermove", onFontRowDragMove);
+  window.addEventListener("pointerup", onFontRowDragEnd, { once: true });
+}
+function fontGroupCardAt(e) {
+  return document.elementFromPoint(e.clientX, e.clientY)?.closest?.(".font-group") || null;
+}
+function clearFontDropTargets() {
+  fontManagerEl?.querySelectorAll(".font-group.font-group-drop-target")
+    .forEach((c) => c.classList.remove("font-group-drop-target"));
+}
+function onFontRowDragMove(e) {
+  if (!fontRowDrag) return;
+  clearFontDropTargets();
+  fontGroupCardAt(e)?.classList.add("font-group-drop-target");
+}
+function onFontRowDragEnd(e) {
+  window.removeEventListener("pointermove", onFontRowDragMove);
+  document.body.classList.remove("font-row-dragging");
+  clearFontDropTargets();
+  const drag = fontRowDrag;
+  fontRowDrag = null;
+  if (!drag) return;
+  const card = fontGroupCardAt(e);
+  const ch = memoChannel();
+  if (!card || !ch) return;
+  const targetFamily = card.dataset.fontFamily || "";
+  const font = ch.fonts?.find((f) => f.id === drag.fontId);
+  if (!font || resolveFontMeta(font).family === targetFamily) return; // 이미 이 카드에 있음
+  sendSocket({ type: "channel:set-font-meta", channelId: ch.id, fontId: drag.fontId, family: targetFamily });
 }
 // 카드 제목(글꼴 이름) 편집: 확정하면 카드 안 모든 파일의 family 를 그 이름으로 설정해 하나로 묶는다.
 function bindFontFamilyInput(input, group) {
@@ -11449,12 +11512,24 @@ function ensureMemoEditor() {
     onSelectionChange: sendMemoCursor,
     onOpenLink: (href) => window.open(href, "_blank", "noopener"),
   });
+  applyMemoAutocompletePref();
+}
+
+// 메모장 탭 자동완성 켬/꺼짐(설정 > 메모). 기본은 켬.
+function applyMemoAutocompletePref() {
+  const enabled = localStorage.getItem("accordMemoAutocomplete") !== "0";
+  window.AccordMemoEditor?.setAutocomplete?.(enabled);
+  if (dom.memoAutocompleteToggle) dom.memoAutocompleteToggle.checked = enabled;
 }
 
 function bindMemoEvents() {
   ensureMemoEditor();
   bindMemoColorSettings();
   applyMemoLiveColors();
+  dom.memoAutocompleteToggle?.addEventListener("change", () => {
+    localStorage.setItem("accordMemoAutocomplete", dom.memoAutocompleteToggle.checked ? "1" : "0");
+    applyMemoAutocompletePref();
+  });
   dom.memoViewSplit?.addEventListener("click", () => applyMemoView("split"));
   dom.memoViewEdit?.addEventListener("click", () => applyMemoView("edit"));
   dom.memoViewPreview?.addEventListener("click", () => applyMemoView("preview"));
@@ -15423,6 +15498,14 @@ function renderSoundPrefs() {
     row.append(toggle, volume, volumeValue);
     dom.soundPrefsList.append(row);
   }
+}
+
+// 화면/카메라/컴퓨터 사운드 공유 버튼: 실제 공유(OS 픽커·getUserMedia·재협상)를 기다리지 않고
+// 클릭을 인식한 순간 나(로컬)와 방에 있는 다른 사람 모두에게 즉시 소리로 알린다.
+function announceMediaIntent(sound) {
+  if (!state.currentRoom) return;
+  playUiSound(sound, state.currentRoom.id);
+  sendSocket({ type: "media:intent", sound });
 }
 
 // roomId를 주면(입장·퇴장/채팅 등 특정 방에 속한 알림) 그 방이 음소거됐는지도 함께 확인한다.

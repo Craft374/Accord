@@ -15,7 +15,7 @@ seedAdminAccount();
 // 서버 버전. 클라이언트(앱) 버전은 package.json 의 version 이며 따로 관리한다.
 // 규칙: 클라 코드가 바뀌면 서버가 그 코드를 배포하므로 서버·클라 둘 다 올리고,
 //       서버만 바뀌면 서버 버전만 올린다.
-const VERSION = "2.4.10";
+const VERSION = "2.4.11";
 const PORT = Number(process.env.PORT || 25565);
 const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_HOST = cleanHost(process.env.PUBLIC_HOST || "");
@@ -518,6 +518,19 @@ function handleMessage(client, message) {
 
   if (message.type === "leave-room") {
     leaveRoom(client, true);
+    return;
+  }
+
+  if (message.type === "media:intent") {
+    // 화면/카메라/컴퓨터 사운드 공유 버튼 클릭 즉시 알림(비영속, 발신자 제외 릴레이). 실제 미디어 상태와 무관하다.
+    const room = rooms.get(client.roomId);
+    if (!room) return;
+    const sound = String(message.sound || "");
+    if (!["screenOn", "screenOff", "soundOn", "soundOff"].includes(sound)) return;
+    for (const peerId of room.clients) {
+      if (peerId === client.id) continue;
+      send(clients.get(peerId), { type: "media:intent", sound });
+    }
     return;
   }
 

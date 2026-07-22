@@ -321,9 +321,10 @@ const reviews = [
   [/new RegExp\(`a=fmtp:\$\{opusPayload\} \.\+\\\\r\\\\n`, "g"\)/.test(app) && /new RegExp\(`\(a=fmtp:\$\{opusPayload\} \.\+\\\\r\\\\n\)`, "g"\)/.test(app), "opus tuning applies to every audio m-line"],
   [/const enabled = !state\.muted && !isMicSendProtected\(\)/.test(app), "mic enabled state respects echo protection"],
   [/if \(!state\.muted && state\.rawMicTrack\)/.test(app) === false, "health check does not bypass echo mic protection"],
-  [/rebuildLocalStream\(\);\s*\n\s*playUiSound\("soundOn"/.test(app), "system sound-on cue plays before peer renegotiation"],
-  [/rebuildLocalStream\(\);\s*\n\s*playUiSound\("screenOn"/.test(app), "camera share sound-on cue plays before peer renegotiation"],
-  [/rebuildLocalStream\(\);\s*\n\s*playUiSound\("screenOn"[\s\S]+await setDesktopScreenShareActive\(true\)/.test(app), "full screen share sound-on cue plays before desktop capture setup and renegotiation"],
+  // 2.4.11: 화면/카메라/컴퓨터 사운드 공유 소리는 실제 트랙 협상을 기다리지 않고 버튼 클릭 즉시(media:intent로 방 전체에도 릴레이) 재생한다.
+  [/function announceMediaIntent\(sound\)/.test(app) && /sendSocket\(\{ type: "media:intent", sound \}\)/.test(app), "media share cue plays on click, before device capture or renegotiation"],
+  [/announceMediaIntent\("soundOn"\)/.test(app) && /announceMediaIntent\("screenOn"\)/.test(app), "screen/camera/system share toggles announce their cue immediately"],
+  [/message\.type === "media:intent"/.test(server) && /if \(peerId === client\.id\) continue;/.test(server), "server relays media:intent to the rest of the room, excluding the sender"],
   [/\[\/\\b\(demi \?light\|semi \?light\)\\b\/i, 350\]/.test(app), "memo font weight parser recognizes DemiLight"],
   [/\{ weight: "1 1000" \}/.test(app), "ungrouped custom memo fonts register a full weight range for variable font files"],
   [/let memoViewPref = MEMO_VIEWS\.includes/.test(app) && /localStorage\.setItem\("accordMemoView", v\)/.test(app), "memo view tab (split/edit/preview/live) is remembered across reopens"],

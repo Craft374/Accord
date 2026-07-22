@@ -61,6 +61,15 @@ let programAudioPort = null;
 let screenSharePowerBlockerId = null;
 let screenCaptureConfig = {};
 
+// 트레이에 상주 중(창 닫아도 종료 안 함)일 때 작업표시줄 아이콘을 다시 실행하면 새 프로세스가 뜨는 대신
+// 이미 떠 있는 창을 앞으로 가져온다.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+}
+app.on("second-instance", () => {
+  showMainWindow();
+});
+
 app.on("certificate-error", (event, webContents, url, error, certificate, callback) => {
   const host = safeHost(url);
   if (isVoiceServerHost(host) || url.startsWith("https://")) {
