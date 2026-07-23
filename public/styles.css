@@ -1891,6 +1891,10 @@ body.draw-open .log-panel {
   border-radius: var(--radius-sm);
   background: var(--bg-input);
   cursor: pointer;
+  user-select: none; /* Shift+클릭 다중선택 때 레이어 이름·아이콘이 파랗게 드래그 선택되던 문제 */
+}
+.draw-layer-item input {
+  user-select: text; /* 이름 변경 입력칸에서는 글자 선택이 되어야 함 */
 }
 .draw-layer-item.active {
   border-color: var(--accent, #5865f2);
@@ -1924,6 +1928,7 @@ body.draw-open .log-panel {
 .draw-layer-item.locked-layer .draw-layer-name { color: var(--muted); }
 .draw-layer-item.multi-selected { border-color: var(--green, #3ba55d); }
 body.hide-draw-layer-names .draw-layer-name { display: none; }
+body.hide-draw-hint .draw-hint { display: none; }
 .draw-layer-order {
   display: inline-flex;
   flex-direction: column;

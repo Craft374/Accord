@@ -466,6 +466,7 @@ const dom = {
   roomsCollapseToggle: document.querySelector("#roomsCollapseToggle"),
   membersCollapseToggle: document.querySelector("#membersCollapseToggle"),
   drawLayerNamesToggle: document.querySelector("#drawLayerNamesToggle"),
+  drawHintToggle: document.querySelector("#drawHintToggle"),
   resetLayoutButton: document.querySelector("#resetLayoutButton"),
   memoAutocompleteToggle: document.querySelector("#memoAutocompleteToggle"),
   memoColorEm: document.querySelector("#memoColorEm"),
@@ -4966,6 +4967,11 @@ function initLayoutControls() {
     localStorage.setItem("accordDrawLayerNamesHidden", dom.drawLayerNamesToggle.checked ? "0" : "1");
     applyDrawLayerNamesPref();
   });
+  applyDrawHintPref();
+  dom.drawHintToggle?.addEventListener("change", () => {
+    localStorage.setItem("accordDrawHintHidden", dom.drawHintToggle.checked ? "0" : "1");
+    applyDrawHintPref();
+  });
 }
 
 // 그림판 레이어 이름 표시 여부(설정 > 화면). 기본은 표시.
@@ -4973,6 +4979,13 @@ function applyDrawLayerNamesPref() {
   const hidden = localStorage.getItem("accordDrawLayerNamesHidden") === "1";
   document.body.classList.toggle("hide-draw-layer-names", hidden);
   if (dom.drawLayerNamesToggle) dom.drawLayerNamesToggle.checked = !hidden;
+}
+
+// 그림판 아래 사용법 설명(.draw-hint) 표시 여부(설정 > 화면). 기본은 표시.
+function applyDrawHintPref() {
+  const hidden = localStorage.getItem("accordDrawHintHidden") === "1";
+  document.body.classList.toggle("hide-draw-hint", hidden);
+  if (dom.drawHintToggle) dom.drawHintToggle.checked = !hidden;
 }
 
 function toggleProfileModal(open) {
@@ -10913,9 +10926,29 @@ function bindMemoColorSettings() {
   });
 }
 
+// 메모방을 다시 열면 마지막으로 있던 커서 자리와 스크롤(휠) 위치를 그대로 되살린다(방별로 localStorage 보관).
+function saveMemoPos() {
+  const m = state.memo;
+  if (!m || !memoEditorController) return;
+  localStorage.setItem(`accordMemoPos:${m.roomId}`, JSON.stringify({
+    anchor: memoEditorController.getSelection().anchor,
+    scroll: memoEditorController.getScrollTop(),
+  }));
+}
+
+function restoreMemoPos(roomId) {
+  if (!memoEditorController) return;
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(`accordMemoPos:${roomId}`) || "null"); } catch {}
+  if (!saved) return;
+  memoEditorController.setSelection(Number(saved.anchor) || 0); // 문서 길이는 setSelection 이 알아서 자름
+  memoEditorController.setScrollTop(Number(saved.scroll) || 0);
+}
+
 function openMemoRoom(roomId) {
   const found = findRoomInChannels(roomId);
   if (!found) return;
+  saveMemoPos(); // 다른 메모방으로 바로 갈아탈 때 지금 방 위치부터 저장
   if (state.memo?.roomId === roomId) {
     document.body.classList.add("memo-open");
     memoEditorController?.focus();
@@ -10957,6 +10990,7 @@ function openMemoRoom(roomId) {
 
 function closeMemoView() {
   if (!state.memo) return;
+  saveMemoPos();
   if (state.memo.cursorTimer) clearTimeout(state.memo.cursorTimer);
   sendSocket({ type: "memo:close" });
   state.memo = null;
@@ -10988,6 +11022,7 @@ function handleMemoState(message) {
   m.buffer = [];
   m.font = acceptMemoFont(message.font);
   memoEditorController?.reset(m.doc);
+  restoreMemoPos(m.roomId);
   memoEditorController?.setReadOnly(!m.writable);
   applyMemoFont(m.font);
   updateMemoToolsEnabled();
@@ -11602,6 +11637,7 @@ function bindMemoEvents() {
     event.preventDefault();
     applyMemoFontSize(memoFontSize + (event.deltaY < 0 ? 1 : -1));
   }, { passive: false });
+  window.addEventListener("pagehide", saveMemoPos); // 메모방을 연 채로 앱을 닫아도 위치가 남게
 }
 
 // ===== 공동 그림판 (draw) =====

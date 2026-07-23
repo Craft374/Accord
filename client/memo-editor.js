@@ -541,8 +541,17 @@ function operationsToChanges(ops) {
   return changes;
 }
 
+// 글꼴/글자 크기를 바꿔도 CM6 가 줄 높이를 다시 재지 않는 문제를 푸는 장치.
+// view.requestMeasure() 만으로는 부족하다: ViewState.measure() 는 contentDOM 높이가 달라졌을 때만
+// 내용을 다시 재는데, .cm-content 는 스크롤러에 맞춰 늘어나 있어 글자가 커져도 높이가 그대로다.
+// → 줄번호 거터만 옛 높이(작게)로 남고 본문만 커져 어긋난다(타이핑하면 그제야 복구).
+// theme facet 이 바뀌면 CM6 가 무조건 다시 재므로, 빈 테마 둘을 번갈아 끼워 그 경로를 태운다.
+const measureFlipThemes = [EditorView.theme({}), EditorView.theme({})];
+
 function createMemoEditor(options) {
   const readOnly = new Compartment();
+  const measureFlip = new Compartment();
+  let measureFlipIndex = 0;
   const callbacks = options || {};
   let mode = "source";
   let writable = false;
@@ -557,6 +566,7 @@ function createMemoEditor(options) {
     keymap.of([{ key: "Tab", run: acceptCompletion }, { key: "Tab", run: listAwareIndent }, indentWithTab]),
     placeholder("마크다운으로 메모를 작성하세요. 채널 멤버와 실시간으로 함께 편집됩니다."),
     readOnly.of(EditorState.readOnly.of(true)),
+    measureFlip.of(measureFlipThemes[0]),
     renumberLists,
     liveModeField,
     foldField,
@@ -626,7 +636,11 @@ function createMemoEditor(options) {
       if (fontFamily) callbacks.parent.style.setProperty("--memo-font", fontFamily);
       callbacks.parent.style.setProperty("--memo-weight", fontWeight || "400");
       if (fontSize) callbacks.parent.style.setProperty("--memo-size", `${fontSize}px`);
-      view.requestMeasure();
+      measureFlipIndex ^= 1;
+      view.dispatch({
+        effects: measureFlip.reconfigure(measureFlipThemes[measureFlipIndex]),
+        annotations: Transaction.addToHistory.of(false),
+      });
     },
     setPalette(colors) {
       const set = (name, value) => {
@@ -667,6 +681,11 @@ function createMemoEditor(options) {
     },
     setRemoteCursors(cursors) {
       view.dispatch({ effects: setRemoteCursors.of(cursors || []), annotations: Transaction.addToHistory.of(false) });
+    },
+    getScrollTop: () => view.scrollDOM.scrollTop,
+    setScrollTop(top) {
+      // 문서를 막 넣은 직후엔 아직 높이가 안 잡혀 브라우저가 값을 0 으로 깎는다 → 레이아웃 뒤에 적용.
+      view.requestMeasure({ read: () => 0, write: () => { view.scrollDOM.scrollTop = top; } });
     },
     focus: () => view.focus(),
     destroy: () => view.destroy(),

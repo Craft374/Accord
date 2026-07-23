@@ -297,6 +297,32 @@ async function run() {
   await key("A", ["control"]);
   assert(await evaluate("memoEditor.getSelection().anchor !== memoEditor.getSelection().head"), "읽기 전용 문서도 선택할 수 있어야 함");
 
+  // 글자 크기를 바꾸면 CM6 가 줄 높이를 다시 재야 한다. 안 그러면 본문만 커지고 줄번호 거터는 옛 높이로 남아
+  // 서로 어긋난다(setTypography 의 theme 뒤집기 회귀 방지). 숨긴 창은 rAF 가 느려 잠깐 기다리며 확인한다.
+  const settle = async (source, ok) => {
+    let value = null;
+    for (let i = 0; i < 40; i++) {
+      await wait(100);
+      value = JSON.parse(await evaluate(source));
+      if (ok(value)) break;
+    }
+    return value;
+  };
+  const heights = `JSON.stringify([
+    document.querySelector('.cm-line').getBoundingClientRect().height,
+    document.querySelector('.cm-lineNumbers .cm-gutterElement:nth-child(2)').getBoundingClientRect().height,
+  ])`;
+  await evaluate(`memoEditor.reset(${JSON.stringify("하나\n둘\n셋")}); memoEditor.setReadOnly(false); memoEditor.setMode('source')`);
+  await evaluate("memoEditor.setTypography({ fontSize: 40 })");
+  const zoomed = await settle(heights, ([line, gutter]) => Math.abs(line - gutter) < 0.5);
+  assert(zoomed[0] > 30 && Math.abs(zoomed[0] - zoomed[1]) < 0.5, "글자 크기를 키우면 줄번호 거터 높이도 같이 커져야 함");
+  await evaluate("memoEditor.setTypography({ fontSize: 13 })");
+
+  // 마지막으로 보던 스크롤 위치를 되살리는 경로(메모방 재입장).
+  await evaluate(`memoEditor.reset(${JSON.stringify(scrollDoc)}); memoEditor.setReadOnly(false); memoEditor.setMode('source'); memoEditor.setScrollTop(300)`);
+  const restored = await settle("JSON.stringify(memoEditor.getScrollTop())", (top) => Math.abs(top - 300) < 5);
+  assert(Math.abs(restored - 300) < 5, "저장해 둔 스크롤 위치를 그대로 되살려야 함");
+
   assert(await evaluate("memoChanges.length > 0 && memoSelections.length > 0"), "변경과 선택 콜백이 발생해야 함");
   window.destroy();
   const result = `${passed} passed, 0 failed`;
