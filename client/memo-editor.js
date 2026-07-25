@@ -1,6 +1,6 @@
 import { EditorView, basicSetup } from "codemirror";
 import { Annotation, Compartment, EditorSelection, EditorState, StateEffect, StateField, Transaction } from "@codemirror/state";
-import { Decoration, ViewPlugin, WidgetType, keymap, placeholder } from "@codemirror/view";
+import { Decoration, ViewPlugin, WidgetType, keymap, lineNumbers, placeholder } from "@codemirror/view";
 import { indentWithTab } from "@codemirror/commands";
 import { acceptCompletion } from "@codemirror/autocomplete";
 import { HighlightStyle, syntaxHighlighting, syntaxTree } from "@codemirror/language";
@@ -16,13 +16,63 @@ const memoHighlightStyle = HighlightStyle.define([
   { tag: tags.strong, fontWeight: "bold" },
   { tag: tags.strikethrough, textDecoration: "line-through" },
   { tag: tags.processingInstruction, color: "var(--memo-color-marker, var(--warning))" },
+  { tag: tags.special(tags.content), backgroundColor: "var(--warning)", color: "#1a1a1a", borderRadius: "2px" },
+  { tag: tags.comment, opacity: "0.55" },
 ]);
+
+// 옵시디언 확장 인라인 문법(==하이라이트==, %%주석%%) — 표준 CommonMark/GFM 에 없어 Lezer 파서에 직접 얹는다.
+// Strikethrough(@lezer/markdown)의 델리미터 페어 방식을 그대로 따른다: 여는/닫는 마커를 addDelimiter 로 등록해
+// 파서가 짝을 찾게 하는 표준 idiom. 프리뷰(public/app.js)의 정규식 처리와 별개 구현이지만 같은 문법을 인식한다.
+const memoHighlightDelim = { resolve: "Highlight", mark: "HighlightMark" };
+const memoCommentDelim = { resolve: "Comment", mark: "CommentMark" };
+const memoInlineSyntax = {
+  defineNodes: [
+    { name: "Highlight", style: { "Highlight/...": tags.special(tags.content) } },
+    { name: "HighlightMark", style: tags.processingInstruction },
+    { name: "Comment", style: tags.comment },
+    { name: "CommentMark", style: tags.processingInstruction },
+  ],
+  parseInline: [
+    {
+      name: "Highlight",
+      parse(cx, next, pos) {
+        if (next !== 61 /* '=' */ || cx.char(pos + 1) !== 61 || cx.char(pos + 2) === 61) return -1;
+        const before = cx.slice(pos - 1, pos), after = cx.slice(pos + 2, pos + 3);
+        const spaceBefore = /\s|^$/.test(before), spaceAfter = /\s|^$/.test(after);
+        return cx.addDelimiter(memoHighlightDelim, pos, pos + 2, !spaceAfter, !spaceBefore);
+      },
+      after: "Emphasis",
+    },
+    {
+      name: "Comment",
+      parse(cx, next, pos) {
+        if (next !== 37 /* '%' */ || cx.char(pos + 1) !== 37) return -1;
+        return cx.addDelimiter(memoCommentDelim, pos, pos + 2, true, true);
+      },
+      before: "Escape",
+    },
+  ],
+};
 
 // "*" 를 괄호처럼 취급해 선택한 글자를 양쪽에서 감싸게 한다(closeBrackets 는 이미 basicSetup 에 포함됨,
 // 여기선 대상 문자만 languageData 로 추가). 별 3개는 감싸기를 세 번 반복 적용해 자연히 얻어진다.
 const memoCloseBrackets = EditorState.languageData.of(() => [
   { closeBrackets: { brackets: ["(", "[", "{", "'", '"', "*"] } },
 ]);
+
+// 선택 상태에서 '~' 를 누르면 취소선(~~..~~)으로 한 번에 감싼다. closeBrackets 의 self-매칭 방식은 한 글자만
+// 감싸(~text~) 두 번 눌러야 하므로 GFM 취소선엔 안 맞는다 — closeBrackets 와 같은 계층(EditorView.inputHandler)에
+// 직접 하나 더 얹어 '~' 이고 선택 영역이 있을 때만 가로챈다(그 외엔 false 를 돌려줘 평범한 입력으로 흘려보낸다).
+const memoStrikethroughInput = EditorView.inputHandler.of((view, from, to, insert) => {
+  if (insert !== "~" || from >= to || view.state.readOnly) return false;
+  const selected = view.state.sliceDoc(from, to);
+  view.dispatch({
+    changes: { from, to, insert: `~~${selected}~~` },
+    selection: EditorSelection.range(from + 2, from + 2 + selected.length),
+    userEvent: "input.type",
+  });
+  return true;
+});
 
 // 설정(탭키 마크다운 자동완성) 켬/꺼짐. 에디터 인스턴스와 무관한 전역 상태(문서엔 하나만 떠 있음).
 const memoAutocompleteState = { enabled: true };
@@ -222,6 +272,24 @@ class HorizontalRuleWidget extends WidgetType {
   ignoreEvent() { return true; }
 }
 
+// 표는 파이프 원문이 읽기 힘들어 커서가 밖에 있을 때만 실제 <table> 로 통째 교체한다(원문은 커서가 들어오면 자동 노출 —
+// atomicRanges 라 클릭/화살표가 경계에서 멈추고, 안으로 들어가면 이 위젯 자체가 사라져 원문이 보인다).
+// HTML 은 window.AccordMemoRender.table(public/app.js, 미리보기와 동일한 렌더러)로 만든다 — 두 번째 표 렌더러를 새로 안 만든다.
+class TableWidget extends WidgetType {
+  constructor(html) {
+    super();
+    this.html = html;
+  }
+  eq(other) { return other.html === this.html; }
+  toDOM() {
+    const wrap = document.createElement("div");
+    wrap.className = "cm-live-table";
+    wrap.innerHTML = this.html;
+    return wrap;
+  }
+  ignoreEvent() { return true; }
+}
+
 function selectionTouches(state, from, to) {
   return state.selection.ranges.some((range) => range.empty
     ? range.head >= from && range.head <= to
@@ -381,13 +449,19 @@ function liveDecorations(view) {
           if (!active) for (const mark of childNodes(node, "HeaderMark")) hide(mark.from, mark.to);
           return;
         }
-        if (node.name === "StrongEmphasis" || node.name === "Emphasis" || node.name === "Strikethrough") {
-          const cls = node.name === "StrongEmphasis" ? "cm-live-strong" : node.name === "Emphasis" ? "cm-live-em" : "cm-live-strike";
+        if (node.name === "StrongEmphasis" || node.name === "Emphasis" || node.name === "Strikethrough" || node.name === "Highlight") {
+          const cls = node.name === "StrongEmphasis" ? "cm-live-strong" : node.name === "Emphasis" ? "cm-live-em"
+            : node.name === "Strikethrough" ? "cm-live-strike" : "cm-live-highlight";
           add(Decoration.mark({ class: cls }).range(node.from, node.to));
           if (!active) {
-            const marker = node.name === "Strikethrough" ? "StrikethroughMark" : "EmphasisMark";
+            const marker = node.name === "Strikethrough" ? "StrikethroughMark" : node.name === "Highlight" ? "HighlightMark" : "EmphasisMark";
             for (const mark of childNodes(node, marker)) hide(mark.from, mark.to);
           }
+          return;
+        }
+        // 주석(%%...%%)은 옵시디언처럼 편집 중엔 흐리게 보이고(memoHighlightStyle의 tags.comment), 미리보기에서만 사라진다.
+        if (node.name === "Comment") {
+          add(Decoration.mark({ class: "cm-live-comment" }).range(node.from, node.to));
           return;
         }
         if (node.name === "InlineCode") {
@@ -471,6 +545,17 @@ function liveDecorations(view) {
               add(Decoration.line({ class: "cm-live-code-fence" }).range(lastLine.from));
             }
           }
+          // 문법 강조 — public/app.js 의 highlightTokens 를 window.AccordMemoRender 브릿지로 그대로 재사용한다
+          // (미리보기·채팅과 같은 토크나이저, CM6 쪽에 두 번째 파서를 새로 안 만든다).
+          const codeText = childNodes(node, "CodeText")[0];
+          if (codeText && window.AccordMemoRender?.tokens) {
+            const info = childNodes(node, "CodeInfo")[0];
+            const lang = info ? state.doc.sliceString(info.from, info.to) : "";
+            const code = state.doc.sliceString(codeText.from, codeText.to);
+            for (const t of window.AccordMemoRender.tokens(code, lang)) {
+              add(Decoration.mark({ class: `hl-${t.cls}` }).range(codeText.from + t.from, codeText.from + t.to));
+            }
+          }
         }
       },
     });
@@ -514,6 +599,32 @@ const livePlugin = ViewPlugin.fromClass(class {
 }, { decorations: (value) => value.decorations });
 
 const liveAtomicRanges = EditorView.atomicRanges.of((view) => view.plugin(livePlugin)?.atomic || Decoration.none);
+
+// 표는 여러 줄(줄바꿈 포함)을 통째로 위젯으로 바꾼다 — CM6 는 줄바꿈을 포함하는 replace 데코레이션을
+// ViewPlugin 이 아니라 StateField 로만 허용한다("Decorations that replace line breaks may not be
+// specified via plugins"). 그래서 다른 라이브 데코레이션(livePlugin)과 분리된 별도 StateField 로 둔다.
+function tableDecorations(state) {
+  if (!state.field(liveModeField)) return Decoration.none;
+  const ranges = [];
+  syntaxTree(state).iterate({
+    enter(ref) {
+      if (ref.name !== "Table" || selectionTouches(state, ref.from, ref.to)) return;
+      const rawRows = state.doc.sliceString(ref.from, ref.to).split("\n");
+      const html = window.AccordMemoRender?.table?.(rawRows) || "";
+      ranges.push(Decoration.replace({ widget: new TableWidget(html), block: true }).range(ref.from, ref.to));
+    },
+  });
+  return Decoration.set(ranges, true);
+}
+const tableField = StateField.define({
+  create: (state) => tableDecorations(state),
+  update: (value, transaction) => {
+    const modeChanged = transaction.effects.some((effect) => effect.is(setLiveMode));
+    return (transaction.docChanged || transaction.selection || modeChanged) ? tableDecorations(transaction.state) : value;
+  },
+  provide: (field) => EditorView.decorations.from(field),
+});
+const tableAtomicRanges = EditorView.atomicRanges.of((view) => view.state.field(tableField));
 
 function operationsToChanges(ops) {
   const changes = [];
@@ -559,10 +670,15 @@ function createMemoEditor(options) {
     basicSetup,
     syntaxHighlighting(memoHighlightStyle),
     memoCloseBrackets,
+    memoStrikethroughInput,
     memoAutocomplete,
-    markdown({ base: markdownLanguage }),
+    markdown({ base: markdownLanguage, extensions: [memoInlineSyntax] }),
     EditorView.lineWrapping,
     EditorState.tabSize.of(2),
+    // 줄번호가 9→10줄, 99→100줄처럼 자릿수가 늘어날 때 거터 폭이 넓어지며 기존 숫자들이 옆으로 밀리던 문제.
+    // 3자리로 항상 고정 폭을 예약해 두면(옵시디언과 동일한 체감) 그 안에서는 밀림이 없다.
+    // ponytail: 1000줄을 넘는 메모는 다시 밀린다 — 필요해지면 자릿수만 늘리면 됨.
+    lineNumbers({ formatNumber: (n) => String(n).padStart(3, String.fromCharCode(160)) }),
     keymap.of([{ key: "Tab", run: acceptCompletion }, { key: "Tab", run: listAwareIndent }, indentWithTab]),
     placeholder("마크다운으로 메모를 작성하세요. 채널 멤버와 실시간으로 함께 편집됩니다."),
     readOnly.of(EditorState.readOnly.of(true)),
@@ -574,6 +690,8 @@ function createMemoEditor(options) {
     remoteCursorField,
     livePlugin,
     liveAtomicRanges,
+    tableField,
+    tableAtomicRanges,
     EditorView.domEventHandlers({
       mousedown(event) {
         if (!event.ctrlKey && !event.metaKey) return false;

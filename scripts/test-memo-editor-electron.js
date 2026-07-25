@@ -323,6 +323,43 @@ async function run() {
   const restored = await settle("JSON.stringify(memoEditor.getScrollTop())", (top) => Math.abs(top - 300) < 5);
   assert(Math.abs(restored - 300) < 5, "저장해 둔 스크롤 위치를 그대로 되살려야 함");
 
+  // 취소선 단축키: 선택 후 ~ 한 번으로 ~~text~~ 로 감싸져야 함(closeBrackets 는 한 글자만 감싸 두 번 눌러야 함).
+  await evaluate("memoEditor.reset('hello world'); memoEditor.setReadOnly(false); memoEditor.setSelection(0, 5); memoEditor.focus()");
+  await type("~");
+  assert(await evaluate("memoEditor.getText()") === "~~hello~~ world", "선택 후 ~ 한 번으로 취소선(~~..~~)이 감싸져야 함");
+
+  // 하이라이트(==)·주석(%%) 라이브 데코레이션 — Lezer 커스텀 인라인 확장이 실제로 파싱/렌더되는지.
+  await evaluate(`memoEditor.reset(${JSON.stringify("==강조== 그리고 %%숨김%% 끝")}); memoEditor.setReadOnly(false); memoEditor.setMode('live'); memoEditor.setSelection(0)`);
+  await wait(80);
+  const marks = JSON.parse(await evaluate(`JSON.stringify({
+    highlight: !!document.querySelector('.cm-live-highlight'),
+    comment: !!document.querySelector('.cm-live-comment'),
+  })`));
+  assert(marks.highlight, "==강조== 가 라이브 모드에서 하이라이트로 표시되어야 함");
+  assert(marks.comment, "%%주석%% 이 라이브 모드에서 흐리게 표시되어야 함");
+
+  // 코드블록 문법강조 — window.AccordMemoRender.tokens 브릿지(이 픽스처의 스텁)를 실제로 호출하는지.
+  await evaluate(`memoEditor.reset(${JSON.stringify("```js\nfunction f() { return 1; }\n```")}); memoEditor.setReadOnly(false); memoEditor.setMode('live'); memoEditor.setSelection(0)`);
+  await wait(80);
+  assert(await evaluate("!!document.querySelector('.cm-live-code-block .hl-keyword')"), "라이브 모드 코드블록이 브릿지 토큰으로 문법강조되어야 함");
+
+  // 표 — 커서가 밖에 있으면 렌더된 <table> 위젯, 커서가 안으로 들어가면 원문(파이프)이 보여야 함.
+  const tableDoc = "| a | b |\n| --- | --- |\n| 1 | 2 |\n\n끝";
+  await evaluate(`memoEditor.reset(${JSON.stringify(tableDoc)}); memoEditor.setReadOnly(false); memoEditor.setMode('live'); memoEditor.setSelection(memoEditor.getText().length)`);
+  await wait(80);
+  assert(await evaluate("!!document.querySelector('.cm-live-table table.md-table')"), "커서가 밖에 있으면 표가 렌더된 위젯으로 보여야 함");
+  await evaluate("memoEditor.setSelection(2)");
+  await wait(80);
+  assert(await evaluate("!document.querySelector('.cm-live-table')"), "커서가 표 안으로 들어가면 원문이 보여야 함");
+
+  // 줄번호 자릿수 고정폭 — 9줄→11줄로 늘어나도 거터 문자열 폭(3자리, NBSP 패딩)이 그대로여야 함.
+  const manyLines = Array.from({ length: 11 }, (_, i) => `줄${i + 1}`).join("\n");
+  await evaluate(`memoEditor.reset(${JSON.stringify(manyLines)}); memoEditor.setReadOnly(false); memoEditor.setMode('source')`);
+  await wait(80);
+  const gutterLens = JSON.parse(await evaluate(`JSON.stringify(Array.from(document.querySelectorAll('.cm-lineNumbers .cm-gutterElement'))
+    .filter((el) => el.style.visibility !== 'hidden').map((el) => el.textContent.length))`));
+  assert(gutterLens.length > 0 && gutterLens.every((n) => n === 3), "줄번호가 항상 3자리 고정폭(NBSP 패딩)으로 표시되어야 함");
+
   assert(await evaluate("memoChanges.length > 0 && memoSelections.length > 0"), "변경과 선택 콜백이 발생해야 함");
   window.destroy();
   const result = `${passed} passed, 0 failed`;

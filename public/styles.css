@@ -1387,6 +1387,28 @@ body.memo-open .log-panel {
 .memo-editor .cm-live-strong .cm-live-em,
 .memo-editor .cm-live-em .cm-live-strong { color: var(--memo-color-strongem, inherit); }
 .memo-editor .cm-live-strike { text-decoration: line-through; color: var(--muted); }
+.memo-editor .cm-live-highlight { background: var(--warning); color: #1a1a1a; border-radius: 2px; }
+.memo-editor .cm-live-comment { opacity: 0.55; }
+.memo-editor .cm-live-table table.md-table,
+.markdown-body table.md-table {
+  border-collapse: collapse;
+  margin: 0.6em 0;
+  font-size: 0.92em;
+}
+.memo-editor .cm-live-table table.md-table th,
+.memo-editor .cm-live-table table.md-table td,
+.markdown-body table.md-table th,
+.markdown-body table.md-table td {
+  border: 1px solid var(--line);
+  padding: 4px 10px;
+}
+.memo-editor .cm-live-table table.md-table th,
+.markdown-body table.md-table th { background: var(--bg-surface); color: var(--heading); }
+.memo-editor .cm-live-code-block .hl-keyword { color: #c678dd; }
+.memo-editor .cm-live-code-block .hl-string { color: #98c379; }
+.memo-editor .cm-live-code-block .hl-number { color: #d19a66; }
+.memo-editor .cm-live-code-block .hl-comment { color: #7f848e; font-style: italic; }
+.memo-editor .cm-live-code-block .hl-fn { color: #61afef; }
 .memo-editor .cm-live-inline-code {
   padding: 0.08em 0.28em;
   border-radius: 4px;
@@ -2065,6 +2087,35 @@ body.hide-draw-hint .draw-hint { display: none; }
 }
 .markdown-body strong { color: var(--heading); font-weight: 700; }
 .markdown-body del { color: var(--muted); }
+.markdown-body mark { background: var(--warning); color: #1a1a1a; padding: 0 0.15em; border-radius: 2px; }
+.markdown-body .md-tag,
+.markdown-body .md-wikilink {
+  color: var(--blurple);
+  background: var(--bg-surface);
+  border-radius: 4px;
+  padding: 0 0.35em;
+}
+.markdown-body .md-embed { color: var(--muted); font-style: italic; }
+.markdown-body .md-callout {
+  margin: 0.5em 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border-left: 3px solid var(--blurple);
+  background: var(--bg-surface);
+}
+.markdown-body .md-callout-title { margin: 0 0 4px; font-weight: 700; color: var(--heading); }
+.markdown-body .md-callout p { margin: 0.2em 0; }
+.markdown-body .md-callout-warning,
+.markdown-body .md-callout-caution { border-left-color: var(--warning); }
+.markdown-body .md-callout-danger,
+.markdown-body .md-callout-error,
+.markdown-body .md-callout-bug { border-left-color: #f04747; }
+.markdown-body .md-callout-success,
+.markdown-body .md-callout-check,
+.markdown-body .md-callout-done { border-left-color: #43b581; }
+.markdown-body .md-callout-tip,
+.markdown-body .md-callout-hint,
+.markdown-body .md-callout-example { border-left-color: #faa61a; }
 /* 체크박스 목록 — 전역 input[type=checkbox] 규칙(auto/native)보다 특이도가 높아 크기가 살아남는다 */
 .markdown-body li.md-task { list-style: none; }
 .markdown-body .md-check {

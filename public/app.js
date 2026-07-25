@@ -9529,25 +9529,27 @@ const HL_CFG = (() => {
 })();
 const HL_DEFAULT = { line: ["//", "#"], block: ["/*", "*/"], hash: true, keywords: new Set() };
 
-function highlightCode(code, lang) {
+// 코드 문자열을 훑어 {from,to,cls} 토큰 범위를 돌려준다(HTML 문자열이 아니라 오프셋).
+// highlightCode(미리보기/채팅 HTML)와 라이브 모드 CM6 데코레이션(client/memo-editor.js, window.AccordMemoRender 브릿지)이
+// 이 하나의 토크나이저를 공유한다 — 두 번째 파서를 새로 만들지 않기 위함.
+function highlightTokens(code, lang) {
   const cfg = HL_CFG[(lang || "").toLowerCase()] || HL_DEFAULT;
   const src = String(code || "");
   const n = src.length;
   let i = 0;
-  let out = "";
-  const wrap = (cls, text) => `<span class="hl-${cls}">${escapeHtmlText(text)}</span>`;
+  const tokens = [];
   const idStart = (c) => /[A-Za-z_$]/.test(c);
   const idPart = (c) => /[A-Za-z0-9_$]/.test(c);
   while (i < n) {
     const c = src[i];
     // 줄 주석
     const lc = cfg.line.find((tok) => src.startsWith(tok, i));
-    if (lc) { let j = src.indexOf("\n", i); if (j < 0) j = n; out += wrap("comment", src.slice(i, j)); i = j; continue; }
+    if (lc) { let j = src.indexOf("\n", i); if (j < 0) j = n; tokens.push({ from: i, to: j, cls: "comment" }); i = j; continue; }
     // 블록 주석
     if (cfg.block && src.startsWith(cfg.block[0], i)) {
       let j = src.indexOf(cfg.block[1], i + cfg.block[0].length);
       j = j < 0 ? n : j + cfg.block[1].length;
-      out += wrap("comment", src.slice(i, j)); i = j; continue;
+      tokens.push({ from: i, to: j, cls: "comment" }); i = j; continue;
     }
     // 문자열
     if (c === '"' || c === "'" || c === "`") {
@@ -9558,28 +9560,40 @@ function highlightCode(code, lang) {
         if (src[j] === "\n" && c !== "`") break;
         j++;
       }
-      out += wrap("string", src.slice(i, j)); i = j; continue;
+      tokens.push({ from: i, to: j, cls: "string" }); i = j; continue;
     }
     // 숫자
     if (/[0-9]/.test(c) || (c === "." && /[0-9]/.test(src[i + 1] || ""))) {
       let j = i; while (j < n && /[0-9a-fA-FxXbBoO._]/.test(src[j])) j++;
-      out += wrap("number", src.slice(i, j)); i = j; continue;
+      tokens.push({ from: i, to: j, cls: "number" }); i = j; continue;
     }
     // 식별자/키워드
     if (idStart(c)) {
       let j = i; while (j < n && idPart(src[j])) j++;
       const word = src.slice(i, j);
       const key = cfg.ci ? word.toLowerCase() : word;
-      if (cfg.keywords.has(key)) out += wrap("keyword", word);
+      if (cfg.keywords.has(key)) tokens.push({ from: i, to: j, cls: "keyword" });
       else {
         // 뒤에 '(' 가 오면 함수 호출로 취급
         let k = j; while (k < n && (src[k] === " " || src[k] === "\t")) k++;
-        out += src[k] === "(" ? wrap("fn", word) : escapeHtmlText(word);
+        if (src[k] === "(") tokens.push({ from: i, to: j, cls: "fn" });
       }
       i = j; continue;
     }
-    out += escapeHtmlText(c); i++;
+    i++;
   }
+  return tokens;
+}
+function highlightCode(code, lang) {
+  const src = String(code || "");
+  let out = "";
+  let last = 0;
+  for (const t of highlightTokens(src, lang)) {
+    out += escapeHtmlText(src.slice(last, t.from));
+    out += `<span class="hl-${t.cls}">${escapeHtmlText(src.slice(t.from, t.to))}</span>`;
+    last = t.to;
+  }
+  out += escapeHtmlText(src.slice(last));
   return out;
 }
 
@@ -13847,7 +13861,7 @@ function escapeHtmlText(str) {
 }
 
 function renderMarkdown(src) {
-  const rawSrc = String(src || "");
+  const rawSrc = String(src || "").replace(/\r\n?/g, "\n");
   // 1) 코드펜스(``` 또는 ```lang)를 먼저 빼내 보호. 언어 태그가 있으면 구문 강조에 쓴다.
   const codeBlocks = [];
   let text = rawSrc.replace(
@@ -13862,23 +13876,39 @@ function renderMarkdown(src) {
   text = escapeHtmlText(text);
   // 여러 줄을 한 번에 색칠해도 각 줄의 목록·제목·인용 문법을 먼저 읽을 수 있게 한다.
   text = expandMemoMultilineColors(text);
+  // 옵시디언 주석(%% ... %%)은 렌더링 결과에서 통째로 사라진다.
+  text = text.replace(/%%[\s\S]*?%%/g, "");
 
-  const lines = text.split("\n");
-  const html = [];
-  let inQuote = false;
-  const closeQuote = () => { if (inQuote) { html.push("</blockquote>"); inQuote = false; } };
+  // 참조 링크 정의([ref]: url "title")는 화면에 안 보이고 링크 해석에만 쓰인다 — 본문에서 걷어낸다.
+  const refMap = {};
+  const lines = text.split("\n").filter((line) => {
+    const ref = line.match(/^[ \t]{0,3}\[([^\]]+)\]:[ \t]*(\S+)(?:[ \t]+&quot;([^&]*)&quot;)?[ \t]*$/);
+    if (!ref) return true;
+    refMap[ref[1].toLowerCase()] = { url: ref[2], title: ref[3] || "" };
+    return false;
+  });
+  memoRefMap = refMap;
   // 체크박스·접기 식별자는 문서 전체를 통틀어 나타난 순서대로 번호를 매긴다.
   // (미리보기 클릭 → 원문의 N번째 항목을 찾아 토글/접기 하기 위한 안정적 인덱스)
   const counters = { cb: 0, fold: 0 };
   const foldSet = (state.memo && state.memo.folds) || null;
+  return renderMemoBlocks(lines, codeBlocks, counters, foldSet).join("\n");
+}
 
+// [text][ref] 참조 링크가 가리키는 [ref]: url "title" 정의. renderMarkdown 호출마다 새로 채워진다
+// (동시 호출이 없는 단일 스레드 렌더러라 매개변수로 매 함수마다 꿰지 않고 모듈 상태로 공유 — 목록/인용 재귀 전체에서 참조).
+let memoRefMap = {};
+
+// 줄 배열을 블록(코드/목록/인용/표/제목/문단)으로 렌더한다. 인용문 안쪽 내용을 다시 이 함수로
+// 재귀 호출해 임의 깊이로 중첩되는 '>' 를 지원한다(콜아웃도 인용의 특수한 경우로 여기서 갈라진다).
+function renderMemoBlocks(lines, codeBlocks, counters, foldSet) {
+  const html = [];
   for (let i = 0; i < lines.length; i++) {
     const coloredLine = unwrapMemoBlockColor(lines[i]);
     const line = coloredLine.text;
     const blockColor = coloredLine.color;
     const codeMatch = line.match(/^ CODE(\d+) $/);
     if (codeMatch) {
-      closeQuote();
       const blk = codeBlocks[Number(codeMatch[1])];
       const langTag = blk.lang ? `<span class="md-code-lang">${escapeHtmlText(blk.lang)}</span>` : "";
       html.push(`<pre class="md-code"${blk.lang ? ` data-lang="${escapeHtmlText(blk.lang)}"` : ""}>${langTag}<code>${highlightCode(blk.code, blk.lang)}</code></pre>`);
@@ -13895,27 +13925,47 @@ function renderMarkdown(src) {
         items.push(it);
         j++;
       }
-      closeQuote();
       html.push(renderMemoList(items, counters, foldSet));
       i = j - 1;
       continue;
     }
-    if (/^\s*$/.test(line)) { closeQuote(); continue; }
-    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { closeQuote(); html.push("<hr />"); continue; }
+    // 인용: 연속된 '>' 줄을 모아 한 단계 벗긴 뒤 재귀 렌더 — 그 안에 다시 '>' 가 남아 있으면
+    // 그만큼 더 중첩된다(3단계 인용, 콜아웃, 인용 속 목록 등이 여기서 자연히 해결됨).
+    if (isMemoQuoteLine(line)) {
+      const inner = [];
+      let j = i;
+      while (j < lines.length) {
+        const peek = unwrapMemoBlockColor(lines[j]).text;
+        if (!isMemoQuoteLine(peek)) break;
+        inner.push(stripMemoQuoteLevel(peek));
+        j++;
+      }
+      html.push(renderMemoQuote(inner, codeBlocks, counters, foldSet));
+      i = j - 1;
+      continue;
+    }
+    // 표: 헤더 줄 다음이 구분선(---/:--/--:)이면 그 뒤 이어지는 줄들을 본문 행으로 모은다.
+    if (line.includes("|") && i + 1 < lines.length && isMemoTableDelim(unwrapMemoBlockColor(lines[i + 1]).text)) {
+      const rows = [line];
+      let j = i + 1;
+      while (j < lines.length) {
+        const peek = unwrapMemoBlockColor(lines[j]).text;
+        if (!peek.includes("|") || /^\s*$/.test(peek)) break;
+        rows.push(peek);
+        j++;
+      }
+      html.push(renderMemoTable(rows));
+      i = j - 1;
+      continue;
+    }
+    if (/^\s*$/.test(line)) continue;
+    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { html.push("<hr />"); continue; }
 
     const heading = line.match(/^(#{1,6})\s+(.*)$/);
     if (heading) {
-      closeQuote();
       html.push(`<h${heading[1].length}${memoBlockStyle(blockColor)}>${inlineMarkdown(heading[2])}</h${heading[1].length}>`);
       continue;
     }
-    const quote = line.match(/^&gt;\s?(.*)$/); // '>' 는 이미 이스케이프됨
-    if (quote) {
-      if (!inQuote) { html.push("<blockquote>"); inQuote = true; }
-      html.push(`<p${memoBlockStyle(blockColor)}>${inlineMarkdown(quote[1])}</p>`);
-      continue;
-    }
-    closeQuote();
     // 일반 문단 — 앞쪽 탭/공백 들여쓰기를 미리보기에도 그대로 반영(옵시디언처럼).
     const indented = line.match(/^([ \t]+)(\S[\s\S]*)$/);
     if (indented) {
@@ -13925,8 +13975,72 @@ function renderMarkdown(src) {
       html.push(`<p${memoBlockStyle(blockColor)}>${inlineMarkdown(line)}</p>`);
     }
   }
-  closeQuote();
-  return html.join("\n");
+  return html;
+}
+
+// 콜아웃(> [!note] 등) 종류별 아이콘·기본 제목. 모르는 종류는 📌+원래 이름으로 대체(임의 종류 허용).
+const MEMO_CALLOUT_META = {
+  note: { icon: "📝", label: "Note" }, info: { icon: "ℹ️", label: "Info" },
+  tip: { icon: "💡", label: "Tip" }, hint: { icon: "💡", label: "Tip" },
+  warning: { icon: "⚠️", label: "Warning" }, caution: { icon: "⚠️", label: "Warning" },
+  danger: { icon: "🚫", label: "Danger" }, error: { icon: "🚫", label: "Danger" },
+  success: { icon: "✅", label: "Success" }, check: { icon: "✅", label: "Success" }, done: { icon: "✅", label: "Success" },
+  question: { icon: "❓", label: "Question" }, faq: { icon: "❓", label: "Question" },
+  quote: { icon: "❝", label: "Quote" }, cite: { icon: "❝", label: "Quote" },
+  example: { icon: "📋", label: "Example" }, bug: { icon: "🐞", label: "Bug" }, todo: { icon: "📌", label: "Todo" },
+};
+
+// line 은 이미 HTML 이스케이프되어 '>' 가 '&gt;' 로 들어온다.
+function isMemoQuoteLine(line) { return /^&gt;[ \t]?/.test(line); }
+function stripMemoQuoteLevel(line) { return line.replace(/^&gt;[ \t]?/, ""); }
+
+function renderMemoQuote(inner, codeBlocks, counters, foldSet) {
+  const first = inner[0] || "";
+  const callout = first.match(/^\[!([a-zA-Z가-힣_-]+)\]([-+])?[ \t]?(.*)$/);
+  if (callout) {
+    const type = callout[1].toLowerCase();
+    const meta = MEMO_CALLOUT_META[type] || { icon: "📌", label: callout[1] };
+    const title = callout[3] ? inlineMarkdown(callout[3]) : meta.label;
+    const body = renderMemoBlocks(inner.slice(1), codeBlocks, counters, foldSet).join("\n");
+    return `<div class="md-callout md-callout-${/^[a-z-]+$/.test(type) ? type : "note"}"><p class="md-callout-title">${meta.icon} ${title}</p>${body}</div>`;
+  }
+  const body = renderMemoBlocks(inner, codeBlocks, counters, foldSet).join("\n");
+  return `<blockquote>${body}</blockquote>`;
+}
+
+// '|'로 나눈 표 한 줄을 셀 배열로. 이스케이프된 '\|' 는 칸 구분자로 세지 않는다.
+function splitMemoTableRow(line) {
+  let s = line.trim();
+  if (s.startsWith("|")) s = s.slice(1);
+  if (s.endsWith("|") && !s.endsWith("\\|")) s = s.slice(0, -1);
+  const cells = [];
+  let cur = "";
+  for (let k = 0; k < s.length; k++) {
+    if (s[k] === "\\" && s[k + 1] === "|") { cur += "|"; k++; continue; }
+    if (s[k] === "|") { cells.push(cur.trim()); cur = ""; continue; }
+    cur += s[k];
+  }
+  cells.push(cur.trim());
+  return cells;
+}
+function isMemoTableDelim(line) {
+  const cells = splitMemoTableRow(line);
+  return cells.length > 0 && cells.every((c) => /^:?-{1,}:?$/.test(c));
+}
+// 표 HTML 생성 — 라이브 모드(client/memo-editor.js)도 window.AccordMemoRender.table 로 이 함수를 그대로 쓴다.
+function renderMemoTable(rows) {
+  const header = splitMemoTableRow(rows[0]);
+  const aligns = splitMemoTableRow(rows[1]).map((c) => {
+    const left = c.startsWith(":"), right = c.endsWith(":");
+    return left && right ? "center" : right ? "right" : left ? "left" : "";
+  });
+  const style = (i) => (aligns[i] ? ` style="text-align:${aligns[i]}"` : "");
+  const thead = header.map((c, i) => `<th${style(i)}>${inlineMarkdown(c)}</th>`).join("");
+  const tbody = rows.slice(2).map((row) => {
+    const cells = splitMemoTableRow(row);
+    return `<tr>${header.map((_, i) => `<td${style(i)}>${inlineMarkdown(cells[i] || "")}</td>`).join("")}</tr>`;
+  }).join("");
+  return `<table class="md-table"><thead><tr>${thead}</tr></thead><tbody>${tbody}</tbody></table>`;
 }
 
 function expandMemoMultilineColors(text) {
@@ -14042,16 +14156,39 @@ function renderMemoListNodes(nodes, counters, foldSet) {
 function inlineMarkdown(str) {
   const links = [];
   const colors = [];
+  const escapes = [];
+  // 이스케이프(\* \_ \# 등)를 가장 먼저 자리표시자로 빼내 다른 인라인 문법이 건드리지 못하게 한다.
+  let out = str.replace(/\\([\\`*_{}[\]()#+.!>~=|-])/g, (m, ch) => {
+    escapes.push(ch);
+    return `\u0001X${escapes.length - 1}\u0001`;
+  });
   // 색 구문을 링크·강조보다 먼저 자리표시자로 보호한다. URL 뒤의 {/색}이 링크 주소에
   // 붙거나, 색 태그 사이의 **굵게** 같은 마크다운이 태그 경계를 깨는 문제를 막는다.
-  let out = str.replace(/\{색:(#[0-9a-fA-F]{3,8}|[a-zA-Z]{1,20})\}([\s\S]*?)\{\/색\}/g,
+  out = out.replace(/\{색:(#[0-9a-fA-F]{3,8}|[a-zA-Z]{1,20})\}([\s\S]*?)\{\/색\}/g,
     (m, color, inner) => {
       colors.push({ color, inner });
       return `\u0001C${colors.length - 1}\u0001`;
     });
-  // 명시적 링크 [text](http…)를 먼저 자리표시자로 보호
-  out = out.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (m, label, url) => {
-    links.push(`<a href="${url}" target="_blank" rel="noopener">${label}</a>`);
+  // 이미지 ![alt](url "title")
+  out = out.replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)(?:\s+&quot;([^&]*)&quot;)?\)/g, (m, alt, url, title) => {
+    links.push(`<img src="${url}" alt="${alt}"${title ? ` title="${title}"` : ""} loading="lazy" />`);
+    return `\u0001L${links.length - 1}\u0001`;
+  });
+  // 명시적 링크 [text](url "title")
+  out = out.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)(?:\s+&quot;([^&]*)&quot;)?\)/g, (m, label, url, title) => {
+    links.push(`<a href="${url}" target="_blank" rel="noopener"${title ? ` title="${title}"` : ""}>${label}</a>`);
+    return `\u0001L${links.length - 1}\u0001`;
+  });
+  // 참조 링크 [text][ref] / [text][] — memoRefMap 은 renderMarkdown 이 채워 둔다.
+  out = out.replace(/\[([^\]]+)\]\[([^\]]*)\]/g, (m, label, ref) => {
+    const target = memoRefMap[(ref || label).toLowerCase()];
+    if (!target) return m;
+    links.push(`<a href="${target.url}" target="_blank" rel="noopener"${target.title ? ` title="${target.title}"` : ""}>${label}</a>`);
+    return `\u0001L${links.length - 1}\u0001`;
+  });
+  // 명시적 자동 링크 <https://...>
+  out = out.replace(/&lt;(https?:\/\/[^\s<>]+)&gt;/g, (m, url) => {
+    links.push(`<a href="${url}" target="_blank" rel="noopener">${url}</a>`);
     return `\u0001L${links.length - 1}\u0001`;
   });
   // 맨 URL 자동 링크
@@ -14060,18 +14197,43 @@ function inlineMarkdown(str) {
     return `\u0001L${links.length - 1}\u0001`;
   });
   out = out.replace(/`([^`]+)`/g, "<code>$1</code>");
+  out = out.replace(/\*\*\*([^*]+)\*\*\*/g, "<strong><em>$1</em></strong>");
+  out = out.replace(/___([^_]+)___/g, "<strong><em>$1</em></strong>");
   out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   out = out.replace(/__([^_]+)__/g, "<strong>$1</strong>");
   out = out.replace(/\*([^*\s][^*]*?)\*/g, "<em>$1</em>");
   out = out.replace(/(^|[^a-zA-Z0-9])_([^_\s][^_]*?)_(?=[^a-zA-Z0-9]|$)/g, "$1<em>$2</em>");
   out = out.replace(/~~([^~]+)~~/g, "<del>$1</del>");
+  out = out.replace(/==([^=]+)==/g, "<mark>$1</mark>");
+  // 임베드/위키링크: 이 앱은 메모가 방마다 하나뿐이라 실제 이동 대상이 없다 — 안내용 스타일만 입힌다.
+  out = out.replace(/!\[\[([^\]]+)\]\]/g, (m, target) => `<span class="md-embed">🖼 ${target.split("|")[0].split("#")[0]}</span>`);
+  out = out.replace(/\[\[([^\]]+)\]\]/g, (m, target) => {
+    const [path, alias] = target.split("|");
+    return `<span class="md-wikilink">${alias || path.split("#")[0]}</span>`;
+  });
+  // 태그 #tag(URL 은 위에서 이미 자리표시자로 보호됨)
+  out = out.replace(/(^|[\s(])#([a-zA-Z0-9가-힣_/-]+)/g, (m, pre, tag) => `${pre}<span class="md-tag">#${tag}</span>`);
+  // 화이트리스트 인라인 HTML — 속성 없이 이 4개 태그만, XSS 표면을 늘리지 않기 위해 그 외는 절대 허용 안 함.
+  // details/summary 는 블록 요소라 줄 단위 <p> 감싸기와 맞지 않아(여러 줄에 걸치면 태그가 깨짐) 제외.
+  out = out.replace(/&lt;(\/?)(u|mark|sub|sup)&gt;/g, "<$1$2>");
   out = out.replace(/\u0001L(\d+)\u0001/g, (m, i) => links[Number(i)]);
   out = out.replace(/\u0001C(\d+)\u0001/g, (m, i) => {
     const entry = colors[Number(i)];
     return entry ? `<span style="color:${entry.color}">${inlineMarkdown(entry.inner)}</span>` : m;
   });
+  out = out.replace(/\u0001X(\d+)\u0001/g, (m, i) => escapes[Number(i)]);
   return out;
 }
+
+// client/memo-editor.js(CM6 라이브 모드)가 미리보기와 같은 결과를 내도록 렌더러 일부를 공유한다.
+// memo-editor.bundle.js 는 이 스크립트보다 먼저 로드되므로, 여기서 정의한 함수는 실제 호출 시점(뷰 갱신)에만
+// window.AccordMemoRender 로 읽힌다 — 번들 쪽에서 모듈 최상단 상수로 캐시해 두면 안 된다.
+window.AccordMemoRender = {
+  tokens: highlightTokens,
+  // 라이브 모드는 원문(비이스케이프) 그대로 넘기므로 renderMemoTable 이 기대하는 escapeHtmlText 를 여기서 해 준다
+  // (미리보기 경로는 renderMarkdown 이 문서 전체를 한 번에 이스케이프해서 넘기므로 이중 이스케이프를 피해 별도 함수로 둔다).
+  table: (rawRows) => renderMemoTable(rawRows.map(escapeHtmlText)),
+};
 
 function openChannelModal() {
   if (!dom.channelModal) return;

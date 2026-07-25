@@ -16,6 +16,15 @@
     window.memoChanges = [];
     window.memoSelections = [];
     window.memoOpenedLinks = [];
+    // public/app.js 전체를 로드하지 않고, 라이브 모드가 브릿지를 올바르게 호출하는지만 확인하는 가벼운 스텁.
+    window.AccordMemoRender = {
+      tokens: (code, lang) => {
+        if (lang !== "js") return [];
+        const idx = code.indexOf("return");
+        return idx < 0 ? [] : [{ from: idx, to: idx + 6, cls: "keyword" }];
+      },
+      table: (rows) => `<table class="md-table" data-rows="${rows.length}"><tbody><tr><td>stub</td></tr></tbody></table>`,
+    };
     window.memoEditor = window.AccordMemoEditor.create({
       parent: document.querySelector("#memoEditor"),
       onChange: (text) => window.memoChanges.push(text),
