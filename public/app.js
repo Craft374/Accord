@@ -14786,11 +14786,17 @@ function updateControls() {
   updateProgramAudioControls();
   updateSetupStatus();
 
-  // 우상단 통화 상태 아이콘(화면·소리공유는 설정으로 숨길 수 있음, 마이크는 통화 중이면 항상 표시).
+  // 우상단 통화 상태 아이콘(통화 중이면 항상 표시, 설정에서 전체를 껐다 켤 수 있음).
   if (dom.callStatusIcons) {
     dom.callStatusIcons.hidden = !inRoom;
-    dom.callIconScreen.hidden = !sharingScreen || state.callStatusIconsHidden;
-    dom.callIconSound.hidden = !state.systemSharing || state.callStatusIconsHidden;
+    dom.callIconScreen.hidden = state.callStatusIconsHidden || dom.screenShareButton.hidden;
+    dom.callIconScreen.disabled = dom.screenShareButton.disabled;
+    dom.callIconScreen.setAttribute("aria-pressed", String(sharingScreen));
+    dom.callIconScreen.title = sharingScreen ? "화면 공유 중 · 클릭해서 끄기" : "화면 공유 켜기";
+    dom.callIconSound.hidden = state.callStatusIconsHidden || dom.systemAudioAction.hidden;
+    dom.callIconSound.disabled = dom.systemAudioToggle.disabled;
+    dom.callIconSound.setAttribute("aria-pressed", String(state.systemSharing));
+    dom.callIconSound.title = state.systemSharing ? "컴퓨터 사운드 공유 중 · 클릭해서 끄기" : "컴퓨터 사운드 공유 켜기";
     dom.callIconMic.disabled = dom.muteButton.disabled;
     dom.callIconMic.classList.toggle("muted", state.muted);
     dom.callIconMic.title = state.muted ? "마이크 꺼짐 · 클릭해서 켜기" : "마이크 켜짐 · 클릭해서 끄기";
