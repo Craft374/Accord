@@ -37,6 +37,7 @@
             </svg>
           </button>
           <button class="ghost admin-toggle" id="adminPanelButton" type="button" hidden>관리자</button>
+          <button class="ghost" id="settingsButton" type="button">설정</button>
           <button class="profile-chip" id="profileChipButton" type="button" hidden>
             <span class="profile-chip-avatar" id="profileChipAvatar" aria-hidden="true"></span>
             <span class="profile-chip-text">
@@ -44,7 +45,31 @@
               <em id="profileChipCode">#----</em>
             </span>
           </button>
-          <button class="ghost" id="settingsButton" type="button">설정</button>
+          <div class="call-status-icons" id="callStatusIcons" hidden>
+            <button class="ghost icon-toggle" id="callIconScreen" type="button" title="화면 공유 중 · 클릭해서 끄기" hidden>
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="3" y="4" width="18" height="13" rx="2" />
+                <line x1="8" y1="21" x2="16" y2="21" />
+                <line x1="12" y1="17" x2="12" y2="21" />
+              </svg>
+            </button>
+            <button class="ghost icon-toggle" id="callIconSound" type="button" title="컴퓨터 사운드 공유 중 · 클릭해서 끄기" hidden>
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polygon points="4,9 8,9 13,4 13,20 8,15 4,15" />
+                <path d="M17 8a5 5 0 0 1 0 8" />
+                <path d="M19.5 5.5a9 9 0 0 1 0 13" />
+              </svg>
+            </button>
+            <button class="ghost icon-toggle" id="callIconMic" type="button" title="마이크 켜짐 · 클릭해서 끄기">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="9" y="2" width="6" height="12" rx="3" />
+                <path d="M5 10a7 7 0 0 0 14 0" />
+                <line x1="12" y1="17" x2="12" y2="21" />
+                <line x1="8" y1="21" x2="16" y2="21" />
+                <line class="mic-slash" x1="4" y1="4" x2="20" y2="20" hidden />
+              </svg>
+            </button>
+          </div>
           <div class="status" id="statusBadge">
             <span></span>
             <strong id="statusText">연결 중</strong>
@@ -523,6 +548,10 @@
               <label class="switch">
                 <input id="drawHintToggle" type="checkbox" checked />
                 <span>그림판 사용법 설명 표시</span>
+              </label>
+              <label class="switch">
+                <input id="callStatusIconsToggle" type="checkbox" checked />
+                <span>우상단 화면·소리공유 아이콘 표시</span>
               </label>
             </div>
             <p class="modal-hint">방 목록 · 멤버 목록의 경계선을 드래그하면 폭을 조절할 수 있습니다. 상단 막대의 접기 버튼으로도 각 목록을 여닫을 수 있습니다.</p>

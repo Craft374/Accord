@@ -320,6 +320,17 @@ body.dm-open .app {
   color: var(--heading);
 }
 
+/* 우상단 통화 상태 아이콘(화면·소리공유·마이크) */
+.call-status-icons {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.icon-toggle.muted {
+  color: var(--danger);
+}
+
 .danger {
   background: var(--danger);
   color: #fff;

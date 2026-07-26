@@ -143,6 +143,7 @@ const state = {
   micRestartTimer: 0,
   healthChecking: false,
   repairingAudio: false,
+  callStatusIconsHidden: localStorage.getItem("accordCallStatusIconsHidden") === "1",
   auth: {
     token: localStorage.getItem("accordAuthToken") || "",
     user: null,
@@ -456,6 +457,11 @@ const dom = {
   profileChipAvatar: document.querySelector("#profileChipAvatar"),
   profileChipName: document.querySelector("#profileChipName"),
   profileChipCode: document.querySelector("#profileChipCode"),
+  callStatusIcons: document.querySelector("#callStatusIcons"),
+  callIconScreen: document.querySelector("#callIconScreen"),
+  callIconSound: document.querySelector("#callIconSound"),
+  callIconMic: document.querySelector("#callIconMic"),
+  callStatusIconsToggle: document.querySelector("#callStatusIconsToggle"),
   settingsTabs: document.querySelector("#settingsTabs"),
   soundPrefsList: document.querySelector("#soundPrefsList"),
   layout: document.querySelector(".layout"),
@@ -584,6 +590,18 @@ function bindEvents() {
   dom.refreshDevicesButton.addEventListener("click", () => refreshDevices());
   dom.leaveButton.addEventListener("click", () => leaveRoom("방에서 나갔습니다."));
   dom.muteButton.addEventListener("click", toggleMute);
+  dom.callIconMic?.addEventListener("click", toggleMute);
+  dom.callIconScreen?.addEventListener("click", toggleScreenShare);
+  dom.callIconSound?.addEventListener("click", () => {
+    dom.systemAudioToggle.checked = !dom.systemAudioToggle.checked;
+    handleSystemAudioToggle();
+  });
+  if (dom.callStatusIconsToggle) dom.callStatusIconsToggle.checked = !state.callStatusIconsHidden;
+  dom.callStatusIconsToggle?.addEventListener("change", () => {
+    state.callStatusIconsHidden = !dom.callStatusIconsToggle.checked;
+    localStorage.setItem("accordCallStatusIconsHidden", state.callStatusIconsHidden ? "1" : "0");
+    updateControls();
+  });
   dom.repairAudioButton.addEventListener("click", repairAudio);
   dom.copyDiagnosticsButton?.addEventListener("click", copyDiagnostics);
   dom.copyLogButton?.addEventListener("click", copyClientLogs);
@@ -5062,8 +5080,8 @@ function toggleMute() {
   state.muted = !state.muted;
   applyMicTrackEnabled();
   playUiSound(state.muted ? "micOff" : "micOn", state.currentRoom?.id);
-  dom.muteButton.textContent = state.muted ? "마이크 켜기" : "마이크 끄기";
   dom.localState.textContent = getLocalStateText();
+  updateControls();
   // 상태 변화를 즉시 반영 — 주기 전송(~2초)만 기다리면 표시가 어긋난다.
   renderParticipants();
   for (const peer of state.peers.values()) sendMediaStatus(peer);
@@ -14767,6 +14785,18 @@ function updateControls() {
   if (dom.refreshProgramAudioButton) dom.refreshProgramAudioButton.disabled = state.applyingSettings;
   updateProgramAudioControls();
   updateSetupStatus();
+
+  // 우상단 통화 상태 아이콘(화면·소리공유는 설정으로 숨길 수 있음, 마이크는 통화 중이면 항상 표시).
+  if (dom.callStatusIcons) {
+    dom.callStatusIcons.hidden = !inRoom;
+    dom.callIconScreen.hidden = !sharingScreen || state.callStatusIconsHidden;
+    dom.callIconSound.hidden = !state.systemSharing || state.callStatusIconsHidden;
+    dom.callIconMic.disabled = dom.muteButton.disabled;
+    dom.callIconMic.classList.toggle("muted", state.muted);
+    dom.callIconMic.title = state.muted ? "마이크 꺼짐 · 클릭해서 켜기" : "마이크 켜짐 · 클릭해서 끄기";
+    const micSlash = dom.callIconMic.querySelector(".mic-slash");
+    if (micSlash) micSlash.hidden = !state.muted;
+  }
 }
 
 function updateSystemAudioAvailability() {
