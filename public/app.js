@@ -172,6 +172,7 @@ const state = {
   collapsedRoomGroups: readCollapsedRoomGroups(), // channelId:groupId 형태의 사용자별 접기 상태
   // 메모장
   memo: null, // { roomId, channelId, name, rev, remotePending, saveTimer, view }
+  memoTabs: [], // 열어둔 메모방 roomId 목록(파일 탭). 패널을 완전히 닫으면 함께 비워짐
   // 전역 로그
   activeLog: null, // { roomId, channelId, name, entries: [] }
   // 로그방 검색·정렬·날짜접기 설정을 방별로 기억(닫았다 열어도, 앱 재시작해도 유지)
@@ -250,6 +251,7 @@ const dom = {
   memoPanel: document.querySelector("#memoPanel"),
   memoRoomName: document.querySelector("#memoRoomName"),
   memoStatus: document.querySelector("#memoStatus"),
+  memoTabs: document.querySelector("#memoTabs"),
   memoBody: document.querySelector("#memoBody"),
   memoEditor: document.querySelector("#memoEditor"),
   memoPreview: document.querySelector("#memoPreview"),
@@ -8660,6 +8662,18 @@ function bindChannelEvents() {
     if (head) openRoom(head.dataset.roomId, head.dataset.roomType);
   });
 
+  // 메모방 휠클릭(가운데 버튼) = 브라우저처럼 전환 없이 배경 탭으로만 열기.
+  dom.roomList?.addEventListener("mousedown", (event) => {
+    if (event.button === 1 && event.target?.closest?.(".room-item-head")) event.preventDefault(); // 자동 스크롤 방지
+  });
+  dom.roomList?.addEventListener("auxclick", (event) => {
+    if (event.button !== 1 || Date.now() < suppressRoomClickUntil) return;
+    const head = event.target?.closest?.(".room-item-head");
+    if (!head || head.dataset.roomType !== "memo") return;
+    event.preventDefault();
+    openMemoRoom(head.dataset.roomId, { background: true });
+  });
+
   // 방 우클릭 → 이름 변경(대표자 또는 방 이름 변경 권한 보유자)
   dom.roomList?.addEventListener("contextmenu", (event) => {
     const head = event.target?.closest?.(".room-item-head");
@@ -10977,13 +10991,20 @@ function restoreMemoPos(roomId) {
   memoEditorController.setScrollTop(Number(saved.scroll) || 0);
 }
 
-function openMemoRoom(roomId) {
+function openMemoRoom(roomId, { background = false } = {}) {
   const found = findRoomInChannels(roomId);
   if (!found) return;
+  if (!state.memoTabs.includes(roomId)) state.memoTabs.push(roomId);
+  // 휠클릭으로 배경 탭만 열 때: 지금 보고 있는 메모가 있으면 전환하지 않고 탭 목록에만 추가.
+  if (background && state.memo && state.memo.roomId !== roomId) {
+    renderMemoTabs();
+    return;
+  }
   saveMemoPos(); // 다른 메모방으로 바로 갈아탈 때 지금 방 위치부터 저장
   if (state.memo?.roomId === roomId) {
     document.body.classList.add("memo-open");
     memoEditorController?.focus();
+    renderMemoTabs();
     return;
   }
   state.memo = {
@@ -11017,6 +11038,7 @@ function openMemoRoom(roomId) {
   applyMemoView(state.memo.view);
   setMemoStatus("불러오는 중…", "muted");
   sendSocket({ type: "memo:open", roomId });
+  renderMemoTabs();
   renderRooms();
 }
 
@@ -11026,11 +11048,56 @@ function closeMemoView() {
   if (state.memo.cursorTimer) clearTimeout(state.memo.cursorTimer);
   sendSocket({ type: "memo:close" });
   state.memo = null;
+  state.memoTabs = [];
   clearMemoCursors();
   closeFontManager();
   document.body.classList.remove("memo-open");
   exitFocusMode();
+  renderMemoTabs();
   renderRooms();
+}
+
+// 탭 하나만 닫는다. 지금 보던 탭이면 옆 탭으로 넘어가고, 마지막 탭이면 패널 전체를 닫는다.
+function closeMemoTab(roomId) {
+  const idx = state.memoTabs.indexOf(roomId);
+  if (idx === -1) return;
+  state.memoTabs.splice(idx, 1);
+  if (state.memo?.roomId !== roomId) { renderMemoTabs(); return; }
+  const next = state.memoTabs[idx] ?? state.memoTabs[idx - 1];
+  if (next) openMemoRoom(next);
+  else closeMemoView();
+}
+
+function cycleMemoTab(direction) {
+  if (!state.memo || state.memoTabs.length < 2) return;
+  const idx = state.memoTabs.indexOf(state.memo.roomId);
+  if (idx === -1) return;
+  const next = (idx + direction + state.memoTabs.length) % state.memoTabs.length;
+  openMemoRoom(state.memoTabs[next]);
+}
+
+function renderMemoTabs() {
+  const bar = dom.memoTabs;
+  if (!bar) return;
+  bar.innerHTML = "";
+  bar.hidden = state.memoTabs.length < 2;
+  for (const roomId of state.memoTabs) {
+    const found = findRoomInChannels(roomId);
+    const tab = document.createElement("div");
+    tab.className = `memo-tab${roomId === state.memo?.roomId ? " active" : ""}`;
+    tab.dataset.memoTabRoom = roomId;
+    tab.setAttribute("role", "tab");
+    tab.append(el("span", "memo-tab-name", found?.room.name || "(삭제된 방)"));
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "memo-tab-close";
+    close.title = "탭 닫기";
+    close.setAttribute("aria-label", "탭 닫기");
+    close.textContent = "×";
+    close.dataset.memoTabClose = roomId;
+    tab.append(close);
+    bar.append(tab);
+  }
 }
 
 // 채널 목록 갱신 후, 보고 있던 메모방이 사라졌거나 이름이 바뀌었는지 확인.
@@ -11038,6 +11105,13 @@ function verifyActiveMemo() {
   if (!state.memo) return;
   const found = findRoomInChannels(state.memo.roomId);
   if (!found || found.room.type !== "memo") { closeMemoView(); return; }
+  // 다른 탭으로 열어둔 방이 그 사이 삭제됐으면 탭 목록에서도 뗀다.
+  const before = state.memoTabs.length;
+  state.memoTabs = state.memoTabs.filter((roomId) => {
+    const r = findRoomInChannels(roomId);
+    return r && r.room.type === "memo";
+  });
+  if (state.memoTabs.length !== before) renderMemoTabs();
   state.memo.name = found.room.name;
   state.memo.channelId = found.channel.id;
   state.memo.writable = canWriteRoom(found.channel, found.room);
@@ -11663,6 +11737,25 @@ function bindMemoEvents() {
   };
   dom.memoPreview?.addEventListener("click", handleMemoRenderedClick);
   dom.memoPreview?.addEventListener("keydown", handleMemoRenderedFoldKey);
+  // 탭 클릭 = 전환, × = 닫기, 휠클릭 = 닫기(브라우저 탭과 동일한 관례).
+  dom.memoTabs?.addEventListener("click", (event) => {
+    const close = event.target?.closest?.("[data-memo-tab-close]");
+    if (close) { event.stopPropagation(); closeMemoTab(close.dataset.memoTabClose); return; }
+    const tab = event.target?.closest?.("[data-memo-tab-room]");
+    if (tab) openMemoRoom(tab.dataset.memoTabRoom);
+  });
+  dom.memoTabs?.addEventListener("auxclick", (event) => {
+    if (event.button !== 1) return;
+    const tab = event.target?.closest?.("[data-memo-tab-room]");
+    if (tab) { event.preventDefault(); closeMemoTab(tab.dataset.memoTabRoom); }
+  });
+  // Ctrl(+Shift)+Tab: 메모 패널이 열려 있을 때만, CM6 키맵보다 먼저 가로챈다(capture).
+  document.addEventListener("keydown", (event) => {
+    if (!event.ctrlKey || event.key !== "Tab") return;
+    if (!document.body.classList.contains("memo-open") || state.memoTabs.length < 2) return;
+    event.preventDefault();
+    cycleMemoTab(event.shiftKey ? -1 : 1);
+  }, true);
   // Ctrl(⌘)+휠 로 글자 크기 조절 — 편집기/미리보기 어느 쪽 위에서든 동작.
   dom.memoBody?.addEventListener("wheel", (event) => {
     if (!event.ctrlKey && !event.metaKey) return;

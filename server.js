@@ -1725,6 +1725,8 @@ function handleMemoMessage(client, message) {
     case "memo:open": {
       const ctx = resolveMemoRoom(client, message.roomId);
       if (!ctx) return true;
+      // 다른 메모방을 보다가 바로 이 방으로 갈아탄 경우, 이전 방에 내 원격 커서가 남지 않도록 먼저 정리한다.
+      if (client.memoRoomId && client.memoRoomId !== ctx.room.id) leaveMemo(client);
       client.memoRoomId = ctx.room.id;
       const d = getMemoDoc(ctx.room.id);
       const cursors = [...d.cursors.values()].filter((cur) => cur.clientId !== client.id);

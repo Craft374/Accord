@@ -1,4 +1,4 @@
-const { app, BrowserWindow, desktopCapturer, ipcMain, session, Menu, Tray, nativeImage, clipboard, MessageChannelMain, powerSaveBlocker, screen: electronScreen, net } = require("electron");
+const { app, BrowserWindow, desktopCapturer, ipcMain, session, Menu, Tray, nativeImage, clipboard, MessageChannelMain, powerSaveBlocker, screen: electronScreen, net, shell } = require("electron");
 const { spawn, execFile } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -153,6 +153,12 @@ function createWindow() {
     },
   });
 
+  // 메모장 등에서 링크를 열면(target=_blank) 기본 동작은 새 Electron 창(=어코드 팝업처럼 보임)을 띄우는 것이라
+  // 시스템 기본 브라우저로 대신 연다. 협업 문서의 링크는 신뢰할 수 없으므로 http/https만 허용.
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+    return { action: "deny" };
+  });
   mainWindow.setMenuBarVisibility(false);
   mainWindow.setAutoHideMenuBar(true);
   // 창 닫기(X) = 트레이로 최소화. 실제 종료는 트레이 메뉴에서.
