@@ -4560,24 +4560,23 @@ audio,
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 0;
   overflow-y: auto;
   min-height: 0;
 }
+/* 옵시디언 파일탐색기 느낌: 그룹·방 모두 카드가 아니라 들여쓰기+안내선으로만 구분되는 트리 행.
+   hover/active 배경은 각 행의 head 요소(.room-group-toggle, .room-item-head)에 준다. */
 .room-group {
-  border-radius: var(--radius-sm);
-  /* 그룹을 살짝 눌러 들어간 상자로 만들어 안의 방들과 묶어 보이게 한다. */
-  background: rgba(0, 0, 0, 0.14);
-  border: 1px solid var(--line);
-  padding: 2px 4px 4px;
+  display: flex;
+  flex-direction: column;
 }
 .room-group-head {
   position: relative;
-  min-height: 28px;
+  min-height: 26px;
   display: flex;
   align-items: center;
   gap: 2px;
-  padding: 2px 2px 0;
+  padding: 0 2px;
 }
 .room-group-toggle {
   flex: 1;
@@ -4585,25 +4584,24 @@ audio,
   min-height: 26px;
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   padding: 0 5px;
   border: 0;
+  border-radius: var(--radius-xs);
   background: transparent;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
   cursor: pointer;
 }
-.room-group-toggle:hover { color: var(--text); }
+.room-group-toggle:hover { background: var(--bg-elevated); }
 .room-group-draggable > .room-group-head .room-group-toggle { cursor: grab; }
 .room-group-draggable > .room-group-head .room-group-toggle:active { cursor: grabbing; }
 .room-group.dragging-group { opacity: 0.38; }
-.room-group-caret { flex: none; transition: transform 0.14s ease; }
+.room-group-caret { flex: none; font-size: 10px; color: var(--muted); transition: transform 0.14s ease; }
 .room-group.collapsed .room-group-caret { transform: rotate(-90deg); }
 .room-group-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.room-group-count { margin-left: auto; margin-right: 0; font-size: 10px; opacity: 0.65; transition: margin-right 0.14s ease; }
+.room-group-count { margin-left: auto; margin-right: 0; font-size: 10px; color: var(--muted); opacity: 0; transition: opacity 0.14s ease, margin-right 0.14s ease; }
 .room-group-action {
   position: absolute;
   right: 26px;
@@ -4622,7 +4620,7 @@ audio,
 }
 .room-group-action.danger { right: 2px; }
 .room-group-head:hover .room-group-count,
-.room-group-head:focus-within .room-group-count { margin-right: 48px; }
+.room-group-head:focus-within .room-group-count { margin-right: 48px; opacity: 0.65; }
 .room-group-head:hover .room-group-action,
 .room-group-head:focus-within .room-group-action { opacity: 1; pointer-events: auto; }
 .room-group-action:hover { background: var(--bg-elevated); color: var(--text); }
@@ -4637,16 +4635,11 @@ audio,
 }
 .room-group-rooms[hidden] { display: none; }
 .room-group > .room-group-rooms {
-  margin-left: 4px;
-  padding-left: 6px;
+  margin-left: 6px;
+  padding-left: 9px;
   border-left: 1px solid var(--line);
 }
 .room-tree-root { padding-top: 1px; }
-/* 드래그 중에는 그룹 카드 배경/테두리를 없애 드롭 표시(파란 선·빈 그룹 안내)가 겹쳐 지저분해지지 않게 한다. */
-.room-list.room-tree-drag-active .room-group {
-  background: transparent;
-  border-color: transparent;
-}
 .room-tree-empty { display: none; }
 .room-list.room-tree-drag-active .room-tree-empty { display: block; }
 .room-list.room-tree-drag-active .room-tree-root { min-height: 36px; }
@@ -4665,23 +4658,10 @@ audio,
   pointer-events: none;
 }
 .room-group-empty { padding: 8px; color: var(--muted); font-size: 11px; text-align: center; border: 1px dashed var(--line-strong); border-radius: var(--radius-xs); }
-/* 방을 '떠 있는 글자'가 아니라 경계가 있는 상자로 보이게 한다.
-   경계선을 항목(.room-item) 전체에 두어 통화방의 참가자 목록까지 한 상자로 묶는다. */
-.room-item {
-  border-radius: var(--radius-sm);
-  background: var(--bg-base);
-  border: 1px solid var(--line);
-  overflow: hidden;
-}
-.room-item:hover { border-color: var(--line-strong); }
 .room-item.room-draggable { cursor: grab; }
 .room-item.room-draggable:active { cursor: grabbing; }
 .room-list.room-pointer-drag-active { user-select: none; cursor: grabbing; }
 .room-item.dragging { opacity: 0.35; }
-.room-item.active {
-  background: rgba(88, 101, 242, 0.16);
-  border-color: rgba(88, 101, 242, 0.5);
-}
 /* 지금 접속해 있는 방: 왼쪽 얇은 초록선 + 작은 '여기' 칩으로 거슬리지 않게 표시.
    보는 방(파란 active)과 접속한 방(초록)을 구분한다. */
 .room-item.here .room-item-head::before {
@@ -4714,12 +4694,14 @@ audio,
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 34px;
+  min-height: 28px;
   padding: 0 8px;
+  border-radius: var(--radius-xs);
   background: transparent;
   border: 0;
   color: var(--muted);
   font-weight: 500;
+  font-size: 13px;
   justify-content: flex-start;
 }
 .room-item-head:hover:not(:disabled) {
@@ -4727,13 +4709,15 @@ audio,
   color: var(--text);
 }
 .room-item.active .room-item-head {
+  background: rgba(88, 101, 242, 0.16);
   color: var(--heading);
 }
 .room-icon {
-  width: 18px;
+  width: 16px;
   text-align: center;
   flex: none;
-  font-size: 13px;
+  font-size: 12px;
+  opacity: 0.85;
 }
 .room-name {
   flex: 1;
@@ -4827,13 +4811,14 @@ audio,
 }
 .room-add-button {
   margin-top: 0;
-  background: var(--bg-base);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-xs);
   color: var(--muted);
   font-weight: 500;
-  justify-content: flex-start;
-  min-height: 32px;
+  font-size: 12px;
+  justify-content: center;
+  min-height: 28px;
 }
 .room-list-actions {
   position: sticky;
