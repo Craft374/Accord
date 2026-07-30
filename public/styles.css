@@ -4604,6 +4604,31 @@ audio,
 .room-group.collapsed .room-group-caret { transform: rotate(-90deg); }
 .room-group-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .room-group-count { margin-left: auto; margin-right: 0; font-size: 10px; opacity: 0.65; transition: margin-right 0.14s ease; }
+/* 옵시디언 파일탐색기 스타일(설정 토글, body.ui-obsidian-sidebar): 그룹·방을 카드가 아니라
+   들여쓰기+안내선만으로 구분되는 트리 행으로 표시. hover/active 배경은 각 행의 head 요소에 준다. */
+body.ui-obsidian-sidebar .room-group {
+  display: flex;
+  flex-direction: column;
+  border-radius: 0;
+  background: none;
+  border: 0;
+  padding: 0;
+}
+body.ui-obsidian-sidebar .room-group-head { min-height: 26px; padding: 0 2px; }
+body.ui-obsidian-sidebar .room-group-toggle {
+  gap: 6px;
+  border-radius: var(--radius-xs);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: normal;
+  text-transform: none;
+}
+body.ui-obsidian-sidebar .room-group-toggle:hover { background: var(--bg-elevated); }
+body.ui-obsidian-sidebar .room-group-caret { font-size: 10px; color: var(--muted); }
+body.ui-obsidian-sidebar .room-group-count { color: var(--muted); opacity: 0; transition: opacity 0.14s ease, margin-right 0.14s ease; }
+body.ui-obsidian-sidebar .room-group-head:hover .room-group-count,
+body.ui-obsidian-sidebar .room-group-head:focus-within .room-group-count { opacity: 0.65; }
 .room-group-action {
   position: absolute;
   right: 26px;
@@ -4641,6 +4666,7 @@ audio,
   padding-left: 6px;
   border-left: 1px solid var(--line);
 }
+body.ui-obsidian-sidebar .room-group > .room-group-rooms { margin-left: 6px; padding-left: 9px; }
 .room-tree-root { padding-top: 1px; }
 /* 드래그 중에는 그룹 카드 배경/테두리를 없애 드롭 표시(파란 선·빈 그룹 안내)가 겹쳐 지저분해지지 않게 한다. */
 .room-list.room-tree-drag-active .room-group {
@@ -4674,6 +4700,7 @@ audio,
   overflow: hidden;
 }
 .room-item:hover { border-color: var(--line-strong); }
+body.ui-obsidian-sidebar .room-item { border-radius: 0; background: none; border: 0; overflow: visible; }
 .room-item.room-draggable { cursor: grab; }
 .room-item.room-draggable:active { cursor: grabbing; }
 .room-list.room-pointer-drag-active { user-select: none; cursor: grabbing; }
@@ -4682,6 +4709,7 @@ audio,
   background: rgba(88, 101, 242, 0.16);
   border-color: rgba(88, 101, 242, 0.5);
 }
+body.ui-obsidian-sidebar .room-item.active { background: none; border-color: transparent; }
 /* 지금 접속해 있는 방: 왼쪽 얇은 초록선 + 작은 '여기' 칩으로 거슬리지 않게 표시.
    보는 방(파란 active)과 접속한 방(초록)을 구분한다. */
 .room-item.here .room-item-head::before {
@@ -4729,12 +4757,15 @@ audio,
 .room-item.active .room-item-head {
   color: var(--heading);
 }
+body.ui-obsidian-sidebar .room-item-head { min-height: 28px; border-radius: var(--radius-xs); font-size: 13px; }
+body.ui-obsidian-sidebar .room-item.active .room-item-head { background: rgba(88, 101, 242, 0.16); }
 .room-icon {
   width: 18px;
   text-align: center;
   flex: none;
   font-size: 13px;
 }
+body.ui-obsidian-sidebar .room-icon { width: 16px; font-size: 12px; opacity: 0.85; }
 .room-name {
   flex: 1;
   overflow: hidden;
@@ -4834,6 +4865,13 @@ audio,
   font-weight: 500;
   justify-content: flex-start;
   min-height: 32px;
+}
+body.ui-obsidian-sidebar .room-add-button {
+  background: transparent;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-xs);
+  font-size: 12px;
+  min-height: 28px;
 }
 .room-list-actions {
   position: sticky;
