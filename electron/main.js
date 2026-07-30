@@ -62,49 +62,52 @@ let screenSharePowerBlockerId = null;
 let screenCaptureConfig = {};
 
 // 트레이에 상주 중(창 닫아도 종료 안 함)일 때 작업표시줄 아이콘을 다시 실행하면 새 프로세스가 뜨는 대신
-// 이미 떠 있는 창을 앞으로 가져온다.
+// 이미 떠 있는 창을 앞으로 가져온다. 락을 못 얻은 이 프로세스는 whenReady/createWindow를 아예 등록하지
+// 않고 즉시 종료해야 한다 — else 없이 app.quit()만 부르면 quit이 비동기라 whenReady가 먼저 resolve되어
+// 빈 창이 잠깐 떴다 사라지는 깜빡임이 생긴다.
 if (!app.requestSingleInstanceLock()) {
   app.quit();
-}
-app.on("second-instance", () => {
-  showMainWindow();
-});
-
-app.on("certificate-error", (event, webContents, url, error, certificate, callback) => {
-  const host = safeHost(url);
-  if (isVoiceServerHost(host) || url.startsWith("https://")) {
-    event.preventDefault();
-    callback(true);
-    return;
-  }
-  callback(false);
-});
-
-app.whenReady().then(() => {
-  Menu.setApplicationMenu(null);
-  setupCertificates();
-  setupPermissions();
-  setupDisplayMedia();
-  setupNavigation();
-  createWindow();
-  createTray();
-
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
-    else showMainWindow();
+} else {
+  app.on("second-instance", () => {
+    showMainWindow();
   });
-});
 
-// 창을 닫아도(트레이로 최소화) 통화가 끊기지 않도록 앱을 종료하지 않는다.
-app.on("window-all-closed", () => {
-  // 트레이에 상주. 종료는 트레이 메뉴 또는 명시적 quit으로만.
-});
+  app.on("certificate-error", (event, webContents, url, error, certificate, callback) => {
+    const host = safeHost(url);
+    if (isVoiceServerHost(host) || url.startsWith("https://")) {
+      event.preventDefault();
+      callback(true);
+      return;
+    }
+    callback(false);
+  });
 
-app.on("before-quit", () => {
-  isQuitting = true;
-  stopProgramAudioCapture();
-  stopScreenSharePowerBlocker();
-});
+  app.whenReady().then(() => {
+    Menu.setApplicationMenu(null);
+    setupCertificates();
+    setupPermissions();
+    setupDisplayMedia();
+    setupNavigation();
+    createWindow();
+    createTray();
+
+    app.on("activate", () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+      else showMainWindow();
+    });
+  });
+
+  // 창을 닫아도(트레이로 최소화) 통화가 끊기지 않도록 앱을 종료하지 않는다.
+  app.on("window-all-closed", () => {
+    // 트레이에 상주. 종료는 트레이 메뉴 또는 명시적 quit으로만.
+  });
+
+  app.on("before-quit", () => {
+    isQuitting = true;
+    stopProgramAudioCapture();
+    stopScreenSharePowerBlocker();
+  });
+}
 
 function createTray() {
   if (tray) return;

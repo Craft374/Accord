@@ -34,6 +34,12 @@ const MSG_REFILL_PER_MS = 0.3;              // 초당 300개 리필(정상 실�
 const MSG_FLOOD_CLOSE = 1500;              // 이 수치를 넘게 초과 전송하면 연결을 끊는다
 const AUTH_ATTEMPT_MAX = 20;               // IP당 창(window) 내 로그인/회원가입 시도 상한
 const AUTH_WINDOW_MS = 60 * 1000;          // 인증 시도 집계 창
+// 채팅에 gif 사이트 페이지 링크(확장자 없음, 예: klipy.com/gifs/...)를 붙였을 때 썸네일을 보여주기 위해
+// og:image 메타를 대신 가져와주는 프록시. 임의 URL을 서버가 fetch하면 SSRF(내부망 접근)로 악용될 수 있어
+// 알려진 gif 사이트 호스트만 https로 허용한다.
+const LINK_PREVIEW_HOSTS = new Set(["klipy.com", "www.klipy.com", "tenor.com", "www.tenor.com", "giphy.com", "www.giphy.com"]);
+const LINK_PREVIEW_MAX_BYTES = 512 * 1024;
+const LINK_PREVIEW_TIMEOUT_MS = 4000;
 // 로그인 전(pre-auth)에 허용하는 메시지 타입. 그 외는 로그인해야 처리한다.
 const PRE_AUTH_TYPES = new Set(["register", "login", "auth-token", "logout", "client-log"]);
 // 로그인 브라우저 연결의 Origin 검증에 추가로 허용할 오리진(쉼표 구분, 예: 리버스 프록시 도메인).
@@ -129,6 +135,11 @@ function handleRequest(req, res) {
       turnConfigured: hasTurnServer(),
       stunConfigured: hasStunServer(),
     });
+    return;
+  }
+
+  if (url.pathname === "/api/link-image") {
+    fetchLinkPreviewImage(res, url.searchParams.get("url") || "");
     return;
   }
 
@@ -2375,6 +2386,68 @@ function handleDmMessage(client, message) {
 
 function cleanName(value) {
   return String(value || "Guest").trim().slice(0, 24) || "Guest";
+}
+
+// klipy/tenor/giphy 같은 gif 페이지 링크의 og:image를 대신 가져와 클라이언트에 알려준다.
+// 리다이렉트는 SSRF 우회에 쓰일 수 있어 따라가지 않고, 응답 크기·시간도 제한한다.
+function fetchLinkPreviewImage(res, rawUrl) {
+  let target;
+  try {
+    target = new URL(rawUrl);
+  } catch {
+    sendJson(res, 400, { error: "invalid url" });
+    return;
+  }
+  if (target.protocol !== "https:" || !LINK_PREVIEW_HOSTS.has(target.hostname.toLowerCase())) {
+    sendJson(res, 400, { error: "unsupported host" });
+    return;
+  }
+  const upstreamReq = https.get(
+    target,
+    { timeout: LINK_PREVIEW_TIMEOUT_MS, headers: { "user-agent": "Mozilla/5.0 (compatible; AccordLinkPreview/1.0)" } },
+    (upstream) => {
+      if (upstream.statusCode !== 200) {
+        upstream.resume();
+        sendJson(res, 502, { error: "upstream error" });
+        return;
+      }
+      let body = "";
+      let bytes = 0;
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        sendJson(res, 200, { image: extractOgImage(body) });
+      };
+      upstream.setEncoding("utf8");
+      upstream.on("data", (chunk) => {
+        if (done) return;
+        bytes += Buffer.byteLength(chunk);
+        if (bytes > LINK_PREVIEW_MAX_BYTES) {
+          upstream.destroy();
+          finish();
+          return;
+        }
+        body += chunk;
+      });
+      upstream.on("end", finish);
+      upstream.on("error", () => {
+        if (!done) sendJson(res, 502, { error: "fetch failed" });
+      });
+    }
+  );
+  upstreamReq.on("timeout", () => upstreamReq.destroy());
+  upstreamReq.on("error", () => {
+    if (!res.headersSent) sendJson(res, 502, { error: "fetch failed" });
+  });
+}
+
+function extractOgImage(html) {
+  const match =
+    html.match(/<meta[^>]+(?:property|name)=["'](?:og:image|twitter:image)["'][^>]+content=["']([^"']+)["']/i) ||
+    html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["'](?:og:image|twitter:image)["']/i);
+  const image = match ? match[1] : "";
+  return /^https?:\/\//i.test(image) ? image : "";
 }
 
 function sendJson(res, status, payload) {

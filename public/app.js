@@ -101,7 +101,7 @@ const state = {
   soundPrefs: readSoundPrefs(),
   mutedRooms: readMutedRooms(),
   localStream: null,
-  muted: false,
+  muted: localStorage.getItem("accordMicMutePref") === "1",
   systemSharing: false,
   outputOverrideValue: null, // 시스템사운드 공유용 임시 출력장치 전환 중이면 원래 장치를 여기에 보관(null=비활성, 영구 저장 X)
   localMeterStop: null,
@@ -464,6 +464,7 @@ const dom = {
   callIconSound: document.querySelector("#callIconSound"),
   callIconMic: document.querySelector("#callIconMic"),
   callStatusIconsToggle: document.querySelector("#callStatusIconsToggle"),
+  uiObsidianSidebarToggle: document.querySelector("#uiObsidianSidebarToggle"),
   settingsTabs: document.querySelector("#settingsTabs"),
   soundPrefsList: document.querySelector("#soundPrefsList"),
   layout: document.querySelector(".layout"),
@@ -1841,7 +1842,7 @@ async function handleSocketMessage(message) {
   }
 
   if (message.type === "force-muted") {
-    if (!state.muted) { toggleMute(); } // 내 마이크를 끈다(이미 꺼져 있으면 유지)
+    if (!state.muted) { toggleMute(false); } // 내 마이크를 끈다(개인 선호는 안 바꾸고 이번 통화만, 이미 꺼져 있으면 유지)
     setMessage(`${message.byName || "대표자"}님이 회원님의 마이크를 껐습니다.`);
     return;
   }
@@ -4992,6 +4993,11 @@ function initLayoutControls() {
     localStorage.setItem("accordDrawHintHidden", dom.drawHintToggle.checked ? "0" : "1");
     applyDrawHintPref();
   });
+  applyUiObsidianSidebarPref();
+  dom.uiObsidianSidebarToggle?.addEventListener("change", () => {
+    localStorage.setItem("accordUiObsidianSidebar", dom.uiObsidianSidebarToggle.checked ? "1" : "0");
+    applyUiObsidianSidebarPref();
+  });
 }
 
 // 그림판 레이어 이름 표시 여부(설정 > 화면). 기본은 표시.
@@ -4999,6 +5005,13 @@ function applyDrawLayerNamesPref() {
   const hidden = localStorage.getItem("accordDrawLayerNamesHidden") === "1";
   document.body.classList.toggle("hide-draw-layer-names", hidden);
   if (dom.drawLayerNamesToggle) dom.drawLayerNamesToggle.checked = !hidden;
+}
+
+// 방·그룹 목록 스타일(설정 > 화면). 기본은 디스코드 스타일, 켜면 옵시디언 트리 스타일.
+function applyUiObsidianSidebarPref() {
+  const on = localStorage.getItem("accordUiObsidianSidebar") === "1";
+  document.body.classList.toggle("ui-obsidian-sidebar", on);
+  if (dom.uiObsidianSidebarToggle) dom.uiObsidianSidebarToggle.checked = on;
 }
 
 // 그림판 아래 사용법 설명(.draw-hint) 표시 여부(설정 > 화면). 기본은 표시.
@@ -5078,8 +5091,9 @@ function handleGlobalHotkeys(event) {
   }
 }
 
-function toggleMute() {
+function toggleMute(persist = true) {
   state.muted = !state.muted;
+  if (persist) localStorage.setItem("accordMicMutePref", state.muted ? "1" : "0");
   applyMicTrackEnabled();
   playUiSound(state.muted ? "micOff" : "micOn", state.currentRoom?.id);
   dom.localState.textContent = getLocalStateText();
@@ -5150,7 +5164,7 @@ function resetRoomState() {
   stopStatsTimer();
   stopHealthTimer();
   state.currentRoom = null;
-  state.muted = false;
+  state.muted = localStorage.getItem("accordMicMutePref") === "1";
   dom.remoteState.textContent = "대기";
   dom.remoteMeter.style.setProperty("--level", "0%");
   resetStatsView();
@@ -9031,6 +9045,7 @@ function renderChatMessageBody(msg) {
     if (chatEmojiOnly(msg.text)) text.classList.add("jumbo");
     // 사용자가 입력한 텍스트를 이스케이프한 뒤 일부 마크다운(코드블록/인라인코드/굵게 등)만 허용
     text.innerHTML = renderChatText(msg.text, undefined, msg.mentions);
+    hydrateLinkImagePreviews(text);
     if (msg.editedAt) {
       const edited = document.createElement("span");
       edited.className = "chat-msg-edited";
@@ -10098,6 +10113,7 @@ function updateChatInputPreview() {
     return;
   }
   box.innerHTML = renderChatText(raw, map, mentions);
+  hydrateLinkImagePreviews(box);
   box.classList.toggle("jumbo", chatEmojiOnly(raw, map));
   box.hidden = false;
 }
@@ -11590,7 +11606,9 @@ function renderMemoCursors() {
 }
 
 function renderMemoPreview() {
-  if (dom.memoPreview) dom.memoPreview.innerHTML = renderMarkdown(memoEditorController?.getText() || "");
+  if (!dom.memoPreview) return;
+  dom.memoPreview.innerHTML = renderMarkdown(memoEditorController?.getText() || "");
+  hydrateLinkImagePreviews(dom.memoPreview);
 }
 
 // 미리보기의 체크박스를 눌렀을 때 원문에서 해당 항목을 찾아 [ ]↔[x] 로 토글한다.
@@ -14264,6 +14282,48 @@ function renderMemoListNodes(nodes, counters, foldSet) {
   return parts.join("");
 }
 
+const DIRECT_IMAGE_URL_RE = /\.(png|jpe?g|gif|webp|bmp)$/i;
+// og:image 프록시(fetchLinkPreviewImage, server.js)를 태울 gif 사이트 호스트 화이트리스트.
+// 임의 URL을 서버가 대신 fetch하면 SSRF 위험이 있어 알려진 호스트만 허용한다.
+const LINK_PREVIEW_HOSTS = new Set(["klipy.com", "www.klipy.com", "tenor.com", "www.tenor.com", "giphy.com", "www.giphy.com"]);
+
+function isDirectImageUrl(url) {
+  return DIRECT_IMAGE_URL_RE.test(url.split(/[?#]/)[0]);
+}
+
+function isLinkPreviewHost(url) {
+  try {
+    return LINK_PREVIEW_HOSTS.has(new URL(url).hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+// inlineMarkdown이 남겨둔 data-link-preview 링크(klipy/tenor/giphy 같은 확장자 없는 gif 페이지)를
+// 서버의 og:image 프록시로 비동기 조회해 이미지로 바꿔치기한다. 메시지 DOM을 넣은 뒤 호출.
+function hydrateLinkImagePreviews(container) {
+  const anchors = container?.querySelectorAll?.("a[data-link-preview]");
+  if (!anchors?.length) return;
+  for (const a of anchors) {
+    const url = a.dataset.linkPreview;
+    a.removeAttribute("data-link-preview");
+    fetch(`/api/link-image?url=${encodeURIComponent(url)}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!data?.image || !a.isConnected) return;
+        a.className = "chat-image-link";
+        a.textContent = "";
+        const img = document.createElement("img");
+        img.className = "chat-image";
+        img.src = data.image;
+        img.loading = "lazy";
+        img.referrerPolicy = "no-referrer";
+        a.appendChild(img);
+      })
+      .catch(() => {});
+  }
+}
+
 function inlineMarkdown(str) {
   const links = [];
   const colors = [];
@@ -14302,9 +14362,17 @@ function inlineMarkdown(str) {
     links.push(`<a href="${url}" target="_blank" rel="noopener">${url}</a>`);
     return `\u0001L${links.length - 1}\u0001`;
   });
-  // 맨 URL 자동 링크
+  // 맨 URL 자동 링크. 이미지/gif 확장자로 끝나면 링크 텍스트 대신 그림으로 보여준다(디스코드식 임베드).
+  // 확장자가 없는 gif 사이트 페이지 링크(klipy/tenor/giphy)는 og:image를 못 미리 알아서, 일단 평범한
+  // 링크로 렌더링해두고 hydrateLinkImagePreviews()가 렌더 후 비동기로 이미지로 바꿔치기한다.
   out = out.replace(/(https?:\/\/[^\s<]+)/g, (m, url) => {
-    links.push(`<a href="${url}" target="_blank" rel="noopener">${url}</a>`);
+    if (isDirectImageUrl(url)) {
+      links.push(`<a class="chat-image-link" href="${url}" target="_blank" rel="noopener"><img class="chat-image" src="${url}" alt="" loading="lazy" referrerpolicy="no-referrer" /></a>`);
+    } else if (isLinkPreviewHost(url)) {
+      links.push(`<a href="${url}" target="_blank" rel="noopener" data-link-preview="${url}">${url}</a>`);
+    } else {
+      links.push(`<a href="${url}" target="_blank" rel="noopener">${url}</a>`);
+    }
     return `\u0001L${links.length - 1}\u0001`;
   });
   out = out.replace(/`([^`]+)`/g, "<code>$1</code>");
@@ -14852,7 +14920,8 @@ function updateControls() {
   }
   applyListenBlock(denyVoice);
   dom.leaveButton.disabled = !inRoom;
-  dom.muteButton.disabled = !inRoom || !state.rawMicTrack || denyVoice;
+  // 마이크는 통화방 밖에서도 켜고 끌 수 있다(다음 입장 때 적용될 선호로 저장됨). 권한으로 막힌 경우만 잠근다.
+  dom.muteButton.disabled = denyVoice;
   dom.muteButton.title = denyVoice ? "이 통화방에서 마이크·스피커 권한이 없습니다." : "";
   dom.repairAudioButton.disabled = !inRoom || !state.rawMicTrack || state.applyingSettings;
   dom.muteButton.textContent = state.muted ? "마이크 켜기" : "마이크 끄기";
@@ -14879,14 +14948,15 @@ function updateControls() {
   updateProgramAudioControls();
   updateSetupStatus();
 
-  // 우상단 통화 상태 아이콘(통화 중이면 항상 표시, 설정에서 전체를 껐다 켤 수 있음).
+  // 우상단 통화 상태 아이콘. 마이크는 통화방 밖에서도 항상 표시, 화면·소리공유는 통화 중에만
+  // (설정에서 전체를 껐다 켤 수 있음).
   if (dom.callStatusIcons) {
-    dom.callStatusIcons.hidden = !inRoom;
-    dom.callIconScreen.hidden = state.callStatusIconsHidden || dom.screenShareButton.hidden;
+    dom.callStatusIcons.hidden = false;
+    dom.callIconScreen.hidden = !inRoom || state.callStatusIconsHidden || dom.screenShareButton.hidden;
     dom.callIconScreen.disabled = dom.screenShareButton.disabled;
     dom.callIconScreen.setAttribute("aria-pressed", String(sharingScreen));
     dom.callIconScreen.title = sharingScreen ? "화면 공유 중 · 클릭해서 끄기" : "화면 공유 켜기";
-    dom.callIconSound.hidden = state.callStatusIconsHidden || dom.systemAudioAction.hidden;
+    dom.callIconSound.hidden = !inRoom || state.callStatusIconsHidden || dom.systemAudioAction.hidden;
     dom.callIconSound.disabled = dom.systemAudioToggle.disabled;
     dom.callIconSound.setAttribute("aria-pressed", String(state.systemSharing));
     dom.callIconSound.title = state.systemSharing ? "컴퓨터 사운드 공유 중 · 클릭해서 끄기" : "컴퓨터 사운드 공유 켜기";
