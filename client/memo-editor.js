@@ -538,7 +538,11 @@ function liveDecorations(view) {
           const taskMarker = task ? childNodes(task, "TaskMarker")[0] : null;
           // 목록 항목 전체(node)가 아니라 마커 자체(listMark)에 커서가 닿았을 때만 원문을 드러낸다.
           // 항목 본문(예: "12. c"의 "c")을 편집 중일 땐 옵시디언처럼 번호가 계속 정렬된 값으로 보여야 한다.
-          const markerActive = listMark && selectionTouches(state, listMark.from, listMark.to);
+          // IME 조합 중엔 커서 오프셋이 마커 폭 판정과 한 박자 어긋날 수 있고, 그 틈에 위젯을 새로 씌우면
+          // 브라우저가 조합 영역 DOM을 못 지우게 막아서 원문 마커 + 위젯이 겹쳐 보인다(예: "1.1.").
+          // 조합 중엔 같은 줄이면 항상 원문을 유지해 위젯 교체 자체를 건너뛴다.
+          const markerActive = listMark && (selectionTouches(state, listMark.from, listMark.to) ||
+            (view.composing && state.doc.lineAt(listMark.from).number === state.doc.lineAt(state.selection.main.head).number));
           if (listMark && !markerActive) {
             if (taskMarker) hide(listMark.from, listMark.to);
             else {
