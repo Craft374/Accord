@@ -1,11 +1,11 @@
 import { EditorView, basicSetup } from "codemirror";
-import { Annotation, Compartment, EditorSelection, EditorState, StateEffect, StateField, Transaction } from "@codemirror/state";
+import { Annotation, Compartment, EditorSelection, EditorState, Prec, StateEffect, StateField, Transaction } from "@codemirror/state";
 import { Decoration, ViewPlugin, WidgetType, keymap, lineNumbers, placeholder } from "@codemirror/view";
 import { indentWithTab } from "@codemirror/commands";
 import { acceptCompletion } from "@codemirror/autocomplete";
 import { HighlightStyle, syntaxHighlighting, syntaxTree } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
-import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
+import { markdown, markdownLanguage, insertNewlineContinueMarkupCommand, deleteMarkupBackward } from "@codemirror/lang-markdown";
 
 // basicSetup 의 defaultHighlightStyle 은 밝은 배경 전제(헤딩 밑줄, 마크문자 어두운 회색)라 다크 테마에서
 // 안 보이거나(#404740 회색) 밑줄이 남는다(제목). 마크다운에 실제로 쓰이는 태그만 다시 정의해 완전히 대체한다.
@@ -342,6 +342,42 @@ function listAwareIndent(view) {
   return true;
 }
 
+// Shift-Tab: listAwareIndent 의 반대 방향. 기본 indentLess 는 목록 마커를 모르고 고정폭(2칸)만
+// 줄여서, listAwareIndent 가 3칸(마커 폭) 들여쓴 걸 되돌리면 1칸이 남는 문제가 있었다.
+// 상위(들여쓰기가 더 얕은) 목록 항목의 폭까지 한 번에 되돌린다.
+function listAwareOutdent(view) {
+  const { state } = view;
+  const sel = state.selection.main;
+  const first = state.doc.lineAt(sel.from);
+  const curMatch = LIST_MARK_RE.exec(first.text);
+  if (!curMatch) return false;
+  const currentIndent = curMatch[1].length;
+  if (currentIndent === 0) return false;
+  let targetIndent = 0;
+  for (let n = first.number - 1; n >= 1; n--) {
+    const candidate = state.doc.line(n);
+    if (!candidate.text.trim()) continue;
+    const match = LIST_MARK_RE.exec(candidate.text);
+    const indent = match ? match[1].length : 0;
+    if (indent < currentIndent) { targetIndent = indent; break; }
+  }
+  const removeWidth = currentIndent - targetIndent;
+  if (removeWidth <= 0) return false;
+  const changes = [];
+  for (let n = first.number; n <= state.doc.lineAt(sel.to).number; n++) {
+    const line = state.doc.line(n);
+    const width = Math.min(removeWidth, LIST_MARK_RE.exec(line.text)?.[1].length ?? 0);
+    if (width > 0) changes.push({ from: line.from, to: line.from + width });
+  }
+  if (!changes.length) return false;
+  view.dispatch({
+    changes,
+    selection: sel.empty ? EditorSelection.cursor(sel.head - removeWidth) : undefined,
+    userEvent: "delete.dedent",
+  });
+  return true;
+}
+
 function listOrdinals(state) {
   const counters = new Map();
   const ordinals = new Map();
@@ -363,7 +399,10 @@ function listOrdinals(state) {
 // ponytail: 목록의 첫 항목만 보호하므로 "2026. 7. 22" 같은 날짜 줄이 연달아 두 줄 이상이면
 //           둘째 줄 숫자가 바뀐다. 실제로 문제되면 목록 판정에서 날짜 형태를 빼는 식으로 올릴 것.
 const renumberLists = EditorState.transactionFilter.of((transaction) => {
-  if (!transaction.docChanged || transaction.startState.readOnly || transaction.annotation(externalChange)) return transaction;
+  // IME 조합 중에는 브라우저가 조합 영역 DOM을 직접 관리하므로, 그 자리 텍스트를 별도 트랜잭션으로
+  // 갈아치우면 조합 표시가 깨진다(번호가 겹쳐 보이거나 조합 취소 시 사라짐). 조합이 끝난 뒤에만 교정한다.
+  if (!transaction.docChanged || transaction.startState.readOnly || transaction.annotation(externalChange) ||
+    transaction.isUserEvent("input.type.compose")) return transaction;
   const state = transaction.state;
   const changes = [];
   for (const [from, ordinal] of listOrdinals(state)) {
@@ -672,14 +711,21 @@ function createMemoEditor(options) {
     memoCloseBrackets,
     memoStrikethroughInput,
     memoAutocomplete,
-    markdown({ base: markdownLanguage, extensions: [memoInlineSyntax] }),
+    markdown({ base: markdownLanguage, extensions: [memoInlineSyntax], addKeymap: false }),
+    // 기본 markdownKeymap 대신 nonTightLists:false 로 직접 바인딩: 타이트한 2개짜리 목록의
+    // 두 번째(마지막) 항목이 비어있을 때 Enter를 누르면, 목록을 "느슨하게" 바꿔 위에 빈 줄을
+    // 끼워넣는 기본 동작 대신 다른 항목들처럼 마커만 지우고 목록을 빠져나오게 한다.
+    Prec.high(keymap.of([
+      { key: "Enter", run: insertNewlineContinueMarkupCommand({ nonTightLists: false }) },
+      { key: "Backspace", run: deleteMarkupBackward },
+    ])),
     EditorView.lineWrapping,
     EditorState.tabSize.of(2),
     // 줄번호가 9→10줄, 99→100줄처럼 자릿수가 늘어날 때 거터 폭이 넓어지며 기존 숫자들이 옆으로 밀리던 문제.
     // 3자리로 항상 고정 폭을 예약해 두면(옵시디언과 동일한 체감) 그 안에서는 밀림이 없다.
     // ponytail: 1000줄을 넘는 메모는 다시 밀린다 — 필요해지면 자릿수만 늘리면 됨.
     lineNumbers({ formatNumber: (n) => String(n).padStart(3, String.fromCharCode(160)) }),
-    keymap.of([{ key: "Tab", run: acceptCompletion }, { key: "Tab", run: listAwareIndent }, indentWithTab]),
+    keymap.of([{ key: "Tab", run: acceptCompletion }, { key: "Tab", run: listAwareIndent, shift: listAwareOutdent }, indentWithTab]),
     placeholder("마크다운으로 메모를 작성하세요. 채널 멤버와 실시간으로 함께 편집됩니다."),
     readOnly.of(EditorState.readOnly.of(true)),
     measureFlip.of(measureFlipThemes[0]),
