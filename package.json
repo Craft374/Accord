@@ -14,7 +14,7 @@
     "build:memo-editor": "esbuild client/memo-editor.js --bundle --minify --format=iife --outfile=public/memo-editor.bundle.js",
     "icons": "node scripts/generate-icons.js",
     "build:mac": "node scripts/fix-mac-builder-permissions.js && npm run icons && node node_modules/electron-builder/cli.js --mac zip --arm64",
-    "build:win": "node scripts/build-windows-helper.js && npm run icons && node node_modules/electron-builder/cli.js --win portable --x64",
+    "build:win": "node scripts/build-windows-helper.js && npm run icons && node node_modules/electron-builder/cli.js --win nsis --x64",
     "build": "npm run check && npm run build:mac && npm run build:win && node scripts/prune-dist.js"
   },
   "devDependencies": {
@@ -54,15 +54,15 @@
     },
     "win": {
       "target": [
-        "portable"
+        "nsis"
       ],
-      "artifactName": "Accord Windows ${arch} Portable.${ext}",
+      "artifactName": "Accord Windows ${arch} Setup.${ext}",
       "files": [
         "electron/bin/**/*"
       ]
     },
-    "portable": {
-      "unpackDirName": "accord-app"
+    "nsis": {
+      "perMachine": false
     }
   }
 }

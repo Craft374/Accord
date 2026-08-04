@@ -3,7 +3,7 @@
 [한국어](BUILD.md) · **English**
 
 The desktop app (Electron) is a thin shell: you enter a server address and it opens the Accord UI.
-Building produces a distributable executable (Windows portable exe / macOS zip) in `dist/`.
+Building produces a distributable executable (Windows installer / macOS zip) in `dist/`.
 
 > There are no prebuilt binaries in Releases yet — the project still updates too often for release
 > builds to keep up. Build from source with the steps below, or skip the app entirely and open the
@@ -30,13 +30,16 @@ npm install
 
 ## 1. One-click scripts
 
-### Windows portable exe (on Windows)
+### Windows installer (on Windows)
 
 **Double-click `scripts/win/build-windows.bat`.**
 
 It compiles `native/windows-process-loopback/Program.cs` (the per-application audio capture helper)
-with .NET `csc.exe`, then builds an x64 portable exe with electron-builder.
-Output: **`dist/Accord Windows x64 Portable.exe`**
+with .NET `csc.exe`, then builds an x64 installer with electron-builder.
+Output: **`dist/Accord Windows x64 Setup.exe`**
+
+Recipients run it once (per-user install, no admin rights needed); afterwards Accord launches from
+the Start Menu or desktop shortcut.
 
 ### macOS app (on macOS)
 

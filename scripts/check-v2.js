@@ -172,8 +172,8 @@ const checks = [
       requiredLaunchers.every((file) => commandBatFiles.includes(file)),
     "only required bat and command launchers remain",
   ],
-  [buildWindowsBat.includes("npm run build:win") && buildWindowsBat.includes("Accord Windows x64 Portable.exe"), "windows bat builds windows artifact"],
-  [buildWindowsCommand.includes("npm run build:win") && buildWindowsCommand.includes("Accord Windows x64 Portable.exe"), "mac command builds windows artifact"],
+  [buildWindowsBat.includes("npm run build:win") && buildWindowsBat.includes("Accord Windows x64 Setup.exe"), "windows bat builds windows artifact"],
+  [buildWindowsCommand.includes("npm run build:win") && buildWindowsCommand.includes("Accord Windows x64 Setup.exe"), "mac command builds windows artifact"],
   [buildMacCommand.includes("npm run build:mac") && buildMacCommand.includes("Accord Mac arm64.zip"), "mac command builds mac artifact"],
   [startServerMacCommand.includes("./scripts/mac/start-mac-server.sh") && startMacServer.includes("setup-turn-mac.sh") && startMacServer.includes("scripts/start-https.js"), "mac server command starts TURN and HTTPS"],
   [app.includes("ensureSecureAudioContext") && app.includes("window.isSecureContext"), "secure audio context guard exists"],
@@ -217,10 +217,12 @@ const checks = [
   [iconPolygonCount > 0 && iconPolygonCount <= 4, "icon svg uses four or fewer polygons"],
   [css.includes("color-scheme: dark"), "dark mode css exists"],
   [main.includes("load-voice-url") && main.includes("loadURL"), "desktop shell loads server UI"],
-  [pkg.build?.win?.target?.includes("portable"), "windows build uses portable target"],
-  [!pkg.build?.win?.target?.includes("nsis") && !pkg.nsis, "windows installer target is disabled"],
+  // portable 은 실행할 때마다 230MB 를 임시폴더로 재추출해 창이 뜨기까지 17초 넘게 걸리고,
+  // 트레이 상주 중에는 파일이 잠겨 새 빌드로 교체조차 안 됐다(2026-08-04 실측). 설치형(nsis)으로 고정.
+  [pkg.build?.win?.target?.includes("nsis") && !pkg.build?.win?.target?.includes("portable"), "windows build uses installer target"],
+  [pkg.build?.nsis?.perMachine === false, "windows installer is per-user (no UAC prompt)"],
   [!pkg.scripts?.["build:win:arm"] && !pkg.scripts?.build?.includes("build:win:arm"), "windows arm build script is removed"],
-  [pkg.scripts?.build?.includes("scripts/prune-dist.js") && pruneDist.includes("Accord Windows x64 Portable.exe") && !pruneDist.includes("Windows arm64"), "build keeps only mac and windows x64 artifacts"],
+  [pkg.scripts?.build?.includes("scripts/prune-dist.js") && pruneDist.includes("Accord Windows x64 Setup.exe") && !pruneDist.includes("Windows arm64"), "build keeps only mac and windows x64 artifacts"],
   [dataStore.includes("function getRoomStats(roomId)") && dataStore.includes("function saveRoomStats(roomId, stats)") && dataStore.includes("function deleteRoomStats(roomId)"), "room stats store functions exist"],
   [dataStore.includes("deleteRoomStats(roomId)") && dataStore.includes("deleteRoomStats(room.id)"), "room/channel deletion also deletes room stats"],
   [server.includes('message.type === "stats:media"') && server.includes('message.type === "room:force-screen-off"') && server.includes('message.type === "room:force-sound-off"'), "server routes mic/screen/sound moderation and stats messages"],
@@ -233,6 +235,10 @@ const checks = [
   [app.includes('label: "방 설정"') && !app.includes('label: "이름 변경"'), "room context menu item renamed from 이름 변경 to 방 설정"],
   [main.indexOf("app.requestSingleInstanceLock()") < main.indexOf("windowsGpuMode = getWindowsGpuMode()"), "single instance lock check runs before GPU mode setup"],
   [main.includes('app.setAppUserModelId("craft374.accord")'), "windows app user model id is set for correct taskbar identity"],
+  // 락을 못 얻은 두 번째 프로세스는 즉시 죽어야 한다. quit()은 비동기라 그 사이 빈 창이 뜬다.
+  [/if \(!app\.requestSingleInstanceLock\(\)\) \{\s*app\.exit\(0\);/.test(main), "second instance exits immediately instead of async quit"],
+  // 설치형으로 돌아온 뒤 다시 portable 을 켜면 위의 재추출·잠금 문제가 그대로 되살아난다.
+  [!pkg.build?.portable, "no leftover portable config (its unpack dir pin froze the app on an old build)"],
 ];
 
 for (const [ok, label] of checks) {

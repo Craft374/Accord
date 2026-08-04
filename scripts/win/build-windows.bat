@@ -22,6 +22,6 @@ node scripts\prune-dist.js
 
 echo.
 echo Done:
-echo dist\Accord Windows x64 Portable.exe
+echo dist\Accord Windows x64 Setup.exe
 echo.
 pause

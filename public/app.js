@@ -687,12 +687,25 @@ function bindEvents() {
     const value = input.closest(".sound-pref-row")?.querySelector("b");
     if (value) value.textContent = `${getSoundPref(category).volume}%`;
   });
-  dom.participantList.addEventListener("click", (event) => {
-    const mod = event.target?.closest?.("[data-mod-action]");
-    if (mod) {
-      handleCallModeration(mod.dataset.modAction, mod.dataset.modPeerId);
-      return;
+  // 참가자 카드 우클릭 → 대표자용 강제 조정 메뉴(마이크·화면·소리 끄기, 내보내기).
+  dom.participantList.addEventListener("contextmenu", (event) => {
+    const card = event.target?.closest?.("[data-peer-id]");
+    if (!card) return;
+    const peer = state.peers.get(card.dataset.peerId);
+    // 대표자만, 그리고 다른 대표자에게는 쓸 수 없다(서버도 같은 규칙으로 재확인함).
+    if (!peer || !canModerateCall() || isPeerCallOwner(peer)) return;
+    event.preventDefault();
+    const items = [{ label: "마이크 끄기", action: () => handleCallModeration("force-mute", peer.id) }];
+    if (peer.remote.screen?.track?.readyState === "live") {
+      items.push({ label: "화면 공유 끄기", action: () => handleCallModeration("force-screen-off", peer.id) });
     }
+    if (peer.remote.system?.track?.readyState === "live") {
+      items.push({ label: "소리 공유 끄기", action: () => handleCallModeration("force-sound-off", peer.id) });
+    }
+    items.push({ label: "통화방에서 내보내기", danger: true, action: () => handleCallModeration("kick", peer.id) });
+    openChatContextMenu(items, { x: event.clientX, y: event.clientY });
+  });
+  dom.participantList.addEventListener("click", (event) => {
     const profile = event.target?.closest?.("[data-profile-user]");
     if (profile) {
       openProfileCard(profile.dataset.profileUser, profile, { id: profile.dataset.profileUser, displayName: profile.textContent, code: "----" });
@@ -1242,6 +1255,7 @@ function logout() {
   toggleSettingsModal(false);
   toggleProfileModal(false);
   toggleAdminModal(false);
+  closeRoomStatsModal(); // 열려 있으면 1초 폴링 타이머가 남아 다음 로그인 때까지 살아있는다
   if (state.currentRoom) leaveRoom("로그아웃했습니다.");
   // 채널/멤버 화면을 비워 다음 로그인 전까지 이전 계정 정보가 남지 않게 한다.
   state.channels = [];
@@ -14587,6 +14601,7 @@ function confirmRoomRename() {
 
 // 방 통계 모달(대표자 전용, "방 설정"에서 진입)
 let roomStatsTargetId = "";
+let roomStatsTimer = 0;
 const ROOM_STATS_COLUMNS = {
   voice: [
     ["joinMs", "접속 시간", formatDuration],
@@ -14621,10 +14636,20 @@ function openRoomStatsModal(roomId) {
   if (dom.roomStatsTotal) dom.roomStatsTotal.textContent = "불러오는 중…";
   if (dom.roomStatsTableWrap) dom.roomStatsTableWrap.innerHTML = "";
   dom.roomStatsModal.hidden = false;
-  sendSocket({ type: "channel:room-stats", channelId: found.channel.id, roomId });
+  // 창을 열어둔 동안 1초마다 다시 받아 숫자가 실시간으로 올라가게 한다(서버가 진행 중인 구간까지 더해서 보냄).
+  requestRoomStats();
+  if (roomStatsTimer) clearInterval(roomStatsTimer);
+  roomStatsTimer = window.setInterval(requestRoomStats, 1000);
+}
+
+function requestRoomStats() {
+  const found = findRoomInChannels(roomStatsTargetId);
+  if (!found) return;
+  sendSocket({ type: "channel:room-stats", channelId: found.channel.id, roomId: roomStatsTargetId });
 }
 
 function closeRoomStatsModal() {
+  if (roomStatsTimer) { clearInterval(roomStatsTimer); roomStatsTimer = 0; }
   if (dom.roomStatsModal) dom.roomStatsModal.hidden = true;
   roomStatsTargetId = "";
 }
@@ -14811,44 +14836,7 @@ function appendParticipant({ id, name, status, self = false, peer = null, userId
       screenButton.textContent = state.selectedScreenPeerId === peer.id ? "보고 있음" : "화면 보기";
       card.append(screenButton);
     }
-    // 대표자에게만 보이는 강제 음소거 / 내보내기(다른 대표자에겐 숨김).
-    if (canModerateCall() && !isPeerCallOwner(peer)) {
-      const mod = document.createElement("div");
-      mod.className = "participant-mod";
-      const muteBtn = document.createElement("button");
-      muteBtn.type = "button";
-      muteBtn.className = "participant-mod-btn";
-      muteBtn.dataset.modAction = "force-mute";
-      muteBtn.dataset.modPeerId = peer.id;
-      muteBtn.textContent = "음소거";
-      mod.append(muteBtn);
-      if (peer.remote.screen?.track?.readyState === "live") {
-        const screenOffBtn = document.createElement("button");
-        screenOffBtn.type = "button";
-        screenOffBtn.className = "participant-mod-btn";
-        screenOffBtn.dataset.modAction = "force-screen-off";
-        screenOffBtn.dataset.modPeerId = peer.id;
-        screenOffBtn.textContent = "화면끄기";
-        mod.append(screenOffBtn);
-      }
-      if (peer.remote.system?.track?.readyState === "live") {
-        const soundOffBtn = document.createElement("button");
-        soundOffBtn.type = "button";
-        soundOffBtn.className = "participant-mod-btn";
-        soundOffBtn.dataset.modAction = "force-sound-off";
-        soundOffBtn.dataset.modPeerId = peer.id;
-        soundOffBtn.textContent = "소리끄기";
-        mod.append(soundOffBtn);
-      }
-      const kickBtn = document.createElement("button");
-      kickBtn.type = "button";
-      kickBtn.className = "participant-mod-btn danger";
-      kickBtn.dataset.modAction = "kick";
-      kickBtn.dataset.modPeerId = peer.id;
-      kickBtn.textContent = "내보내기";
-      mod.append(kickBtn);
-      card.append(mod);
-    }
+    // 강제 음소거·공유끄기·내보내기는 카드 우클릭 메뉴로 제공한다(bindEvents 의 contextmenu 핸들러).
   } else {
     if (state.screenSharing) {
       const badge = document.createElement("span");

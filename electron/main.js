@@ -61,13 +61,14 @@ let screenCaptureConfig = {};
 // 이미 떠 있는 창을 앞으로 가져온다. 락을 못 얻은 이 프로세스는 whenReady/createWindow를 아예 등록하지
 // 않고 즉시 종료해야 한다 — else 없이 app.quit()만 부르면 quit이 비동기라 whenReady가 먼저 resolve되어
 // 빈 창이 잠깐 떴다 사라지는 깜빡임이 생긴다. 락 검사는 GPU 모드/커맨드라인 스위치 계산보다도 먼저 해서,
-// 락을 못 얻은 프로세스가 quit을 부르기까지 걸리는 시간을 최소화한다(단, Electron/Chromium 자체의 네이티브
-// 부팅 시간은 이 시점 이전이라 우리 JS로는 줄일 수 없다 — Windows가 그 사이 뜨는 잔상은 OS 레벨 현상).
+// 락을 못 얻은 프로세스가 종료되기까지 걸리는 시간을 최소화한다.
+// app.quit()이 아니라 app.exit(0)인 이유: quit()은 비동기라 before-quit/will-quit 을 돌며 이벤트 루프를
+// 한 바퀴 더 태우는 동안 창이 생길 틈을 준다. exit(0)은 그 자리에서 프로세스를 끝낸다.
 if (!app.requestSingleInstanceLock()) {
-  app.quit();
+  app.exit(0);
 } else {
-  // portable exe를 작업표시줄에 고정한 경우 Windows가 재실행을 이 앱의 것으로 정확히 인식하도록
-  // (그룹화·점프리스트 등 셀 통합에 필요, package.json의 appId와 동일한 값).
+  // 작업표시줄·시작메뉴 바로가기에서 재실행할 때 Windows가 이 앱의 것으로 정확히 인식하도록
+  // (그룹화·점프리스트 등 셸 통합에 필요, package.json의 appId 및 설치 프로그램이 굽는 AUMID와 동일한 값).
   app.setAppUserModelId("craft374.accord");
   windowsGpuMode = getWindowsGpuMode();
   commandLineSwitches = getCommandLineSwitches();

@@ -3,7 +3,7 @@
 **한국어** · [English](BUILD.en.md)
 
 데스크톱 앱(Electron)은 서버 주소를 입력해 통화 UI를 여는 얇은 껍데기입니다.
-빌드하면 배포용 실행 파일(Windows 포터블 exe / macOS zip)이 `dist/` 에 만들어집니다.
+빌드하면 배포용 실행 파일(Windows 설치 프로그램 / macOS zip)이 `dist/` 에 만들어집니다.
 
 ## 준비물
 
@@ -25,13 +25,16 @@ npm install
 
 ## 1. 스크립트로 바로 빌드 (원클릭)
 
-### Windows 포터블 exe (Windows에서)
+### Windows 설치 프로그램 (Windows에서)
 
 `scripts/win/build-windows.bat` **더블클릭**.
 
 `native/windows-process-loopback/Program.cs`(프로그램별 오디오 캡처 helper)를 .NET `csc.exe` 로 먼저 컴파일한 뒤
-electron-builder로 x64 포터블 exe를 만듭니다.
-산출물: **`dist/Accord Windows x64 Portable.exe`**
+electron-builder로 x64 설치 프로그램을 만듭니다.
+산출물: **`dist/Accord Windows x64 Setup.exe`**
+
+받는 사람은 이 파일을 한 번 실행하면 설치되고(관리자 권한 불필요, 사용자 폴더에 설치),
+이후로는 시작 메뉴·바탕화면 아이콘으로 바로 실행됩니다.
 
 ### macOS 앱 (macOS에서)
 

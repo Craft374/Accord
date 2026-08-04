@@ -10,6 +10,6 @@ node scripts/prune-dist.js
 
 echo ""
 echo "Done:"
-echo "dist/Accord Windows x64 Portable.exe"
+echo "dist/Accord Windows x64 Setup.exe"
 echo ""
 read -k 1 "?Press any key to close..."

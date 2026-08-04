@@ -117,6 +117,46 @@ function memoOpDelta(o) {
   return { charsTyped, charsDeleted, linesTyped };
 }
 
+// 방 종류별로 "지금 이 방을 보고 있는지" 판정할 client 필드와, 그 시작 시각 필드.
+const STATS_LIVE_FIELDS = {
+  voice: { roomField: "roomId", sinceField: "roomJoinedAt", key: "joinMs" },
+  chat: { roomField: "chatRoomId", sinceField: "chatJoinedAt", key: "viewMs" },
+  memo: { roomField: "memoRoomId", sinceField: "memoJoinedAt", key: "viewMs" },
+  draw: { roomField: "drawRoomId", sinceField: "drawJoinedAt", key: "viewMs" },
+};
+
+// 조회 시점 기준 스냅샷. 아직 안 닫힌 구간(접속 중인 시간, 켜져 있는 마이크·화면·소리공유 시간,
+// 진행 중인 통화의 전체 시간)을 더해 돌려준다 — 통계 창을 열어둔 채로 숫자가 실시간으로 올라가게.
+// statsCache 는 절대 건드리지 않는다. 폴링할 때마다 누적되면 값이 몇 배로 부풀기 때문.
+function roomStatsSnapshot(roomId, roomType) {
+  const s = getRoomStatsMut(roomId);
+  const now = Date.now();
+  const users = new Map(Object.entries(s.users).map(([userId, u]) => [userId, { userId, ...u }]));
+  const bump = (client, key, amount) => {
+    if (!amount) return;
+    let u = users.get(client.userId);
+    if (!u) { u = { userId: client.userId }; users.set(client.userId, u); }
+    u.name = client.name;
+    u[key] = (u[key] || 0) + amount;
+  };
+
+  const live = STATS_LIVE_FIELDS[roomType];
+  if (live) {
+    for (const c of clients.values()) {
+      if (!c.userId || c[live.roomField] !== roomId) continue;
+      if (c[live.sinceField]) bump(c, live.key, now - c[live.sinceField]);
+      if (roomType !== "voice") continue;
+      for (const [kind, since] of Object.entries(c.mediaOn)) {
+        if (since) bump(c, `${kind}OnMs`, now - since);
+      }
+    }
+  }
+
+  const room = rooms.get(roomId);
+  const totalMs = s.totalMs + (room ? now - (room.startedAt || now) : 0);
+  return { totalMs, users: [...users.values()] };
+}
+
 // 통화방을 나갈 때 열려 있던 마이크/화면/소리공유 구간을 전부 마감한다.
 function finalizeMediaStats(client, roomId) {
   for (const kind of Object.keys(client.mediaOn)) {
@@ -1271,9 +1311,8 @@ function handleChannelMessage(client, message) {
       return ownerAction(client, message.channelId, () => {
         const found = store.findRoom(message.roomId);
         if (!found || found.channel.id !== message.channelId) return channelError(client, "방을 찾을 수 없습니다.");
-        const s = getRoomStatsMut(message.roomId);
-        const users = Object.entries(s.users).map(([userId, u]) => ({ userId, ...u }));
-        send(client, { type: "channel:room-stats", roomId: message.roomId, roomType: found.room.type, totalMs: s.totalMs, users });
+        const snap = roomStatsSnapshot(message.roomId, found.room.type);
+        send(client, { type: "channel:room-stats", roomId: message.roomId, roomType: found.room.type, totalMs: snap.totalMs, users: snap.users });
         return true;
       });
     case "channel:kick":
