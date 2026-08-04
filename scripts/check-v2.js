@@ -221,6 +221,18 @@ const checks = [
   [!pkg.build?.win?.target?.includes("nsis") && !pkg.nsis, "windows installer target is disabled"],
   [!pkg.scripts?.["build:win:arm"] && !pkg.scripts?.build?.includes("build:win:arm"), "windows arm build script is removed"],
   [pkg.scripts?.build?.includes("scripts/prune-dist.js") && pruneDist.includes("Accord Windows x64 Portable.exe") && !pruneDist.includes("Windows arm64"), "build keeps only mac and windows x64 artifacts"],
+  [dataStore.includes("function getRoomStats(roomId)") && dataStore.includes("function saveRoomStats(roomId, stats)") && dataStore.includes("function deleteRoomStats(roomId)"), "room stats store functions exist"],
+  [dataStore.includes("deleteRoomStats(roomId)") && dataStore.includes("deleteRoomStats(room.id)"), "room/channel deletion also deletes room stats"],
+  [server.includes('message.type === "stats:media"') && server.includes('message.type === "room:force-screen-off"') && server.includes('message.type === "room:force-sound-off"'), "server routes mic/screen/sound moderation and stats messages"],
+  [server.includes('case "channel:room-stats"'), "server exposes owner-only room stats request"],
+  [app.includes("function markRoomNameClickable(el, channel)")
+    && app.includes('dom.currentRoomName?.addEventListener("click"')
+    && app.includes('dom.chatRoomName?.addEventListener("click"')
+    && app.includes('dom.memoRoomName?.addEventListener("click"')
+    && app.includes('dom.drawRoomName?.addEventListener("click"'), "room header title click opens room settings"],
+  [app.includes('label: "방 설정"') && !app.includes('label: "이름 변경"'), "room context menu item renamed from 이름 변경 to 방 설정"],
+  [main.indexOf("app.requestSingleInstanceLock()") < main.indexOf("windowsGpuMode = getWindowsGpuMode()"), "single instance lock check runs before GPU mode setup"],
+  [main.includes('app.setAppUserModelId("craft374.accord")'), "windows app user model id is set for correct taskbar identity"],
 ];
 
 for (const [ok, label] of checks) {
@@ -358,6 +370,20 @@ const reviews = [
       return render(["10. a", "17. b"]).startsWith('<ol class="md-list" start="10">') && !render(["1. a", "3. b"]).includes("start=");
     } catch { return false; }
   })(), "preview ordered list starts at the first item's number (runtime)"],
+  [(() => {
+    // 메모 통계(입력/삭제 글자수·줄수)는 OT 연산을 그대로 세므로, 소스에서 뽑아 실제 실행해 검증한다.
+    try {
+      const src = server.match(/function memoOpDelta\(o\) \{[\s\S]*?\n\}/);
+      if (!src) return false;
+      const fn = new Function(`${src[0]}\nreturn memoOpDelta;`)();
+      const insert = fn(["ab\ncd"]);
+      const del = fn([5, -3]);
+      const mixed = fn(["a\nb", -2, "c"]);
+      return insert.charsTyped === 5 && insert.linesTyped === 1 && insert.charsDeleted === 0
+        && del.charsDeleted === 3 && del.charsTyped === 0
+        && mixed.charsTyped === 4 && mixed.charsDeleted === 2 && mixed.linesTyped === 1;
+    } catch { return false; }
+  })(), "memoOpDelta counts inserted/deleted chars and inserted lines correctly (runtime)"],
 ];
 
 for (const [ok, label] of reviews) {

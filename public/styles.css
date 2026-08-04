@@ -3612,6 +3612,7 @@ summary:hover {
 
 .participant-mod {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   margin-top: 8px;
 }
@@ -3695,6 +3696,35 @@ summary:hover {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+/* 방 상단 헤더 제목: 클릭으로 "방 설정"을 열 수 있을 때만 어포던스 표시 */
+.room-name-clickable {
+  cursor: pointer;
+}
+.room-name-clickable:hover {
+  text-decoration: underline;
+  text-decoration-color: var(--line);
+}
+
+.room-stats-table-wrap {
+  overflow-x: auto;
+}
+.room-stats-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.room-stats-table th,
+.room-stats-table td {
+  padding: 6px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.room-stats-table th {
+  color: var(--muted);
+  font-weight: 600;
 }
 
 .modal-hint {

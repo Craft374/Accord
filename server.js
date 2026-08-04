@@ -57,6 +57,75 @@ const CERT_DIR = path.dirname(CERT_FILE);
 
 const clients = new Map();
 const rooms = new Map();
+
+// ===== 방 통계 =====
+// memoDocs/drawDocs와 같은 패턴: roomId -> { totalMs, users, saveTimer } 메모리 캐시 + 디바운스 저장.
+const statsCache = new Map();
+const STATS_PERSIST_DEBOUNCE = 2000;
+
+function getRoomStatsMut(roomId) {
+  let s = statsCache.get(roomId);
+  if (!s) {
+    const saved = store.getRoomStats(roomId);
+    s = { totalMs: saved.totalMs, users: saved.users, saveTimer: 0 };
+    statsCache.set(roomId, s);
+  }
+  return s;
+}
+
+function scheduleStatsPersist(roomId) {
+  const s = statsCache.get(roomId);
+  if (!s) return;
+  if (s.saveTimer) clearTimeout(s.saveTimer);
+  s.saveTimer = setTimeout(() => {
+    s.saveTimer = 0;
+    store.saveRoomStats(roomId, { totalMs: s.totalMs, users: s.users });
+  }, STATS_PERSIST_DEBOUNCE);
+}
+
+// 유저 하나의 누적 카운터(key)에 amount를 더한다. 표시 이름은 매번 최신으로 갱신.
+function addStat(roomId, userId, name, key, amount) {
+  if (!roomId || !userId || !amount) return;
+  const s = getRoomStatsMut(roomId);
+  if (!s.users[userId]) s.users[userId] = { name };
+  else s.users[userId].name = name;
+  s.users[userId][key] = (s.users[userId][key] || 0) + amount;
+  scheduleStatsPersist(roomId);
+}
+
+// 마이크/화면/소리공유 on 구간을 열고 닫는다. kind: "mic" | "screen" | "sound".
+function setMediaOn(client, kind, on) {
+  if (!client.userId || !client.roomId) return;
+  const since = client.mediaOn[kind] || 0;
+  if (on) {
+    if (!since) client.mediaOn[kind] = Date.now();
+    return;
+  }
+  if (since) {
+    addStat(client.roomId, client.userId, client.name, `${kind}OnMs`, Date.now() - since);
+    client.mediaOn[kind] = 0;
+  }
+}
+
+// OT 연산(문자열=삽입, 음수=삭제, 양수=유지)에서 입력한 글자수·지운 글자수·입력한 줄수를 셈한다.
+function memoOpDelta(o) {
+  let charsTyped = 0, charsDeleted = 0, linesTyped = 0;
+  for (const comp of o) {
+    if (typeof comp === "string") { charsTyped += comp.length; linesTyped += (comp.match(/\n/g) || []).length; }
+    else if (comp < 0) charsDeleted += -comp;
+  }
+  return { charsTyped, charsDeleted, linesTyped };
+}
+
+// 통화방을 나갈 때 열려 있던 마이크/화면/소리공유 구간을 전부 마감한다.
+function finalizeMediaStats(client, roomId) {
+  for (const kind of Object.keys(client.mediaOn)) {
+    const since = client.mediaOn[kind];
+    if (!since) continue;
+    addStat(roomId, client.userId, client.name, `${kind}OnMs`, Date.now() - since);
+    client.mediaOn[kind] = 0;
+  }
+}
 const tlsOptions = loadTlsOptions();
 if (!tlsOptions && REQUIRE_HTTPS) {
   console.error("HTTPS certificate was not created. Install openssl or set SSL_CERT_FILE and SSL_KEY_FILE.");
@@ -355,6 +424,11 @@ function handleUpgrade(req, socket) {
     logRoomId: "", // 현재 보고 있는 로그방(실시간 로그 대상 판별용)
     logChannelId: "", // 그 로그방이 속한 채널(채널 단위 피드라 따로 보관)
     dmUserId: "", // 현재 보고 있는 DM 상대(읽음 판별용)
+    roomJoinedAt: 0, // 통화방 접속 시각(통계용 접속시간 누적)
+    chatJoinedAt: 0, // 채팅방 보기 시작 시각(통계용)
+    memoJoinedAt: 0, // 메모장 보기 시작 시각(통계용)
+    drawJoinedAt: 0, // 그림판 보기 시작 시각(통계용)
+    mediaOn: {}, // 통계용 마이크/화면/소리공유 on 시작 시각. { mic, screen, sound } -> Date.now() 또는 0
   };
 
   clients.set(client.id, client);
@@ -538,6 +612,7 @@ function handleMessage(client, message) {
     if (!room) return;
     const sound = String(message.sound || "");
     if (!["screenOn", "screenOff", "soundOn", "soundOff"].includes(sound)) return;
+    setMediaOn(client, sound.startsWith("screen") ? "screen" : "sound", sound.endsWith("On"));
     for (const peerId of room.clients) {
       if (peerId === client.id) continue;
       send(clients.get(peerId), { type: "media:intent", sound });
@@ -545,7 +620,17 @@ function handleMessage(client, message) {
     return;
   }
 
-  if (message.type === "room:force-mute" || message.type === "room:kick-user") {
+  if (message.type === "stats:media") {
+    if (message.kind === "mic") setMediaOn(client, "mic", Boolean(message.on));
+    return;
+  }
+
+  if (
+    message.type === "room:force-mute" ||
+    message.type === "room:kick-user" ||
+    message.type === "room:force-screen-off" ||
+    message.type === "room:force-sound-off"
+  ) {
     handleRoomModeration(client, message);
     return;
   }
@@ -814,6 +899,7 @@ function joinVoiceRoom(client, roomId) {
   room.limit = limit;
   room.clients.add(client.id);
   client.roomId = roomId;
+  client.roomJoinedAt = Date.now();
   logServer(`joined room=${room.name} peers=${room.clients.size - 1}`, client);
 
   const peers = [...room.clients]
@@ -841,13 +927,21 @@ function joinVoiceRoom(client, roomId) {
 function leaveRoom(client, notify) {
   if (!client.roomId) return;
   const room = rooms.get(client.roomId);
+  const roomId = client.roomId;
+  const joinedAt = client.roomJoinedAt;
   client.roomId = "";
+  client.roomJoinedAt = 0;
+  finalizeMediaStats(client, roomId);
+  if (client.userId && joinedAt) addStat(roomId, client.userId, client.name, "joinMs", Date.now() - joinedAt);
   if (!room) return;
 
   room.clients.delete(client.id);
   logServer(`left room=${room.name} remaining=${room.clients.size}`, client);
   logChannelEvent(room.channelId, client, "voice-leave", { roomName: room.name });
   if (room.clients.size === 0) {
+    const s = getRoomStatsMut(room.id);
+    s.totalMs += Date.now() - (room.startedAt || Date.now());
+    scheduleStatsPersist(room.id);
     rooms.delete(room.id); // 실시간 접속 항목만 정리(방 메타데이터는 채널에 영속).
   } else {
     for (const peerId of room.clients) {
@@ -888,6 +982,12 @@ function handleRoomModeration(client, message) {
   if (message.type === "room:force-mute") {
     send(target, { type: "force-muted", roomId, roomName: found.room.name, byName: client.name });
     logChannelEvent(found.channel.id, target, "force-mute", { roomName: found.room.name, byName: client.name });
+  } else if (message.type === "room:force-screen-off") {
+    send(target, { type: "force-screen-off", roomId, roomName: found.room.name, byName: client.name });
+    logChannelEvent(found.channel.id, target, "force-screen-off", { roomName: found.room.name, byName: client.name });
+  } else if (message.type === "room:force-sound-off") {
+    send(target, { type: "force-sound-off", roomId, roomName: found.room.name, byName: client.name });
+    logChannelEvent(found.channel.id, target, "force-sound-off", { roomName: found.room.name, byName: client.name });
   } else {
     send(target, { type: "kicked-from-room", roomId, roomName: found.room.name, byName: client.name });
     logChannelEvent(found.channel.id, target, "voice-kick", { roomName: found.room.name, byName: client.name });
@@ -906,7 +1006,7 @@ function removeClient(client) {
   if (client.userId) store.recordConnection(client.userId, client.ip, "disconnect");
   leaveMemo(client);
   leaveDraw(client);
-  client.chatRoomId = "";
+  leaveChatView(client);
   client.logRoomId = "";
   client.logChannelId = "";
   client.dmUserId = "";
@@ -1165,6 +1265,15 @@ function handleChannelMessage(client, message) {
         const r = store.setRoomReadOnly(message.channelId, message.roomId, Boolean(message.value));
         if (r.error) return channelError(client, r.error);
         notifyChannelMembers(message.channelId);
+        return true;
+      });
+    case "channel:room-stats":
+      return ownerAction(client, message.channelId, () => {
+        const found = store.findRoom(message.roomId);
+        if (!found || found.channel.id !== message.channelId) return channelError(client, "방을 찾을 수 없습니다.");
+        const s = getRoomStatsMut(message.roomId);
+        const users = Object.entries(s.users).map(([userId, u]) => ({ userId, ...u }));
+        send(client, { type: "channel:room-stats", roomId: message.roomId, roomType: found.room.type, totalMs: s.totalMs, users });
         return true;
       });
     case "channel:kick":
@@ -1450,6 +1559,15 @@ function isRoomWritable(ctx, client) {
   return store.canUseRoom(ctx.channel.id, ctx.room.id, client.userId, client.isAdmin);
 }
 
+// 채팅방 보기를 그만둘 때(다른 방으로 갈아탐/닫기/연결종료) 시청시간 통계를 마감한다.
+function leaveChatView(client) {
+  const roomId = client.chatRoomId;
+  if (!roomId) return;
+  client.chatRoomId = "";
+  if (client.userId && client.chatJoinedAt) addStat(roomId, client.userId, client.name, "viewMs", Date.now() - client.chatJoinedAt);
+  client.chatJoinedAt = 0;
+}
+
 function handleChatMessage(client, message) {
   if (typeof message.type !== "string" || !message.type.startsWith("chat:")) return false;
   if (!client.userId) {
@@ -1461,7 +1579,9 @@ function handleChatMessage(client, message) {
     case "chat:open": {
       const ctx = resolveChatRoom(client, message.roomId);
       if (!ctx) return true;
+      if (client.chatRoomId && client.chatRoomId !== ctx.room.id) leaveChatView(client);
       client.chatRoomId = ctx.room.id;
+      client.chatJoinedAt = Date.now();
       send(client, {
         type: "chat:history",
         roomId: ctx.room.id,
@@ -1471,7 +1591,7 @@ function handleChatMessage(client, message) {
       return true;
     }
     case "chat:close": {
-      client.chatRoomId = "";
+      leaveChatView(client);
       broadcastPresence();
       return true;
     }
@@ -1516,6 +1636,13 @@ function handleChatMessage(client, message) {
       };
       store.addMessage(ctx.room.id, msg);
       broadcastChat(ctx.channel, { type: "chat:message", message: msg });
+      if (text.length) addStat(ctx.room.id, client.userId, client.name, "charsTyped", text.length);
+      addStat(ctx.room.id, client.userId, client.name, "messages", 1);
+      const emojiCount = (text.match(/:[a-z0-9_]{2,32}:/gi) || []).length;
+      if (emojiCount) addStat(ctx.room.id, client.userId, client.name, "emojis", emojiCount);
+      if (files.length) addStat(ctx.room.id, client.userId, client.name, "files", files.length);
+      const linkCount = (text.match(/https?:\/\/\S+/g) || []).length;
+      if (linkCount) addStat(ctx.room.id, client.userId, client.name, "links", linkCount);
       return true;
     }
     case "chat:typing": {
@@ -1712,6 +1839,8 @@ function leaveMemo(client) {
   const roomId = client.memoRoomId;
   if (!roomId) return;
   client.memoRoomId = "";
+  if (client.userId && client.memoJoinedAt) addStat(roomId, client.userId, client.name, "viewMs", Date.now() - client.memoJoinedAt);
+  client.memoJoinedAt = 0;
   const d = memoDocs.get(roomId);
   if (d) {
     d.cursors.delete(client.id);
@@ -1739,6 +1868,7 @@ function handleMemoMessage(client, message) {
       // 다른 메모방을 보다가 바로 이 방으로 갈아탄 경우, 이전 방에 내 원격 커서가 남지 않도록 먼저 정리한다.
       if (client.memoRoomId && client.memoRoomId !== ctx.room.id) leaveMemo(client);
       client.memoRoomId = ctx.room.id;
+      client.memoJoinedAt = Date.now();
       const d = getMemoDoc(ctx.room.id);
       const cursors = [...d.cursors.values()].filter((cur) => cur.clientId !== client.id);
       send(client, { type: "memo:state", roomId: ctx.room.id, text: d.text, rev: d.history.length, cursors, font: d.font });
@@ -1786,6 +1916,10 @@ function handleMemoMessage(client, message) {
       }
       d.history.push(o);
       const rev = d.history.length;
+      const delta = memoOpDelta(o);
+      if (delta.charsTyped) addStat(ctx.room.id, client.userId, client.name, "charsTyped", delta.charsTyped);
+      if (delta.charsDeleted) addStat(ctx.room.id, client.userId, client.name, "charsDeleted", delta.charsDeleted);
+      if (delta.linesTyped) addStat(ctx.room.id, client.userId, client.name, "linesTyped", delta.linesTyped);
       scheduleMemoPersist(ctx.room.id, client.userId);
       // 키 입력마다가 아니라, 편집 세션당 한 번꼴로만 로그를 남긴다(2분 스로틀).
       if (logThrottleOk(`memo-edit:${ctx.room.id}:${client.userId}`, 120000)) {
@@ -1885,6 +2019,8 @@ function leaveDraw(client) {
   const roomId = client.drawRoomId;
   if (!roomId) return;
   client.drawRoomId = "";
+  if (client.userId && client.drawJoinedAt) addStat(roomId, client.userId, client.name, "viewMs", Date.now() - client.drawJoinedAt);
+  client.drawJoinedAt = 0;
   const d = drawDocs.get(roomId);
   if (d && d.cursors.delete(client.id)) {
     broadcastDraw(roomId, { type: "draw:cursor-leave", roomId, clientId: client.id });
@@ -1975,6 +2111,7 @@ function handleDrawMessage(client, message) {
       if (!ctx) return true;
       const wasViewing = client.drawRoomId === ctx.room.id;
       client.drawRoomId = ctx.room.id;
+      client.drawJoinedAt = Date.now();
       const d = getDrawDoc(ctx.room.id);
       const cursors = [...d.cursors.values()].filter((cur) => cur.clientId !== client.id);
       send(client, { type: "draw:state", roomId: ctx.room.id, doc: d.doc, cursors });

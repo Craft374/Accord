@@ -921,10 +921,24 @@
             <span>읽기 전용 (대표자만 작성 가능)</span>
           </label>
           <button class="secondary" id="roomPermsButton" type="button" hidden>이 방 권한 설정 (역할/유저별)</button>
+          <button class="secondary" id="roomStatsButton" type="button" hidden>통계 보기</button>
           <p class="account-message" id="roomRenameMessage" aria-live="polite"></p>
           <div class="modal-actions">
             <button class="primary" id="roomRenameConfirm" type="button">저장</button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-backdrop" id="roomStatsModal" hidden>
+      <div class="modal room-modal" role="dialog" aria-modal="true" aria-labelledby="roomStatsTitle">
+        <header class="modal-head">
+          <h2 id="roomStatsTitle">방 통계</h2>
+          <button class="ghost small" id="roomStatsClose" type="button">닫기</button>
+        </header>
+        <div class="modal-body">
+          <p class="account-message ok" id="roomStatsTotal"></p>
+          <div class="room-stats-table-wrap" id="roomStatsTableWrap"></div>
         </div>
       </div>
     </div>

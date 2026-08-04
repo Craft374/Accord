@@ -16,6 +16,7 @@ const DRAW_DIR = path.join(DATA_DIR, "draw");
 const LOG_DIR = path.join(DATA_DIR, "log");
 const DM_DIR = path.join(DATA_DIR, "dm");
 const DM_INDEX_FILE = path.join(DATA_DIR, "dm-threads.json");
+const STATS_DIR = path.join(DATA_DIR, "stats");
 const MAX_MESSAGES_PER_ROOM = 1000; // 방별 보관 메시지 상한(초과 시 오래된 것부터 정리)
 const MAX_LOG_PER_CHANNEL = 500; // 채널별 보관 로그 상한(초과 시 오래된 것부터 정리)
 const MAX_DM_PER_THREAD = 2000; // DM 대화별 보관 메시지 상한
@@ -756,6 +757,7 @@ function removeRoom(channelId, roomId) {
   deleteRoomMessages(roomId); // 방 삭제 시 저장된 채팅도 정리
   deleteRoomMemo(roomId);
   deleteRoomDraw(roomId);
+  deleteRoomStats(roomId);
   return { channel };
 }
 
@@ -1216,7 +1218,7 @@ function renameChannel(channelId, name) {
 function deleteChannel(channelId) {
   const channel = getChannel(channelId);
   if (channel) {
-    for (const room of channel.rooms) { deleteRoomMessages(room.id); deleteRoomMemo(room.id); deleteRoomDraw(room.id); }
+    for (const room of channel.rooms) { deleteRoomMessages(room.id); deleteRoomMemo(room.id); deleteRoomDraw(room.id); deleteRoomStats(room.id); }
     // 채널의 커스텀 이모지·공유 글꼴 파일도 서버 저장소에서 정리한다.
     for (const e of emojisOf(channel)) deleteUpload(e.url);
     for (const f of fontsOf(channel)) deleteUpload(f.url);
@@ -1560,6 +1562,37 @@ function deleteChannelLog(channelId) {
   }
 }
 
+// ===== 방 통계 =====
+// 방 단위 누적 통계. server-data/stats/<roomId>.json 에 { totalMs, users:{ userId:{ name, ...counters } } } 로 저장.
+function statsFile(roomId) {
+  return path.join(STATS_DIR, `${roomId}.json`);
+}
+
+function getRoomStats(roomId) {
+  if (!isSafeRoomId(roomId)) return { totalMs: 0, users: {} };
+  const raw = readJson(statsFile(roomId), null);
+  if (!raw || typeof raw !== "object") return { totalMs: 0, users: {} };
+  return {
+    totalMs: Number(raw.totalMs) || 0,
+    users: raw.users && typeof raw.users === "object" ? raw.users : {},
+  };
+}
+
+function saveRoomStats(roomId, stats) {
+  if (!isSafeRoomId(roomId)) return;
+  fs.mkdirSync(STATS_DIR, { recursive: true });
+  writeJsonAtomic(statsFile(roomId), stats);
+}
+
+function deleteRoomStats(roomId) {
+  if (!isSafeRoomId(roomId)) return;
+  try {
+    fs.unlinkSync(statsFile(roomId));
+  } catch {
+    /* 파일 없으면 무시 */
+  }
+}
+
 // ===== 다이렉트 메시지(1:1 DM) =====
 // 대화 id 는 두 userId 를 정렬해 결합한다(항상 동일). 메시지는 대화별 파일에, 스레드 목록은 인덱스에.
 function dmConvId(a, b) {
@@ -1719,6 +1752,10 @@ module.exports = {
   saveDraw,
   deleteRoomDraw,
   DRAW_MAX_BYTES,
+  // 방 통계
+  getRoomStats,
+  saveRoomStats,
+  deleteRoomStats,
   // 전역 로그
   getChannelLog,
   appendChannelLog,

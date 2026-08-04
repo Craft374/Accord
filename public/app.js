@@ -232,6 +232,12 @@ const dom = {
   roomReadOnlyField: document.querySelector("#roomReadOnlyField"),
   roomReadOnlyInput: document.querySelector("#roomReadOnlyInput"),
   roomPermsButton: document.querySelector("#roomPermsButton"),
+  roomStatsButton: document.querySelector("#roomStatsButton"),
+  roomStatsModal: document.querySelector("#roomStatsModal"),
+  roomStatsClose: document.querySelector("#roomStatsClose"),
+  roomStatsTitle: document.querySelector("#roomStatsTitle"),
+  roomStatsTotal: document.querySelector("#roomStatsTotal"),
+  roomStatsTableWrap: document.querySelector("#roomStatsTableWrap"),
   chatPanel: document.querySelector("#chatPanel"),
   chatRoomName: document.querySelector("#chatRoomName"),
   chatSubtitle: document.querySelector("#chatSubtitle"),
@@ -1726,6 +1732,11 @@ async function handleSocketMessage(message) {
     return;
   }
 
+  if (message.type === "channel:room-stats") {
+    renderRoomStats(message);
+    return;
+  }
+
   if (message.type === "chat:history") {
     if (state.activeChat?.roomId === message.roomId) {
       state.chatMessages = message.messages || [];
@@ -1847,6 +1858,22 @@ async function handleSocketMessage(message) {
     return;
   }
 
+  if (message.type === "force-screen-off") {
+    if (state.screenSharing) {
+      stopScreenShare({ message: `${message.byName || "대표자"}님이 회원님의 화면 공유를 껐습니다.` }).catch(() => {});
+    }
+    return;
+  }
+
+  if (message.type === "force-sound-off") {
+    if (state.systemSharing) {
+      stopSystemAudio({ notify: false })
+        .then(() => setMessage(`${message.byName || "대표자"}님이 회원님의 컴퓨터 사운드 공유를 껐습니다.`))
+        .catch(() => {});
+    }
+    return;
+  }
+
   if (message.type === "kicked-from-room") {
     // 서버가 이어서 leave-room 처리('left')를 보내 방에서 빠진다. 여기선 안내만.
     setMessage(`${message.byName || "대표자"}님이 ${message.roomName || "통화방"}에서 내보냈습니다.`);
@@ -1871,6 +1898,7 @@ async function handleSocketMessage(message) {
     updateControls();
     startStatsTimer();
     startHealthTimer();
+    sendSocket({ type: "stats:media", kind: "mic", on: !state.muted });
     for (const peer of message.peers || []) {
       await createOfferForPeer(peer);
     }
@@ -5102,6 +5130,7 @@ function toggleMute(persist = true) {
   renderParticipants();
   for (const peer of state.peers.values()) sendMediaStatus(peer);
   syncMobileMicCapture().catch(() => {});
+  if (state.currentRoom) sendSocket({ type: "stats:media", kind: "mic", on: !state.muted });
 }
 
 function applyMicTrackEnabled() {
@@ -6875,6 +6904,15 @@ function canAttachCh(channel) {
 function canManageEmoji(channel) { return canAddEmoji(channel) || canRemoveEmoji(channel); }
 // 방 이름 변경 권한(대표·개별허용·역할).
 function canRenameRoom(channel) { return memberHasCap(channel, "renameRoom"); }
+// 방 상단 헤더 클릭으로 "방 설정"을 열 수 있는지(대표자 또는 방 이름 변경 권한 보유자).
+function canRenameRoomChannel(channel) { return Boolean(channel) && (isChannelOwner(channel) || canRenameRoom(channel)); }
+// 방 상단 헤더에 클릭 가능 어포던스(커서·툴팁)를 권한에 맞게 반영한다.
+function markRoomNameClickable(el, channel) {
+  if (!el) return;
+  const clickable = canRenameRoomChannel(channel);
+  el.classList.toggle("room-name-clickable", clickable);
+  el.title = clickable ? "클릭해서 방 설정 열기" : "";
+}
 // 공유 글꼴 업로드·삭제 권한(대표·개별허용·역할).
 function canManageFont(channel) { return memberHasCap(channel, "manageFont"); }
 
@@ -8699,7 +8737,7 @@ function bindChannelEvents() {
     // 알림 켜고끄기는 권한과 무관하게 누구나 가능
     items.push({ label: isRoomMuted(roomId) ? "알림 켜기" : "알림 끄기", action: () => toggleRoomMute(roomId) });
     if (channel && (isChannelOwner(channel) || canRenameRoom(channel))) {
-      items.push({ label: "이름 변경", action: () => openRoomRenameModal(roomId) });
+      items.push({ label: "방 설정", action: () => openRoomRenameModal(roomId) });
     }
     openChatContextMenu(items, { x: event.clientX, y: event.clientY });
   });
@@ -8713,7 +8751,42 @@ function bindChannelEvents() {
     closeRoomRenameModal();
     openPermsModal(id);
   });
+  dom.roomStatsButton?.addEventListener("click", () => {
+    const id = roomRenameTargetId;
+    closeRoomRenameModal();
+    openRoomStatsModal(id);
+  });
   dom.roomRenameInput?.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); confirmRoomRename(); } });
+
+  // 방 상단 헤더(제목) 클릭 → 바로 "방 설정" 열기(권한 있을 때만)
+  dom.currentRoomName?.addEventListener("click", () => {
+    const room = state.currentRoom;
+    if (!room) return;
+    const channel = state.channels.find((c) => c.id === room.channelId);
+    if (canRenameRoomChannel(channel)) openRoomRenameModal(room.id);
+  });
+  dom.chatRoomName?.addEventListener("click", () => {
+    const active = state.activeChat;
+    if (!active) return;
+    const channel = state.channels.find((c) => c.id === active.channelId);
+    if (canRenameRoomChannel(channel)) openRoomRenameModal(active.roomId);
+  });
+  dom.memoRoomName?.addEventListener("click", () => {
+    const memo = state.memo;
+    if (!memo) return;
+    const channel = state.channels.find((c) => c.id === memo.channelId);
+    if (canRenameRoomChannel(channel)) openRoomRenameModal(memo.roomId);
+  });
+  dom.drawRoomName?.addEventListener("click", () => {
+    const draw = state.draw;
+    if (!draw) return;
+    const channel = state.channels.find((c) => c.id === draw.channelId);
+    if (canRenameRoomChannel(channel)) openRoomRenameModal(draw.roomId);
+  });
+
+  // 방 통계 모달
+  dom.roomStatsClose?.addEventListener("click", closeRoomStatsModal);
+  dom.roomStatsModal?.addEventListener("click", (e) => { if (e.target === dom.roomStatsModal) closeRoomStatsModal(); });
 
   dom.memberList?.addEventListener("click", (event) => {
     const channel = currentChannel();
@@ -8899,6 +8972,7 @@ function openChatRoom(roomId) {
   delete state.chatMentions[roomId];
   document.body.classList.add("chat-open");
   if (dom.chatRoomName) dom.chatRoomName.textContent = found.room.name;
+  markRoomNameClickable(dom.chatRoomName, found.channel);
   if (dom.chatSubtitle) dom.chatSubtitle.textContent = found.channel.name;
   if (dom.chatMessages) dom.chatMessages.innerHTML = '<p class="chat-loading">불러오는 중…</p>';
   renderChatAttachments();
@@ -8953,6 +9027,7 @@ function verifyActiveChat() {
   state.activeChat.name = found.room.name;
   state.activeChat.channelId = found.channel.id;
   if (dom.chatRoomName) dom.chatRoomName.textContent = found.room.name;
+  markRoomNameClickable(dom.chatRoomName, found.channel);
   if (dom.chatSubtitle) dom.chatSubtitle.textContent = found.channel.name;
   applyChatReadOnly(found); // 읽기 전용 설정이 바뀌었을 수 있어 재적용
   renderChatMessages(); // 멤버 정보가 새로 도착했을 수 있어 아바타 갱신
@@ -11042,6 +11117,7 @@ function openMemoRoom(roomId, { background = false } = {}) {
   };
   document.body.classList.add("memo-open");
   if (dom.memoRoomName) dom.memoRoomName.textContent = found.room.name;
+  markRoomNameClickable(dom.memoRoomName, found.channel);
   memoEditorController?.reset("");
   memoEditorController?.setReadOnly(true);
   if (dom.memoPreview) dom.memoPreview.innerHTML = "";
@@ -11132,6 +11208,7 @@ function verifyActiveMemo() {
   state.memo.channelId = found.channel.id;
   state.memo.writable = canWriteRoom(found.channel, found.room);
   if (dom.memoRoomName) dom.memoRoomName.textContent = found.room.name;
+  markRoomNameClickable(dom.memoRoomName, found.channel);
   memoEditorController?.setReadOnly(!state.memo.writable);
 }
 
@@ -11825,6 +11902,7 @@ function openDrawRoom(roomId) {
   setDrawTool("pen");
   document.body.classList.add("draw-open");
   if (dom.drawRoomName) dom.drawRoomName.textContent = found.room.name;
+  markRoomNameClickable(dom.drawRoomName, found.channel);
   if (dom.drawResizePop) dom.drawResizePop.hidden = true;
   setDrawStatus("불러오는 중…");
   if (dom.drawLayerList) dom.drawLayerList.innerHTML = "";
@@ -11853,6 +11931,7 @@ function verifyActiveDraw() {
   state.draw.channelId = found.channel.id;
   state.draw.writable = canWriteRoom(found.channel, found.room);
   if (dom.drawRoomName) dom.drawRoomName.textContent = found.room.name;
+  markRoomNameClickable(dom.drawRoomName, found.channel);
 }
 
 // ===== 전역 로그 =====
@@ -14473,6 +14552,7 @@ function openRoomRenameModal(roomId) {
   if (dom.roomReadOnlyField) dom.roomReadOnlyField.hidden = !canReadOnly;
   if (dom.roomReadOnlyInput) dom.roomReadOnlyInput.checked = Boolean(found.room.readOnly);
   if (dom.roomPermsButton) dom.roomPermsButton.hidden = !owner;
+  if (dom.roomStatsButton) dom.roomStatsButton.hidden = !owner;
   dom.roomRenameModal.hidden = false;
   dom.roomRenameInput.focus();
   dom.roomRenameInput.select();
@@ -14503,6 +14583,88 @@ function confirmRoomRename() {
     }
   }
   closeRoomRenameModal();
+}
+
+// 방 통계 모달(대표자 전용, "방 설정"에서 진입)
+let roomStatsTargetId = "";
+const ROOM_STATS_COLUMNS = {
+  voice: [
+    ["joinMs", "접속 시간", formatDuration],
+    ["micOnMs", "마이크 켠 시간", formatDuration],
+    ["screenOnMs", "화면공유 시간", formatDuration],
+    ["soundOnMs", "소리공유 시간", formatDuration],
+  ],
+  memo: [
+    ["viewMs", "접속 시간", formatDuration],
+    ["charsTyped", "입력한 글자수", String],
+    ["charsDeleted", "지운 글자수", String],
+    ["linesTyped", "입력한 줄수", String],
+  ],
+  chat: [
+    ["viewMs", "접속 시간", formatDuration],
+    ["charsTyped", "입력한 글자수", String],
+    ["messages", "보낸 메시지", String],
+    ["emojis", "보낸 이모지", String],
+    ["files", "보낸 파일", String],
+    ["links", "보낸 링크", String],
+  ],
+  draw: [
+    ["viewMs", "접속 시간", formatDuration],
+  ],
+};
+
+function openRoomStatsModal(roomId) {
+  const found = findRoomInChannels(roomId);
+  if (!found || !dom.roomStatsModal || !isChannelOwner(found.channel)) return;
+  roomStatsTargetId = roomId;
+  if (dom.roomStatsTitle) dom.roomStatsTitle.textContent = `${found.room.name} 통계`;
+  if (dom.roomStatsTotal) dom.roomStatsTotal.textContent = "불러오는 중…";
+  if (dom.roomStatsTableWrap) dom.roomStatsTableWrap.innerHTML = "";
+  dom.roomStatsModal.hidden = false;
+  sendSocket({ type: "channel:room-stats", channelId: found.channel.id, roomId });
+}
+
+function closeRoomStatsModal() {
+  if (dom.roomStatsModal) dom.roomStatsModal.hidden = true;
+  roomStatsTargetId = "";
+}
+
+function renderRoomStats(message) {
+  if (!dom.roomStatsModal || dom.roomStatsModal.hidden || message.roomId !== roomStatsTargetId) return;
+  if (dom.roomStatsTotal) {
+    dom.roomStatsTotal.textContent = message.roomType === "voice"
+      ? `전체 통화 시간: ${formatDuration(message.totalMs || 0)}`
+      : "";
+  }
+  const columns = ROOM_STATS_COLUMNS[message.roomType] || [];
+  if (!dom.roomStatsTableWrap) return;
+  dom.roomStatsTableWrap.innerHTML = "";
+  const users = (message.users || []).slice().sort((a, b) => (b[columns[0]?.[0]] || 0) - (a[columns[0]?.[0]] || 0));
+  if (!users.length) {
+    const empty = document.createElement("p");
+    empty.className = "account-message";
+    empty.textContent = "아직 기록된 통계가 없습니다.";
+    dom.roomStatsTableWrap.append(empty);
+    return;
+  }
+  const table = document.createElement("table");
+  table.className = "room-stats-table";
+  const head = document.createElement("tr");
+  head.append(makeStatsCell("이름", "th"), ...columns.map(([, label]) => makeStatsCell(label, "th")));
+  table.append(head);
+  for (const user of users) {
+    const row = document.createElement("tr");
+    row.append(makeStatsCell(user.name || "(알 수 없음)", "td"));
+    for (const [key, , fmt] of columns) row.append(makeStatsCell(fmt(user[key] || 0), "td"));
+    table.append(row);
+  }
+  dom.roomStatsTableWrap.append(table);
+}
+
+function makeStatsCell(text, tag) {
+  const cell = document.createElement(tag);
+  cell.textContent = text;
+  return cell;
 }
 
 function openChannelMenu() {
@@ -14539,10 +14701,12 @@ function renderCurrentRoom() {
   if (!state.currentRoom) {
     dom.currentRoomName.textContent = "통화 없음";
     dom.currentRoomMeta.textContent = "방에 들어가면 마이크가 켜집니다.";
+    markRoomNameClickable(dom.currentRoomName, null);
     stopCallRuntimeTimer();
     return;
   }
   dom.currentRoomName.textContent = state.currentRoom.name;
+  markRoomNameClickable(dom.currentRoomName, state.channels.find((c) => c.id === state.currentRoom.channelId));
   dom.currentRoomMeta.textContent = currentRoomMetaText();
   if (dom.roomLimitLiveSelect) dom.roomLimitLiveSelect.value = String(state.currentRoom.limit);
   startCallRuntimeTimer();
@@ -14657,13 +14821,32 @@ function appendParticipant({ id, name, status, self = false, peer = null, userId
       muteBtn.dataset.modAction = "force-mute";
       muteBtn.dataset.modPeerId = peer.id;
       muteBtn.textContent = "음소거";
+      mod.append(muteBtn);
+      if (peer.remote.screen?.track?.readyState === "live") {
+        const screenOffBtn = document.createElement("button");
+        screenOffBtn.type = "button";
+        screenOffBtn.className = "participant-mod-btn";
+        screenOffBtn.dataset.modAction = "force-screen-off";
+        screenOffBtn.dataset.modPeerId = peer.id;
+        screenOffBtn.textContent = "화면끄기";
+        mod.append(screenOffBtn);
+      }
+      if (peer.remote.system?.track?.readyState === "live") {
+        const soundOffBtn = document.createElement("button");
+        soundOffBtn.type = "button";
+        soundOffBtn.className = "participant-mod-btn";
+        soundOffBtn.dataset.modAction = "force-sound-off";
+        soundOffBtn.dataset.modPeerId = peer.id;
+        soundOffBtn.textContent = "소리끄기";
+        mod.append(soundOffBtn);
+      }
       const kickBtn = document.createElement("button");
       kickBtn.type = "button";
       kickBtn.className = "participant-mod-btn danger";
       kickBtn.dataset.modAction = "kick";
       kickBtn.dataset.modPeerId = peer.id;
       kickBtn.textContent = "내보내기";
-      mod.append(muteBtn, kickBtn);
+      mod.append(kickBtn);
       card.append(mod);
     }
   } else {
@@ -14701,6 +14884,12 @@ function handleCallModeration(action, peerId) {
   if (action === "force-mute") {
     sendSocket({ type: "room:force-mute", roomId: state.currentRoom.id, targetId: peerId });
     setMessage(`${peer.name}님을 음소거했습니다.`);
+  } else if (action === "force-screen-off") {
+    sendSocket({ type: "room:force-screen-off", roomId: state.currentRoom.id, targetId: peerId });
+    setMessage(`${peer.name}님의 화면 공유를 껐습니다.`);
+  } else if (action === "force-sound-off") {
+    sendSocket({ type: "room:force-sound-off", roomId: state.currentRoom.id, targetId: peerId });
+    setMessage(`${peer.name}님의 소리 공유를 껐습니다.`);
   } else if (action === "kick") {
     if (!confirm(`${peer.name}님을 통화방에서 내보낼까요?`)) return;
     sendSocket({ type: "room:kick-user", roomId: state.currentRoom.id, targetId: peerId });
