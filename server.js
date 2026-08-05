@@ -15,7 +15,7 @@ seedAdminAccount();
 // 서버 버전. 클라이언트(앱) 버전은 package.json 의 version 이며 따로 관리한다.
 // 규칙: 클라 코드가 바뀌면 서버가 그 코드를 배포하므로 서버·클라 둘 다 올리고,
 //       서버만 바뀌면 서버 버전만 올린다.
-const VERSION = "2.4.15";
+const VERSION = "3.0.0";
 const PORT = Number(process.env.PORT || 25565);
 const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_HOST = cleanHost(process.env.PUBLIC_HOST || "");
@@ -1588,6 +1588,8 @@ function forceLeaveChannelRooms(client, channelId) {
 // ===== 채팅 메시지 =====
 const CHAT_TEXT_MAX = 4000;
 const CHAT_FILES_MAX = 10;
+const CHAT_SEARCH_QUERY_MAX = 200;
+const CHAT_SEARCH_RESULT_MAX = 200;
 
 // 방에 쓰기(채팅·메모편집·그리기)가 가능한지. 읽기 전용 방은 대표자만,
 // 그 외에는 권한 시스템의 사용(use) 권한을 따른다. 대표자/관리자는 항상 허용.
@@ -1740,6 +1742,56 @@ function handleChatMessage(client, message) {
         text: r.message.text,
         mentions: r.message.mentions || [],
         editedAt: r.message.editedAt,
+      });
+      return true;
+    }
+    case "chat:search": {
+      const ctx = resolveChatRoom(client, message.roomId);
+      if (!ctx) return true;
+      const q = String(message.q || "").slice(0, CHAT_SEARCH_QUERY_MAX);
+      let matcher = null;
+      if (q) {
+        if (message.regex) {
+          try {
+            matcher = new RegExp(q, "iu");
+          } catch {
+            send(client, { type: "chat-error", message: "정규식이 올바르지 않습니다." });
+            return true;
+          }
+        } else {
+          const needle = q.toLowerCase();
+          matcher = { test: (text) => text.toLowerCase().includes(needle) };
+        }
+      }
+      const userId = String(message.userId || "");
+      const from = Number(message.from) || 0;
+      const to = Number(message.to) || 0;
+      const targetRoomId = String(message.targetRoomId || "");
+      if (!q && !userId && !from && !to) {
+        send(client, { type: "chat:search-result", reqId: message.reqId, results: [], truncated: false });
+        return true;
+      }
+      const targetRooms = ctx.channel.rooms.filter((r) =>
+        r.type === "chat" &&
+        (!targetRoomId || r.id === targetRoomId) &&
+        store.canAccessRoom(ctx.channel.id, r.id, client.userId, client.isAdmin)
+      );
+      const results = [];
+      for (const room of targetRooms) {
+        for (const msg of store.getMessages(room.id)) {
+          if (matcher && !matcher.test(msg.text || "")) continue;
+          if (userId && msg.userId !== userId) continue;
+          if (from && msg.at < from) continue;
+          if (to && msg.at > to) continue;
+          results.push({ ...msg, roomId: room.id, roomName: room.name });
+        }
+      }
+      results.sort((a, b) => b.at - a.at);
+      send(client, {
+        type: "chat:search-result",
+        reqId: message.reqId,
+        results: results.slice(0, CHAT_SEARCH_RESULT_MAX),
+        truncated: results.length > CHAT_SEARCH_RESULT_MAX,
       });
       return true;
     }

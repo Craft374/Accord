@@ -164,6 +164,7 @@ const state = {
   // 채팅
   activeChat: null, // { roomId, channelId, name }
   chatMessages: [],
+  pendingChatScrollMsgId: "", // 검색 결과 점프: 방 전환 후 히스토리 도착 시 스크롤할 메시지 id
   chatPendingFiles: [], // 업로드 완료돼 전송 대기 중인 파일 메타
   chatUnread: {}, // roomId -> 안 읽은 메시지 수
   chatMentions: {}, // roomId -> 나를 맨션한 안 읽은 메시지 수
@@ -493,6 +494,8 @@ const dom = {
   focusBarTitle: document.querySelector("#focusBarTitle"),
   focusExitButton: document.querySelector("#focusExitButton"),
   chatFocusButton: document.querySelector("#chatFocusButton"),
+  chatSearchButton: document.querySelector("#chatSearchButton"),
+  chatDrawerButton: document.querySelector("#chatDrawerButton"),
   memoFocusButton: document.querySelector("#memoFocusButton"),
   drawFocusButton: document.querySelector("#drawFocusButton"),
   profileModal: document.querySelector("#profileModal"),
@@ -592,6 +595,8 @@ function bindEvents() {
     if (tab) setSettingsTab(tab.dataset.settingsTab);
   });
   dom.chatFocusButton?.addEventListener("click", toggleFocusMode);
+  dom.chatSearchButton?.addEventListener("click", openChatSearchModal);
+  dom.chatDrawerButton?.addEventListener("click", openChatDrawerModal);
   dom.memoFocusButton?.addEventListener("click", toggleFocusMode);
   dom.drawFocusButton?.addEventListener("click", toggleFocusMode);
   dom.focusExitButton?.addEventListener("click", exitFocusMode);
@@ -1786,6 +1791,11 @@ async function handleSocketMessage(message) {
       if (chatEditingId === message.msgId) chatEditingId = "";
       renderChatMessages();
     }
+    return;
+  }
+
+  if (message.type === "chat:search-result") {
+    handleChatSearchResult(message);
     return;
   }
 
@@ -9121,6 +9131,7 @@ function renderChatMessages() {
 function renderChatMessageBody(msg) {
   const wrap = document.createElement("div");
   wrap.className = "chat-msg";
+  wrap.dataset.msgId = msg.id || "";
   if (Array.isArray(msg.mentions) && msg.mentions.includes(state.auth.user?.id)) wrap.classList.add("mentioned");
   // 편집 중이면 텍스트 대신 인라인 편집기를 보여준다.
   if (chatEditingId === msg.id) {
@@ -9190,6 +9201,266 @@ function deleteChatMessage(msgId, immediate) {
   if (!state.activeChat) return;
   if (!immediate && !window.confirm("이 메시지를 삭제할까요?")) return;
   sendSocket({ type: "chat:delete", roomId: state.activeChat.roomId, msgId });
+}
+
+// ── 채팅 검색 (일반/정규식, 유저별·방별·날짜별) ──
+let chatSearchModalEl = null;
+let chatSearchDebounceTimer = null;
+let chatSearchReqCounter = 0;
+let chatSearchLatestReqId = 0;
+let chatSearchLatestQuery = { q: "", regex: false };
+
+function escapeRegExpClient(s) { return String(s || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+
+function ensureChatSearchModal() {
+  if (chatSearchModalEl) return;
+  chatSearchModalEl = document.createElement("div");
+  chatSearchModalEl.className = "modal-backdrop";
+  chatSearchModalEl.id = "chatSearchModal";
+  chatSearchModalEl.hidden = true;
+  chatSearchModalEl.innerHTML = `
+    <div class="modal chat-search-modal" role="dialog" aria-modal="true">
+      <header class="modal-head">
+        <h2>채팅 검색</h2>
+        <button class="ghost small" data-chat-search-close="1">닫기</button>
+      </header>
+      <div class="modal-body chat-search-body">
+        <div class="chat-search-box">
+          <input type="text" id="chatSearchInput" placeholder="검색어 입력 (정규식 지원)" autocomplete="off" />
+        </div>
+        <div class="chat-search-filter-row">
+          <label class="chat-search-regex-label"><input type="checkbox" id="chatSearchRegex" /> 정규식</label>
+          <select id="chatSearchRoomSelect" class="log-filter-select"></select>
+          <select id="chatSearchUserSelect" class="log-filter-select"></select>
+          <input type="date" id="chatSearchFrom" class="log-filter-date" title="시작 날짜" />
+          <input type="date" id="chatSearchTo" class="log-filter-date" title="끝 날짜" />
+        </div>
+        <p class="chat-search-hint" id="chatSearchHint">검색어를 입력하거나 필터를 선택하세요.</p>
+        <ul class="chat-search-results" id="chatSearchResults"></ul>
+      </div>
+    </div>`;
+  document.body.append(chatSearchModalEl);
+  chatSearchModalEl.addEventListener("click", (e) => {
+    if (e.target === chatSearchModalEl || e.target.closest("[data-chat-search-close]")) { closeChatSearchModal(); return; }
+    const item = e.target.closest("[data-chat-search-jump]");
+    if (item) jumpToChatMessage(item.dataset.roomId, item.dataset.chatSearchJump);
+  });
+  chatSearchModalEl.querySelector("#chatSearchInput").addEventListener("input", () => {
+    clearTimeout(chatSearchDebounceTimer);
+    chatSearchDebounceTimer = setTimeout(runChatSearch, 250);
+  });
+  for (const id of ["chatSearchRegex", "chatSearchRoomSelect", "chatSearchUserSelect", "chatSearchFrom", "chatSearchTo"]) {
+    chatSearchModalEl.querySelector(`#${id}`).addEventListener("change", runChatSearch);
+  }
+}
+
+function onChatSearchModalKey(e) { if (e.key === "Escape") { e.stopPropagation(); closeChatSearchModal(); } }
+
+function openChatSearchModal() {
+  if (!state.activeChat) return;
+  const channel = state.channels.find((c) => c.id === state.activeChat.channelId);
+  if (!channel) return;
+  ensureChatSearchModal();
+  const roomSelect = chatSearchModalEl.querySelector("#chatSearchRoomSelect");
+  roomSelect.innerHTML = '<option value="">전체 채팅방</option>' +
+    (channel.rooms || []).filter((r) => r.type === "chat")
+      .map((r) => `<option value="${r.id}">${escapeHtmlText(r.name)}</option>`).join("");
+  roomSelect.value = state.activeChat.roomId;
+  const userSelect = chatSearchModalEl.querySelector("#chatSearchUserSelect");
+  const members = (channel.members || []).slice().sort((a, b) => String(a.displayName || "").localeCompare(String(b.displayName || "")));
+  userSelect.innerHTML = '<option value="">전체 유저</option>' +
+    members.map((m) => `<option value="${m.id}">${escapeHtmlText(m.displayName || "이름없음")}</option>`).join("");
+  chatSearchModalEl.querySelector("#chatSearchInput").value = "";
+  chatSearchModalEl.querySelector("#chatSearchRegex").checked = false;
+  chatSearchModalEl.querySelector("#chatSearchFrom").value = "";
+  chatSearchModalEl.querySelector("#chatSearchTo").value = "";
+  chatSearchModalEl.querySelector("#chatSearchResults").innerHTML = "";
+  chatSearchModalEl.querySelector("#chatSearchHint").textContent = "검색어를 입력하거나 필터를 선택하세요.";
+  chatSearchModalEl.hidden = false;
+  document.addEventListener("keydown", onChatSearchModalKey, true);
+  chatSearchModalEl.querySelector("#chatSearchInput").focus();
+}
+
+function closeChatSearchModal() {
+  if (!chatSearchModalEl || chatSearchModalEl.hidden) return;
+  chatSearchModalEl.hidden = true;
+  document.removeEventListener("keydown", onChatSearchModalKey, true);
+}
+
+function runChatSearch() {
+  if (!chatSearchModalEl || !state.activeChat) return;
+  const q = chatSearchModalEl.querySelector("#chatSearchInput").value.trim();
+  const regex = chatSearchModalEl.querySelector("#chatSearchRegex").checked;
+  const targetRoomId = chatSearchModalEl.querySelector("#chatSearchRoomSelect").value;
+  const userId = chatSearchModalEl.querySelector("#chatSearchUserSelect").value;
+  const fromVal = chatSearchModalEl.querySelector("#chatSearchFrom").value;
+  const toVal = chatSearchModalEl.querySelector("#chatSearchTo").value;
+  const from = fromVal ? new Date(`${fromVal}T00:00:00`).getTime() : 0;
+  const to = toVal ? new Date(`${toVal}T23:59:59.999`).getTime() : 0;
+  const hint = chatSearchModalEl.querySelector("#chatSearchHint");
+  if (!q && !userId && !from && !to) {
+    chatSearchModalEl.querySelector("#chatSearchResults").innerHTML = "";
+    hint.textContent = "검색어를 입력하거나 필터를 선택하세요.";
+    return;
+  }
+  if (regex) {
+    try { new RegExp(q, "iu"); } catch { hint.textContent = "정규식이 올바르지 않습니다."; return; }
+  }
+  hint.textContent = "검색 중…";
+  const reqId = ++chatSearchReqCounter;
+  chatSearchLatestReqId = reqId;
+  chatSearchLatestQuery = { q, regex };
+  sendSocket({ type: "chat:search", roomId: state.activeChat.roomId, targetRoomId, q, regex, userId, from, to, reqId });
+}
+
+function handleChatSearchResult(message) {
+  if (!chatSearchModalEl || chatSearchModalEl.hidden || message.reqId !== chatSearchLatestReqId) return;
+  const results = Array.isArray(message.results) ? message.results : [];
+  const { q, regex } = chatSearchLatestQuery;
+  const hint = chatSearchModalEl.querySelector("#chatSearchHint");
+  hint.textContent = results.length
+    ? `${results.length}개 결과${message.truncated ? " (최근 순 상위 200개만 표시)" : ""}`
+    : "결과가 없습니다.";
+  const list = chatSearchModalEl.querySelector("#chatSearchResults");
+  list.innerHTML = results.map((r) => renderChatSearchResultItem(r, q, regex)).join("");
+}
+
+function renderChatSearchResultItem(msg, q, regex) {
+  const snippet = highlightChatSearchText(msg.text || "", q, regex);
+  const files = Array.isArray(msg.files) && msg.files.length ? `<span class="chat-search-files">📎 ${msg.files.length}</span>` : "";
+  return `<li class="chat-search-result" data-chat-search-jump="${msg.id}" data-room-id="${msg.roomId}">
+    <div class="chat-search-result-head">
+      <b>${escapeHtmlText(msg.name || "이름없음")}</b>
+      <span class="chat-search-result-room">#${escapeHtmlText(msg.roomName || "")}</span>
+      <span class="chat-search-result-time">${escapeHtmlText(formatChatTime(msg.at))}</span>
+    </div>
+    <div class="chat-search-result-text">${snippet}${files}</div>
+  </li>`;
+}
+
+function highlightChatSearchText(text, q, regex) {
+  const escaped = escapeHtmlText(text);
+  if (!q) return escaped;
+  try {
+    const re = new RegExp(regex ? q : escapeRegExpClient(q), "giu");
+    return escaped.replace(re, (m) => `<mark>${m}</mark>`);
+  } catch {
+    return escaped;
+  }
+}
+
+// ── 채팅 서랍(사진·영상·파일·링크 모아보기) — 현재 방에 이미 로드된 state.chatMessages 기준(서버 왕복 불필요) ──
+let chatDrawerModalEl = null;
+let chatDrawerTab = "image";
+
+function ensureChatDrawerModal() {
+  if (chatDrawerModalEl) return;
+  chatDrawerModalEl = document.createElement("div");
+  chatDrawerModalEl.className = "modal-backdrop";
+  chatDrawerModalEl.id = "chatDrawerModal";
+  chatDrawerModalEl.hidden = true;
+  chatDrawerModalEl.innerHTML = `
+    <div class="modal chat-drawer-modal" role="dialog" aria-modal="true">
+      <header class="modal-head">
+        <h2>서랍</h2>
+        <button class="ghost small" data-chat-drawer-close="1">닫기</button>
+      </header>
+      <div class="chat-drawer-tabs">
+        <button class="chat-drawer-tab" data-chat-drawer-tab="image" type="button">사진</button>
+        <button class="chat-drawer-tab" data-chat-drawer-tab="video" type="button">영상</button>
+        <button class="chat-drawer-tab" data-chat-drawer-tab="file" type="button">파일</button>
+        <button class="chat-drawer-tab" data-chat-drawer-tab="link" type="button">링크</button>
+      </div>
+      <div class="modal-body chat-drawer-body" id="chatDrawerBody"></div>
+    </div>`;
+  document.body.append(chatDrawerModalEl);
+  chatDrawerModalEl.addEventListener("click", (e) => {
+    if (e.target === chatDrawerModalEl || e.target.closest("[data-chat-drawer-close]")) { closeChatDrawerModal(); return; }
+    const tab = e.target.closest("[data-chat-drawer-tab]");
+    if (tab) { chatDrawerTab = tab.dataset.chatDrawerTab; renderChatDrawer(); return; }
+    const jump = e.target.closest("[data-chat-drawer-jump]");
+    if (jump) { jumpToChatMessage(jump.dataset.roomId, jump.dataset.chatDrawerJump); closeChatDrawerModal(); return; }
+    const img = e.target.closest("[data-chat-drawer-image]");
+    if (img) openImageViewer({ src: img.dataset.chatDrawerImage, title: img.dataset.chatDrawerName || "이미지" });
+  });
+}
+
+function onChatDrawerModalKey(e) { if (e.key === "Escape") { e.stopPropagation(); closeChatDrawerModal(); } }
+
+function openChatDrawerModal() {
+  if (!state.activeChat) return;
+  ensureChatDrawerModal();
+  chatDrawerTab = "image";
+  chatDrawerModalEl.hidden = false;
+  renderChatDrawer();
+  document.addEventListener("keydown", onChatDrawerModalKey, true);
+}
+
+function closeChatDrawerModal() {
+  if (!chatDrawerModalEl || chatDrawerModalEl.hidden) return;
+  chatDrawerModalEl.hidden = true;
+  document.removeEventListener("keydown", onChatDrawerModalKey, true);
+}
+
+function collectChatDrawerItems() {
+  const groups = { image: [], video: [], file: [], link: [] };
+  const linkRe = /(https?:\/\/[^\s<]+)/g;
+  for (const msg of state.chatMessages) {
+    for (const f of (msg.files || [])) {
+      const isImage = f.kind === "image" || /^image\//.test(f.mime || "");
+      const isVideo = /^video\//.test(f.mime || "");
+      groups[isImage ? "image" : isVideo ? "video" : "file"].push({ file: f, msg });
+    }
+    if (msg.text) {
+      let m;
+      while ((m = linkRe.exec(msg.text))) groups.link.push({ url: m[1], msg });
+      linkRe.lastIndex = 0;
+    }
+  }
+  return groups;
+}
+
+function renderChatDrawer() {
+  if (!chatDrawerModalEl) return;
+  chatDrawerModalEl.querySelectorAll("[data-chat-drawer-tab]").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.chatDrawerTab === chatDrawerTab);
+  });
+  const items = collectChatDrawerItems()[chatDrawerTab] || [];
+  const body = chatDrawerModalEl.querySelector("#chatDrawerBody");
+  if (!items.length) {
+    body.innerHTML = '<p class="chat-drawer-empty">아직 없습니다.</p>';
+    return;
+  }
+  if (chatDrawerTab === "image") {
+    body.innerHTML = `<div class="chat-drawer-grid">${items.map((it) => `
+      <button type="button" class="chat-drawer-thumb" data-chat-drawer-image="${it.file.url}" data-chat-drawer-name="${escapeHtmlText(it.file.name || "")}" title="${escapeHtmlText(it.file.name || "")}">
+        <img src="${it.file.url}" loading="lazy" alt="${escapeHtmlText(it.file.name || "이미지")}" />
+      </button>`).join("")}</div>`;
+  } else if (chatDrawerTab === "video") {
+    body.innerHTML = `<div class="chat-drawer-grid">${items.map((it) => `
+      <div class="chat-drawer-thumb chat-drawer-video">
+        <video src="${it.file.url}" controls preload="metadata"></video>
+      </div>`).join("")}</div>`;
+  } else if (chatDrawerTab === "file") {
+    body.innerHTML = `<ul class="chat-drawer-list">${items.map((it) => chatDrawerRow(
+      `<a href="${it.file.url}" target="_blank" rel="noopener" download="${escapeHtmlText(it.file.name || "file")}" class="chat-drawer-file-link">📄 ${escapeHtmlText(it.file.name || "파일")}</a>
+       <span class="chat-drawer-meta">${formatBytes(it.file.size || 0)} · ${escapeHtmlText(it.msg.name || "")} · ${escapeHtmlText(formatChatTime(it.msg.at))}</span>`,
+      it.msg
+    )).join("")}</ul>`;
+  } else {
+    body.innerHTML = `<ul class="chat-drawer-list">${items.map((it) => chatDrawerRow(
+      `<a href="${escapeHtmlText(it.url)}" target="_blank" rel="noopener" class="chat-drawer-link">${escapeHtmlText(it.url)}</a>
+       <span class="chat-drawer-meta">${escapeHtmlText(it.msg.name || "")} · ${escapeHtmlText(formatChatTime(it.msg.at))}</span>`,
+      it.msg
+    )).join("")}</ul>`;
+  }
+}
+
+function chatDrawerRow(innerHtml, msg) {
+  return `<li class="chat-drawer-row">
+    ${innerHtml}
+    <button type="button" class="chat-drawer-jump-btn" data-chat-drawer-jump="${msg.id}" data-room-id="${msg.roomId}" title="메시지로 이동">↩</button>
+  </li>`;
 }
 
 // ── 자기 메시지 수정(인라인 편집) ──
@@ -10107,6 +10378,31 @@ function scrollChatToBottomSettled() {
   dom.chatMessages?.querySelectorAll(".chat-image").forEach((img) => {
     if (!img.complete) img.addEventListener("load", scrollChatToBottom, { once: true });
   });
+  if (state.pendingChatScrollMsgId) {
+    const id = state.pendingChatScrollMsgId;
+    state.pendingChatScrollMsgId = "";
+    scrollToChatMessage(id);
+  }
+}
+
+// 검색 결과 클릭 등으로 특정 메시지로 이동한다. 지금 열려 있는 방이면 바로 스크롤,
+// 다른 방이면 openChatRoom 뒤 chat:history 수신 시(scrollChatToBottomSettled)까지 대기시킨다.
+function jumpToChatMessage(roomId, msgId) {
+  closeChatSearchModal();
+  if (state.activeChat?.roomId === roomId) {
+    scrollToChatMessage(msgId);
+    return;
+  }
+  state.pendingChatScrollMsgId = msgId;
+  openChatRoom(roomId);
+}
+
+function scrollToChatMessage(msgId) {
+  const el = dom.chatMessages?.querySelector(`[data-msg-id="${CSS.escape(msgId)}"]`);
+  if (!el) return;
+  el.scrollIntoView({ block: "center" });
+  el.classList.add("chat-msg-flash");
+  setTimeout(() => el.classList.remove("chat-msg-flash"), 1600);
 }
 
 // ── 입력 중 표시 ──
