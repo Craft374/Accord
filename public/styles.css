@@ -1,6 +1,16 @@
 /* Accord — Discord 스타일 다크 테마
    순수 그레이 계열 배경(#1e1f22/#2b2d31/#313338) + Blurple 포인트, 8px 라운딩, 플랫 카드 */
 
+/* 시스템에 "gg sans"/Inter 가 없으면 시스템 기본 글꼴로 대체되던 문제를 막기 위해
+   폰트를 프로젝트에 내장한다(OFL-1.1, https://github.com/orioncactus/pretendard). */
+@font-face {
+  font-family: "Pretendard Variable";
+  src: url("./fonts/PretendardVariable.woff2") format("woff2-variations");
+  font-weight: 45 920;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   color-scheme: dark;
   --bg-deepest: #1e1f22;
@@ -39,8 +49,8 @@ body {
   min-height: 100vh;
   color: var(--text);
   font-family:
-    "gg sans", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
-    "Segoe UI", sans-serif;
+    "gg sans", "Pretendard Variable", Inter, ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 14px;
   background: var(--bg-deepest);
 }
@@ -1575,7 +1585,7 @@ body.memo-open .log-panel {
 }
 .memo-editor .cm-editor .cm-tooltip.cm-tooltip-autocomplete > ul {
   padding: 4px;
-  font-family: "gg sans", Inter, system-ui, sans-serif; /* 편집기 글꼴이 아니라 앱 UI 글꼴(body)로 */
+  font-family: "gg sans", "Pretendard Variable", Inter, system-ui, sans-serif; /* 편집기 글꼴이 아니라 앱 UI 글꼴(body)로 */
   font-size: 13px;
 }
 .memo-editor .cm-editor .cm-tooltip.cm-tooltip-autocomplete > ul > li {
