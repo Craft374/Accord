@@ -553,7 +553,11 @@ function liveDecorations(view) {
               ranges.push(range); atomic.push(range);
             }
           }
-          if (taskMarker && !selectionTouches(state, task.from, task.to)) {
+          // listMark와 동일한 이유(조합 중 위젯 교체가 브라우저의 조합영역 DOM 제거를 막음)로
+          // 조합 중이고 같은 줄이면 taskMarker도 원문 유지 상태를 그대로 둔다.
+          const taskMarkerActive = taskMarker && (selectionTouches(state, task.from, task.to) ||
+            (view.composing && state.doc.lineAt(taskMarker.from).number === state.doc.lineAt(state.selection.main.head).number));
+          if (taskMarker && !taskMarkerActive) {
             const checked = /x/i.test(state.doc.sliceString(taskMarker.from, taskMarker.to));
             const range = Decoration.replace({ widget: new CheckboxWidget(taskMarker.from, checked) }).range(taskMarker.from, taskMarker.to);
             ranges.push(range); atomic.push(range);
