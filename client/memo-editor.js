@@ -540,9 +540,9 @@ function liveDecorations(view) {
           // 항목 본문(예: "12. c"의 "c")을 편집 중일 땐 옵시디언처럼 번호가 계속 정렬된 값으로 보여야 한다.
           // IME 조합 중엔 커서 오프셋이 마커 폭 판정과 한 박자 어긋날 수 있고, 그 틈에 위젯을 새로 씌우면
           // 브라우저가 조합 영역 DOM을 못 지우게 막아서 원문 마커 + 위젯이 겹쳐 보인다(예: "1.1.").
-          // 조합 중엔 같은 줄이면 항상 원문을 유지해 위젯 교체 자체를 건너뛴다.
-          const markerActive = listMark && (selectionTouches(state, listMark.from, listMark.to) ||
-            (view.composing && state.doc.lineAt(listMark.from).number === state.doc.lineAt(state.selection.main.head).number));
+          // 마우스로 다른 줄을 클릭해 selection이 옮겨가도 브라우저 조합 자체는 한 박자 늦게 끝나
+          // "같은 줄" 판정만으론 못 잡는 레이스가 남는다 — 조합 중엔 위치 무관하게 항상 원문을 유지한다.
+          const markerActive = listMark && (selectionTouches(state, listMark.from, listMark.to) || view.composing);
           if (listMark && !markerActive) {
             if (taskMarker) hide(listMark.from, listMark.to);
             else {
@@ -554,9 +554,8 @@ function liveDecorations(view) {
             }
           }
           // listMark와 동일한 이유(조합 중 위젯 교체가 브라우저의 조합영역 DOM 제거를 막음)로
-          // 조합 중이고 같은 줄이면 taskMarker도 원문 유지 상태를 그대로 둔다.
-          const taskMarkerActive = taskMarker && (selectionTouches(state, task.from, task.to) ||
-            (view.composing && state.doc.lineAt(taskMarker.from).number === state.doc.lineAt(state.selection.main.head).number));
+          // 조합 중이면 taskMarker도 위치 무관하게 원문 유지 상태를 그대로 둔다.
+          const taskMarkerActive = taskMarker && (selectionTouches(state, task.from, task.to) || view.composing);
           if (taskMarker && !taskMarkerActive) {
             const checked = /x/i.test(state.doc.sliceString(taskMarker.from, taskMarker.to));
             const range = Decoration.replace({ widget: new CheckboxWidget(taskMarker.from, checked) }).range(taskMarker.from, taskMarker.to);
