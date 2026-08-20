@@ -2175,7 +2175,7 @@ function getMicFallbackProcessing(settings = {}) {
   const manualGain = Math.abs(getMicGain() - 1) >= 0.001;
   const nativeNoise = settings.noiseSuppression === true;
   const nativeGain = settings.autoGainControl === true;
-  const noiseGate = dom.noiseSuppressionToggle.checked && getNoiseGateStrength() > 0 && !nativeNoise;
+  const noiseGate = dom.noiseSuppressionToggle.checked && getNoiseGateStrength() > 0;
   const compressor = dom.autoGainToggle.checked && settings.autoGainControl === false;
   const bleedSuppressor = shouldUseSystemBleedSuppressor();
 
@@ -6729,7 +6729,7 @@ function getProcessingText(settings) {
 function getProcessingHintText() {
   const parts = [];
   if (shouldUseNativeNoiseSuppression()) parts.push("NS강");
-  else if (dom.noiseSuppressionToggle.checked && getNoiseGateStrength() > 0) parts.push(`NS보조${Math.round(getNoiseGateStrength() * 100)}%`);
+  if (dom.noiseSuppressionToggle.checked && getNoiseGateStrength() > 0) parts.push(`게이트${Math.round(getNoiseGateStrength() * 100)}%`);
   if (dom.autoGainToggle.checked) parts.push("AGC");
   return parts.length ? `Chromium ${parts.join("+")}` : "꺼짐";
 }
@@ -6793,7 +6793,7 @@ function getNoiseGateStrength() {
 }
 
 function shouldUseNativeNoiseSuppression() {
-  return dom.noiseSuppressionToggle.checked && getNoiseGateStrength() >= 0.75;
+  return dom.noiseSuppressionToggle.checked;
 }
 
 function getNoiseGateSettings() {
