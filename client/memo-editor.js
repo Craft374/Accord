@@ -536,35 +536,29 @@ function liveDecorations(view) {
           const listMark = childNodes(node, "ListMark")[0];
           const task = childNodes(node, "Task")[0];
           const taskMarker = task ? childNodes(task, "TaskMarker")[0] : null;
-          // 목록 항목 전체(node)가 아니라 마커 자체(listMark)에 커서가 닿았을 때만 원문을 드러낸다.
-          // 항목 본문(예: "12. c"의 "c")을 편집 중일 땐 옵시디언처럼 번호가 계속 정렬된 값으로 보여야 한다.
-          // IME 조합 중엔 커서 오프셋이 마커 폭 판정과 한 박자 어긋날 수 있고, 그 틈에 위젯을 새로 씌우면
-          // 브라우저가 조합 영역 DOM을 못 지우게 막아서 원문 마커 + 위젯이 겹쳐 보인다(예: "1.1.").
-          // 마우스로 다른 줄을 클릭해 selection이 옮겨가도 브라우저 조합 자체는 한 박자 늦게 끝나
-          // "같은 줄" 판정만으론 못 잡는 레이스가 남는다 — 조합 중엔 위치 무관하게 항상 원문을 유지한다.
-          const markerActive = listMark && (selectionTouches(state, listMark.from, listMark.to) || view.composing);
-          if (listMark && !markerActive) {
-            if (taskMarker) hide(listMark.from, listMark.to);
-            else {
+          if (taskMarker) {
+            // 체크박스 항목은 커서 위치·조합 상태와 무관하게 항상 같은 모양으로 그린다(옵시디언도 편집 중 체크박스를 그대로 둔다).
+            // 예전엔 커서가 항목 안에 있으면 원문("- [ ] ")을 드러냈다가 커서가 떠나는 순간 "마커 숨김 + 체크박스 위젯"으로
+            // 한꺼번에 갈아끼웠다. 한글 조합 중 마우스로 다른 줄을 클릭하면 그 교체가 브라우저의 조합 확정과 같은 순간에 일어나고,
+            // 브라우저가 쥐고 있던 조합 텍스트 노드가 살아남은 채 CM6이 줄을 다시 그려서 같은 글자가 DOM에 두 번 남는다.
+            // CM6은 그 DOM을 다시 읽어 문서에 그대로 커밋하므로 "안"이 "안안"이 됐다. 모양을 고정하면 이 재구성 자체가 없어진다.
+            if (listMark) hide(listMark.from, listMark.to);
+            const checked = /x/i.test(state.doc.sliceString(taskMarker.from, taskMarker.to));
+            const range = Decoration.replace({ widget: new CheckboxWidget(taskMarker.from, checked) }).range(taskMarker.from, taskMarker.to);
+            ranges.push(range); atomic.push(range);
+            if (checked) add(Decoration.mark({ class: "cm-live-task-done" }).range(taskMarker.to, task.to));
+          } else if (listMark) {
+            // 목록 항목 전체(node)가 아니라 마커 자체(listMark)에 커서가 닿았을 때만 원문을 드러낸다.
+            // 항목 본문(예: "12. c"의 "c")을 편집 중일 땐 옵시디언처럼 번호가 계속 정렬된 값으로 보여야 한다.
+            // IME 조합 중엔 커서 오프셋이 마커 폭 판정과 한 박자 어긋날 수 있고, 그 틈에 위젯을 새로 씌우면
+            // 브라우저가 조합 영역 DOM을 못 지우게 막아서 원문 마커 + 위젯이 겹쳐 보인다(예: "1.1.").
+            if (!(selectionTouches(state, listMark.from, listMark.to) || view.composing)) {
               const raw = state.doc.sliceString(listMark.from, listMark.to);
               const ordinal = node.parent?.name === "OrderedList" ? getOrdinals().get(node.from) : null;
               const label = ordinal != null ? `${ordinal}${/[.)]/.exec(raw)?.[0] || "."}` : raw;
               const range = Decoration.replace({ widget: new BulletWidget(label) }).range(listMark.from, listMark.to);
               ranges.push(range); atomic.push(range);
             }
-          }
-          // listMark와 동일한 이유(조합 중 위젯 교체가 브라우저의 조합영역 DOM 제거를 막음)로
-          // 조합 중이면 taskMarker도 위치 무관하게 원문 유지 상태를 그대로 둔다.
-          const taskMarkerActive = taskMarker && (selectionTouches(state, task.from, task.to) || view.composing);
-          if (taskMarker && !taskMarkerActive) {
-            const checked = /x/i.test(state.doc.sliceString(taskMarker.from, taskMarker.to));
-            const range = Decoration.replace({ widget: new CheckboxWidget(taskMarker.from, checked) }).range(taskMarker.from, taskMarker.to);
-            ranges.push(range); atomic.push(range);
-            // class:"" 인 mark도 <span> 래퍼는 그대로 만든다(CM6 MarkDecoration은 class 유무와 무관하게 tagName 엘리먼트를 생성) —
-            // taskMarker.to~task.to는 체크박스 항목의 본문(조합 중인 텍스트 포함) 범위라, unchecked에서도 매번 이 래퍼가
-            // 다시 씌워지며 DOM을 건드리는 게 "체크박스에서만" 조합 중 글자 복제가 재현되는 원인으로 보인다(listMark엔 이런
-            // 본문 래핑이 없음). checked일 때만 걸어 체크 안 된 항목은 listMark와 동일하게 본문 decoration이 없도록 한다.
-            if (checked) add(Decoration.mark({ class: "cm-live-task-done" }).range(taskMarker.to, task.to));
           }
           const nested = childNodes(node).find((child) => child.name === "BulletList" || child.name === "OrderedList");
           if (listMark && nested) {
