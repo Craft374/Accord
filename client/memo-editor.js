@@ -560,7 +560,11 @@ function liveDecorations(view) {
             const checked = /x/i.test(state.doc.sliceString(taskMarker.from, taskMarker.to));
             const range = Decoration.replace({ widget: new CheckboxWidget(taskMarker.from, checked) }).range(taskMarker.from, taskMarker.to);
             ranges.push(range); atomic.push(range);
-            add(Decoration.mark({ class: checked ? "cm-live-task-done" : "" }).range(taskMarker.to, task.to));
+            // class:"" 인 mark도 <span> 래퍼는 그대로 만든다(CM6 MarkDecoration은 class 유무와 무관하게 tagName 엘리먼트를 생성) —
+            // taskMarker.to~task.to는 체크박스 항목의 본문(조합 중인 텍스트 포함) 범위라, unchecked에서도 매번 이 래퍼가
+            // 다시 씌워지며 DOM을 건드리는 게 "체크박스에서만" 조합 중 글자 복제가 재현되는 원인으로 보인다(listMark엔 이런
+            // 본문 래핑이 없음). checked일 때만 걸어 체크 안 된 항목은 listMark와 동일하게 본문 decoration이 없도록 한다.
+            if (checked) add(Decoration.mark({ class: "cm-live-task-done" }).range(taskMarker.to, task.to));
           }
           const nested = childNodes(node).find((child) => child.name === "BulletList" || child.name === "OrderedList");
           if (listMark && nested) {
