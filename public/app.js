@@ -12685,6 +12685,8 @@ function dmUnreadTotal() {
 }
 
 function openDmMode() {
+  dom.layout?.classList.remove("mobile-rooms-open");
+  dom.toggleRoomsButton?.setAttribute("aria-pressed", "false");
   state.dm.open = true;
   // 다른 채널 패널은 닫되 통화(WebRTC)는 유지된다.
   closeChatView();

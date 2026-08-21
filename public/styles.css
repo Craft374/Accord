@@ -185,6 +185,7 @@ h3 {
   max-width: 1600px;
   margin: 0 auto;
   min-height: 100vh;
+  min-height: 100dvh; /* 모바일 브라우저 주소창 높이만큼 100vh가 잘리는 것 보정 */
   padding: 0 12px 12px;
 }
 
@@ -196,6 +197,7 @@ body.draw-open .app,
 body.log-open .app,
 body.dm-open .app {
   height: 100vh;
+  height: 100dvh;
   min-height: 0;
   overflow: hidden;
 }
@@ -3930,10 +3932,6 @@ audio,
 /* ─── 반응형 ─────────────────────────────── */
 
 @media (max-width: 920px) {
-  .layout {
-    grid-template-columns: 56px minmax(0, 1fr) !important;
-  }
-
   .settings-grid {
     grid-template-columns: 1fr;
   }
@@ -3943,32 +3941,82 @@ audio,
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  /* 좁은 화면에서는 방 목록·멤버 목록을 그리드 열 대신 전체화면 드로어로 띄운다.
-     상단바의 토글 버튼으로 여닫는다(rooms-collapsed/members-collapsed와는 별개 상태). */
+  /* ─── 상단바: 좁은 화면에서도 한 줄 유지, 덜 중요한 텍스트는 숨긴다 ─── */
+  .topbar {
+    flex-wrap: nowrap;
+  }
+  .eyebrow {
+    display: none;
+  }
+  .top-actions {
+    overflow-x: auto;
+  }
+  .icon-toggle {
+    width: 44px;
+    height: 44px;
+  }
+  .profile-chip-text {
+    display: none;
+  }
+  .status strong {
+    display: none;
+  }
+
+  /* ─── 방 아이콘 레일 · 방 목록 · 멤버 목록을 그리드 열 대신
+     전체화면으로 오가는 "화면"으로 바꾼다. 기본은 본문(통화/채팅/메모/그림판/로그)만 보이고,
+     상단바의 방목록/멤버목록 토글로 각 화면을 오간다(rooms-collapsed/members-collapsed와는 별개 상태). ─── */
+  .layout {
+    grid-template-columns: minmax(0, 1fr) !important;
+    gap: 0;
+  }
+  .layout-resize-handle {
+    display: none !important;
+  }
+  .channel-rail,
   .channel-panel,
   .member-list {
     display: none !important;
   }
-
+  /* 방 화면 = 채널 아이콘 가로 스트립(위) + 방 목록(아래) */
+  .layout.mobile-rooms-open .channel-rail {
+    display: flex !important;
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 64px;
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+    z-index: 30;
+  }
+  .layout.mobile-rooms-open .channel-rail-divider {
+    width: 2px;
+    height: 32px;
+    margin: auto 4px;
+  }
   .layout.mobile-rooms-open .channel-panel {
     display: flex !important;
     position: absolute;
-    inset: 0;
+    top: 64px;
+    left: 0;
+    right: 0;
+    bottom: 0;
     z-index: 30;
+    border-radius: 0;
   }
-
   .layout.mobile-members-open .member-list:not([hidden]) {
     display: flex !important;
     position: absolute;
     inset: 0;
     z-index: 30;
+    border-radius: 0;
   }
 
-  .layout-resize-handle {
-    display: none !important;
+  /* DM: 대화목록/대화창을 한 번에 하나씩만 보여준다 */
+  body.dm-open .layout {
+    grid-template-columns: minmax(0, 1fr) !important;
   }
-
-  /* DM: 좁은 화면에서는 대화목록/대화창을 한 번에 하나씩만 보여준다 */
   body.dm-open .dm-panel {
     grid-template-columns: minmax(0, 1fr) !important;
   }
@@ -3984,6 +4032,20 @@ audio,
   body.dm-open .dm-panel.mobile-conv-open .dm-back-button {
     display: inline-flex !important;
   }
+
+  /* iOS는 입력창 글꼴이 16px보다 작으면 포커스 시 화면을 확대해버린다 */
+  #chatInput,
+  .dm-composer textarea {
+    font-size: 16px;
+  }
+
+  /* 메모/그림판 본문은 좌우 분할 대신 1열로(에디터+미리보기, 캔버스+레이어 스택) */
+  .memo-body {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  .draw-body {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
 }
 
 @media (max-width: 580px) {
@@ -3991,7 +4053,6 @@ audio,
     padding: 0 8px 8px;
   }
 
-  .topbar,
   .call-head,
   .section-head {
     align-items: flex-start;
