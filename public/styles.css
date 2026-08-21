@@ -2818,6 +2818,11 @@ body.dm-open .dm-panel {
   padding: 12px 16px;
   border-bottom: 1px solid var(--line);
 }
+/* 좁은 화면에서 대화 → 목록으로 돌아가는 버튼(기본은 숨김, 모바일 반응형에서만 노출) */
+.dm-back-button {
+  margin: 8px 12px 0;
+  align-self: flex-start;
+}
 .dm-conv-avatar {
   width: 32px;
   height: 32px;
@@ -3925,7 +3930,10 @@ audio,
 /* ─── 반응형 ─────────────────────────────── */
 
 @media (max-width: 920px) {
-  .layout,
+  .layout {
+    grid-template-columns: 56px minmax(0, 1fr) !important;
+  }
+
   .settings-grid {
     grid-template-columns: 1fr;
   }
@@ -3935,8 +3943,46 @@ audio,
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  body:not(.in-call) .main-empty {
+  /* 좁은 화면에서는 방 목록·멤버 목록을 그리드 열 대신 전체화면 드로어로 띄운다.
+     상단바의 토글 버튼으로 여닫는다(rooms-collapsed/members-collapsed와는 별개 상태). */
+  .channel-panel,
+  .member-list {
+    display: none !important;
+  }
+
+  .layout.mobile-rooms-open .channel-panel {
+    display: flex !important;
+    position: absolute;
+    inset: 0;
+    z-index: 30;
+  }
+
+  .layout.mobile-members-open .member-list:not([hidden]) {
+    display: flex !important;
+    position: absolute;
+    inset: 0;
+    z-index: 30;
+  }
+
+  .layout-resize-handle {
+    display: none !important;
+  }
+
+  /* DM: 좁은 화면에서는 대화목록/대화창을 한 번에 하나씩만 보여준다 */
+  body.dm-open .dm-panel {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  body.dm-open .dm-conversation {
     display: none;
+  }
+  body.dm-open .dm-panel.mobile-conv-open .dm-threads {
+    display: none;
+  }
+  body.dm-open .dm-panel.mobile-conv-open .dm-conversation {
+    display: flex;
+  }
+  body.dm-open .dm-panel.mobile-conv-open .dm-back-button {
+    display: inline-flex !important;
   }
 }
 

@@ -323,6 +323,7 @@ const dom = {
   logFilterReset: document.querySelector("#logFilterReset"),
   logFilterCount: document.querySelector("#logFilterCount"),
   dmPanel: document.querySelector("#dmPanel"),
+  dmBackButton: document.querySelector("#dmBackButton"),
   dmNewButton: document.querySelector("#dmNewButton"),
   dmNewRow: document.querySelector("#dmNewRow"),
   dmCodeInput: document.querySelector("#dmCodeInput"),
@@ -4961,6 +4962,22 @@ function setLayoutCollapsed(kind, collapsed) {
   applyLayoutSizing();
 }
 
+function isNarrowLayout() {
+  return window.matchMedia("(max-width: 920px)").matches;
+}
+
+// 좁은 화면에서 방목록/멤버목록을 전체화면 드로어로 여닫는다(둘 중 하나만).
+function toggleMobileDrawer(kind) {
+  const [selfClass, selfBtn, otherClass, otherBtn] =
+    kind === "rooms"
+      ? ["mobile-rooms-open", dom.toggleRoomsButton, "mobile-members-open", dom.toggleMembersButton]
+      : ["mobile-members-open", dom.toggleMembersButton, "mobile-rooms-open", dom.toggleRoomsButton];
+  dom.layout?.classList.remove(otherClass);
+  otherBtn?.setAttribute("aria-pressed", "false");
+  const open = dom.layout?.classList.toggle(selfClass);
+  selfBtn?.setAttribute("aria-pressed", String(open));
+}
+
 function resetLayoutSizing() {
   const cfg = layoutSizingConfig();
   localStorage.removeItem(cfg.rooms.key);
@@ -5023,9 +5040,11 @@ function initLayoutControls() {
   bindLayoutResizeHandle(dom.roomsResizeHandle, "rooms", { onReset: applyLayoutSizing });
   bindLayoutResizeHandle(dom.membersResizeHandle, "members", { onReset: applyLayoutSizing });
   dom.toggleRoomsButton?.addEventListener("click", () => {
+    if (isNarrowLayout()) { toggleMobileDrawer("rooms"); return; }
     setLayoutCollapsed("rooms", !dom.layout?.classList.contains("rooms-collapsed"));
   });
   dom.toggleMembersButton?.addEventListener("click", () => {
+    if (isNarrowLayout()) { toggleMobileDrawer("members"); return; }
     setLayoutCollapsed("members", !dom.layout?.classList.contains("members-collapsed"));
   });
   dom.roomsCollapseToggle?.addEventListener("change", () => {
@@ -8930,6 +8949,8 @@ function selectChannel(channelId) {
 }
 
 function openRoom(roomId, roomType) {
+  dom.layout?.classList.remove("mobile-rooms-open");
+  dom.toggleRoomsButton?.setAttribute("aria-pressed", "false");
   if (roomType === "voice") {
     closeChatView();
     closeMemoView();
@@ -10987,6 +11008,9 @@ function bindDmEvents() {
     const item = event.target?.closest?.("[data-dm-user]");
     if (item) openDmConversation(item.dataset.dmUser);
   });
+  dom.dmBackButton?.addEventListener("click", () => {
+    dom.dmPanel?.classList.remove("mobile-conv-open");
+  });
   dom.dmMessages?.addEventListener("click", (event) => {
     const del = event.target?.closest?.("[data-dm-delete]");
     if (del) {
@@ -12684,6 +12708,7 @@ function closeDmMode() {
 }
 
 function showDmEmpty() {
+  dom.dmPanel?.classList.remove("mobile-conv-open");
   if (dom.dmConvHead) dom.dmConvHead.hidden = true;
   if (dom.dmComposer) dom.dmComposer.hidden = true;
   if (dom.dmEmpty) dom.dmEmpty.hidden = false;
@@ -12730,6 +12755,7 @@ function renderDmThreads() {
 
 function openDmConversation(userId) {
   if (!userId) return;
+  if (isNarrowLayout()) dom.dmPanel?.classList.add("mobile-conv-open");
   state.dm.activeUserId = userId;
   delete state.dm.unread[userId];
   state.dm.messages = [];
