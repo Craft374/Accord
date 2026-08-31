@@ -40,7 +40,9 @@ const ROOM_TYPE_META = {
   memo: { icon: "📝", label: "메모장" },
   draw: { icon: "🎨", label: "그림판" },
   log: { icon: "📜", label: "전역 로그" },
+  ai: { icon: "🤖", label: "AI방" },
 };
+const AI_DRAFT_THROTTLE = 180; // 공용 입력창 draft 전송 최소 간격(ms)
 
 function readCollapsedRoomGroups() {
   try {
@@ -161,6 +163,8 @@ const state = {
   roomsMeta: {}, // roomId -> { startedAt } (통화 시작 시각)
   callRuntimeTimer: 0,
   online: [],
+  // AI방
+  ai: null, // { roomId, channelId, name, config, sessions, activeSessionId, messages, thinking, writable, draftBy }
   // 채팅
   activeChat: null, // { roomId, channelId, name }
   chatMessages: [],
@@ -538,6 +542,27 @@ const dom = {
   adminRefreshButton: document.querySelector("#adminRefreshButton"),
   adminUserList: document.querySelector("#adminUserList"),
   adminMessage: document.querySelector("#adminMessage"),
+  // AI방
+  aiPanel: document.querySelector("#aiPanel"),
+  aiRoomName: document.querySelector("#aiRoomName"),
+  aiSubtitle: document.querySelector("#aiSubtitle"),
+  aiModelTag: document.querySelector("#aiModelTag"),
+  aiHistoryButton: document.querySelector("#aiHistoryButton"),
+  aiNewButton: document.querySelector("#aiNewButton"),
+  aiSessions: document.querySelector("#aiSessions"),
+  aiScroll: document.querySelector("#aiScroll"),
+  aiMessages: document.querySelector("#aiMessages"),
+  aiThinking: document.querySelector("#aiThinking"),
+  aiDraftBy: document.querySelector("#aiDraftBy"),
+  aiInput: document.querySelector("#aiInput"),
+  aiInputMirror: document.querySelector("#aiInputMirror"),
+  aiSendButton: document.querySelector("#aiSendButton"),
+  aiComposerHint: document.querySelector("#aiComposerHint"),
+  aiSettingsRow: document.querySelector("#aiSettingsRow"),
+  aiKeyInput: document.querySelector("#aiKeyInput"),
+  aiModelInput: document.querySelector("#aiModelInput"),
+  aiSettingsSave: document.querySelector("#aiSettingsSave"),
+  aiSettingsState: document.querySelector("#aiSettingsState"),
 };
 var memoEditorController = null;
 
@@ -643,6 +668,7 @@ function bindEvents() {
   bindAuthEvents();
   bindChannelEvents();
   bindChatEvents();
+  bindAiEvents();
   bindMemoEvents();
   bindDrawEvents();
   bindDmEvents();
@@ -1730,6 +1756,7 @@ async function handleSocketMessage(message) {
     refreshEmojiPickerIfOpen(); // 이모지 목록이 바뀌었으면 피커 갱신
     updateChatInputPreview();   // 이모지 변경 시 입력 미리보기도 갱신
     verifyActiveChat();
+    verifyActiveAi();
     verifyActiveMemo();
     verifyActiveDraw();
     verifyActiveLog();
@@ -1802,6 +1829,34 @@ async function handleSocketMessage(message) {
 
   if (message.type === "chat-error") {
     if (state.activeChat) setChatHint(message.message || "채팅 오류가 발생했습니다.");
+    return;
+  }
+
+  if (message.type === "ai:state") { applyAiState(message); return; }
+  if (message.type === "ai:message") { handleAiIncomingMessage(message); return; }
+  if (message.type === "ai:draft") { handleAiDraft(message); return; }
+  if (message.type === "ai:thinking") {
+    if (state.ai && message.roomId === state.ai.roomId) { state.ai.thinking = Boolean(message.on); renderAiThinking(); }
+    return;
+  }
+  if (message.type === "ai:sessions") {
+    if (state.ai && message.roomId === state.ai.roomId) {
+      state.ai.sessions = Array.isArray(message.sessions) ? message.sessions : state.ai.sessions;
+      if (message.activeSessionId) state.ai.activeSessionId = message.activeSessionId;
+      renderAiSessions();
+    }
+    return;
+  }
+  if (message.type === "ai:config") {
+    if (state.ai && message.roomId === state.ai.roomId) {
+      state.ai.config = message.config || state.ai.config;
+      renderAiModelTag();
+      applyAiWritable();
+    }
+    return;
+  }
+  if (message.type === "ai:error") {
+    if (state.ai && (!message.roomId || message.roomId === state.ai.roomId)) setAiHint(message.message || "AI 오류가 발생했습니다.");
     return;
   }
 
@@ -8069,7 +8124,7 @@ function buildMembersPane(channel) {
 // --- 방별 권한 탭 ---
 const PERM_LABELS = {
   access: "접근",
-  use: { chat: "채팅", draw: "그리기", memo: "편집", voice: "발언", log: "보기" },
+  use: { chat: "채팅", draw: "그리기", memo: "편집", voice: "발언", log: "보기", ai: "AI 사용" },
 };
 function useLabelFor(roomType) {
   return PERM_LABELS.use[roomType] || "사용";
@@ -8269,7 +8324,7 @@ function buildPreviewPane(channel) {
       line.className = "perms-preview-line" + (p.access ? "" : " no-access");
       const ic = (ROOM_TYPE_META[room.type] || {}).icon || "";
       let caps = p.access ? "접근 O" : "접근 X (숨김)";
-      if (p.access && (room.type === "chat" || room.type === "draw" || room.type === "memo")) {
+      if (p.access && (room.type === "chat" || room.type === "draw" || room.type === "memo" || room.type === "ai")) {
         caps += ` · ${useLabelFor(room.type)} ${p.use ? "O" : "X"}`;
       }
       line.innerHTML = `<span>${ic} ${escapeHtml(room.name)}</span><span class="perms-caps">${caps}</span>`;
@@ -8956,32 +9011,44 @@ function openRoom(roomId, roomType) {
     closeMemoView();
     closeDrawView();
     closeLogView();
+    closeAiView();
     joinRoom(roomId);
   } else if (roomType === "chat") {
     closeMemoView();
     closeDrawView();
     closeLogView();
+    closeAiView();
     openChatRoom(roomId);
   } else if (roomType === "memo") {
     closeChatView();
     closeDrawView();
     closeLogView();
+    closeAiView();
     openMemoRoom(roomId);
   } else if (roomType === "draw") {
     closeChatView();
     closeMemoView();
     closeLogView();
+    closeAiView();
     openDrawRoom(roomId);
   } else if (roomType === "log") {
     closeChatView();
     closeMemoView();
     closeDrawView();
+    closeAiView();
     openLogRoom(roomId);
+  } else if (roomType === "ai") {
+    closeChatView();
+    closeMemoView();
+    closeDrawView();
+    closeLogView();
+    openAiRoom(roomId);
   } else {
     closeChatView();
     closeMemoView();
     closeDrawView();
     closeLogView();
+    closeAiView();
     const meta = ROOM_TYPE_META[roomType] || {};
     setMessage(`${meta.label || "이 방"}은 다음 단계에서 열립니다. (준비 중)`);
   }
@@ -9076,6 +9143,314 @@ function verifyActiveChat() {
   if (dom.chatSubtitle) dom.chatSubtitle.textContent = found.channel.name;
   applyChatReadOnly(found); // 읽기 전용 설정이 바뀌었을 수 있어 재적용
   renderChatMessages(); // 멤버 정보가 새로 도착했을 수 있어 아바타 갱신
+}
+
+// ===== AI방 (다같이 쓰는 AI 대화방) =====
+let aiDraftTimer = 0;
+let aiRemoteDraftTimer = 0;
+
+function openAiRoom(roomId) {
+  const found = findRoomInChannels(roomId);
+  if (!found) return;
+  if (state.ai?.roomId === roomId) {
+    document.body.classList.add("ai-open");
+    dom.aiInput?.focus();
+    return;
+  }
+  state.ai = {
+    roomId,
+    channelId: found.channel.id,
+    name: found.room.name,
+    config: found.channel.aiConfig || { hasKey: false, model: "" },
+    sessions: [],
+    activeSessionId: "",
+    messages: [],
+    thinking: false,
+    writable: true,
+    remoteDraft: null,
+    localEditAt: 0,
+    composing: false,
+  };
+  document.body.classList.add("ai-open");
+  if (dom.aiRoomName) dom.aiRoomName.textContent = found.room.name;
+  markRoomNameClickable(dom.aiRoomName, found.channel);
+  if (dom.aiSubtitle) dom.aiSubtitle.textContent = found.channel.name;
+  if (dom.aiMessages) dom.aiMessages.innerHTML = '<p class="ai-empty">불러오는 중…</p>';
+  if (dom.aiSessions) dom.aiSessions.hidden = true;
+  dom.aiHistoryButton?.setAttribute("aria-pressed", "false");
+  if (dom.aiInput) { dom.aiInput.value = ""; autoResizeAi(); }
+  setAiHint("");
+  renderAiModelTag();
+  sendSocket({ type: "ai:open", roomId });
+  renderRooms();
+  dom.aiInput?.focus();
+}
+
+function closeAiView() {
+  if (!state.ai) return;
+  sendSocket({ type: "ai:close" });
+  state.ai = null;
+  clearTimeout(aiRemoteDraftTimer);
+  if (dom.aiInputMirror) dom.aiInputMirror.textContent = "";
+  if (dom.aiDraftBy) dom.aiDraftBy.textContent = "";
+  document.body.classList.remove("ai-open");
+  renderRooms();
+}
+
+// 채널 목록 갱신 후, 보고 있던 AI방이 사라졌거나 이름/설정이 바뀌었는지 확인한다.
+function verifyActiveAi() {
+  if (!state.ai) return;
+  const found = findRoomInChannels(state.ai.roomId);
+  if (!found || found.room.type !== "ai") { closeAiView(); return; }
+  state.ai.name = found.room.name;
+  state.ai.channelId = found.channel.id;
+  state.ai.config = found.channel.aiConfig || state.ai.config;
+  state.ai.writable = canWriteRoom(found.channel, found.room);
+  if (dom.aiRoomName) dom.aiRoomName.textContent = found.room.name;
+  markRoomNameClickable(dom.aiRoomName, found.channel);
+  if (dom.aiSubtitle) dom.aiSubtitle.textContent = found.channel.name;
+  renderAiModelTag();
+  applyAiWritable();
+}
+
+function applyAiState(msg) {
+  if (!state.ai || msg.roomId !== state.ai.roomId) return;
+  if (msg.config) state.ai.config = msg.config;
+  state.ai.sessions = Array.isArray(msg.sessions) ? msg.sessions : [];
+  state.ai.activeSessionId = msg.activeSessionId || "";
+  state.ai.messages = Array.isArray(msg.messages) ? msg.messages : [];
+  state.ai.thinking = Boolean(msg.thinking);
+  if (typeof msg.writable === "boolean") state.ai.writable = msg.writable;
+  if (msg.draft && msg.draft.text) showAiRemoteDraft(msg.draft);
+  renderAiModelTag();
+  renderAiSessions();
+  renderAiMessages();
+  renderAiThinking();
+  applyAiWritable();
+}
+
+function renderAiModelTag() {
+  if (!dom.aiModelTag) return;
+  const cfg = state.ai?.config || {};
+  dom.aiModelTag.textContent = cfg.model || "";
+  dom.aiModelTag.title = cfg.hasKey ? `모델: ${cfg.model}` : "API 키가 설정되지 않았습니다";
+}
+
+function renderAiSessions() {
+  const box = dom.aiSessions;
+  if (!box || !state.ai) return;
+  box.innerHTML = "";
+  if (!state.ai.sessions.length) {
+    const p = document.createElement("p");
+    p.className = "ai-sessions-empty";
+    p.textContent = "대화 기록이 없습니다.";
+    box.append(p);
+    return;
+  }
+  for (const s of [...state.ai.sessions].reverse()) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "ai-session-item" + (s.id === state.ai.activeSessionId ? " active" : "");
+    btn.dataset.sessionId = s.id;
+    const title = document.createElement("span");
+    title.textContent = s.title || "새 대화";
+    const meta = document.createElement("span");
+    meta.className = "ai-session-meta";
+    meta.textContent = `${s.count || 0}개 메시지 · ${s.createdAt ? new Date(s.createdAt).toLocaleDateString() : ""}`;
+    btn.append(title, meta);
+    box.append(btn);
+  }
+}
+
+function renderAiMessages() {
+  const box = dom.aiMessages;
+  if (!box || !state.ai) return;
+  box.innerHTML = "";
+  if (!state.ai.messages.length) {
+    const p = document.createElement("p");
+    p.className = "ai-empty";
+    p.textContent = "무엇이든 물어보세요. 이 방의 모두가 같은 대화를 봅니다.";
+    box.append(p);
+    return;
+  }
+  for (const m of state.ai.messages) {
+    const row = document.createElement("div");
+    row.className = "ai-msg " + (m.role === "user" ? "user" : "model");
+    const role = document.createElement("div");
+    role.className = "ai-msg-role";
+    role.textContent = m.role === "user" ? (m.name || "누군가") : (m.model ? `AI · ${m.model}` : "AI");
+    const body = document.createElement("div");
+    body.className = "ai-msg-body";
+    body.textContent = m.text || "";
+    row.append(role, body);
+    box.append(row);
+  }
+  if (dom.aiScroll) dom.aiScroll.scrollTop = dom.aiScroll.scrollHeight;
+}
+
+function renderAiThinking() {
+  if (dom.aiThinking) dom.aiThinking.hidden = !state.ai?.thinking;
+}
+
+function applyAiWritable() {
+  if (!state.ai) return;
+  const cfg = state.ai.config || {};
+  const ok = state.ai.writable !== false;
+  if (dom.aiInput) {
+    dom.aiInput.disabled = !ok;
+    dom.aiInput.placeholder = ok
+      ? (cfg.hasKey ? "다같이 쓰는 입력창 — 무엇이든 물어보세요" : "채널 관리 → AI방 설정에서 Gemini 키를 등록하세요")
+      : "읽기 전용 방입니다";
+  }
+  if (dom.aiSendButton) dom.aiSendButton.disabled = !ok;
+  if (dom.aiNewButton) dom.aiNewButton.disabled = !ok;
+}
+
+function setAiHint(text) {
+  if (dom.aiComposerHint) dom.aiComposerHint.textContent = text || "";
+}
+
+function autoResizeAi() {
+  const el = dom.aiInput;
+  if (!el) return;
+  el.style.height = "auto";
+  el.style.height = Math.min(180, el.scrollHeight) + "px";
+}
+
+function handleAiIncomingMessage(msg) {
+  if (!state.ai || msg.roomId !== state.ai.roomId) return;
+  // 다른 세션 앞으로 온 메시지(주로 세션 전환 직전에 시작된 응답)는 무시한다.
+  // 서버엔 저장되므로 해당 세션을 열면 보인다. ai:new / ai:switch 는 별도 ai:state 로 따라간다.
+  if (msg.sessionId && state.ai.activeSessionId && msg.sessionId !== state.ai.activeSessionId) return;
+  state.ai.messages.push(msg.message);
+  if (state.ai.messages.length > 400) state.ai.messages.shift();
+  renderAiMessages();
+}
+
+// ----- 공용 입력창 draft 동기화 (last-writer-wins) -----
+function sendAiDraft() {
+  if (!state.ai) return;
+  state.ai.localEditAt = Date.now();
+  if (aiDraftTimer) return;
+  aiDraftTimer = setTimeout(() => {
+    aiDraftTimer = 0;
+    if (!state.ai || !dom.aiInput) return;
+    sendSocket({ type: "ai:draft", roomId: state.ai.roomId, text: dom.aiInput.value, caret: dom.aiInput.selectionStart || 0 });
+  }, AI_DRAFT_THROTTLE);
+}
+
+function clearSharedDraft() {
+  if (state.ai) sendSocket({ type: "ai:draft", roomId: state.ai.roomId, text: "", caret: 0 });
+}
+
+function handleAiDraft(msg) {
+  if (!state.ai || msg.roomId !== state.ai.roomId) return;
+  if (msg.byId && msg.byId === state.auth.user?.id) return;
+  if (!msg.text) { clearAiRemoteDraft(); return; }
+  // 내가 방금(1.2초 내) 입력했다면 덮어쓰지 않는다(타이핑 충돌 완화).
+  const iAmTyping = document.activeElement === dom.aiInput && (Date.now() - (state.ai.localEditAt || 0) < 1200);
+  if (!iAmTyping && dom.aiInput && dom.aiInput.value !== msg.text) {
+    dom.aiInput.value = msg.text;
+    autoResizeAi();
+  }
+  showAiRemoteDraft(msg);
+}
+
+function showAiRemoteDraft(rd) {
+  if (!state.ai) return;
+  state.ai.remoteDraft = { text: rd.text || "", caret: rd.caret || 0, byName: rd.byName || "누군가" };
+  updateAiMirror();
+  if (dom.aiDraftBy) dom.aiDraftBy.textContent = `${state.ai.remoteDraft.byName}님이 입력 중…`;
+  clearTimeout(aiRemoteDraftTimer);
+  aiRemoteDraftTimer = setTimeout(clearAiRemoteDraft, 4000);
+}
+
+function clearAiRemoteDraft() {
+  clearTimeout(aiRemoteDraftTimer);
+  if (state.ai) state.ai.remoteDraft = null;
+  if (dom.aiInputMirror) dom.aiInputMirror.textContent = "";
+  if (dom.aiDraftBy) dom.aiDraftBy.textContent = "";
+}
+
+function updateAiMirror() {
+  const mirror = dom.aiInputMirror;
+  const rd = state.ai?.remoteDraft;
+  if (!mirror) return;
+  mirror.textContent = "";
+  if (!rd || !rd.text) return;
+  const caretPos = Math.max(0, Math.min(rd.text.length, rd.caret));
+  mirror.append(document.createTextNode(rd.text.slice(0, caretPos)));
+  const caret = document.createElement("span");
+  caret.className = "ai-remote-caret";
+  caret.dataset.name = rd.byName || "누군가";
+  mirror.append(caret, document.createTextNode(rd.text.slice(caretPos)));
+  mirror.scrollTop = dom.aiInput?.scrollTop || 0;
+}
+
+function sendAiPrompt() {
+  if (!state.ai || !dom.aiInput) return;
+  const text = dom.aiInput.value.trim();
+  if (!text) return;
+  if (state.ai.writable === false) { setAiHint("읽기 전용 방입니다."); return; }
+  if (!state.ai.config?.hasKey) { setAiHint("API 키가 없습니다. 채널 관리 → AI방 설정에서 Gemini 키를 등록하세요."); return; }
+  if (state.ai.thinking) { setAiHint("AI가 응답 중입니다. 잠시 후 시도하세요."); return; }
+  setAiHint("");
+  sendSocket({ type: "ai:send", roomId: state.ai.roomId, text });
+  dom.aiInput.value = "";
+  autoResizeAi();
+  clearSharedDraft();
+  clearAiRemoteDraft();
+}
+
+function bindAiEvents() {
+  dom.aiInput?.addEventListener("input", () => {
+    autoResizeAi();
+    if (!state.ai?.composing) sendAiDraft();
+  });
+  dom.aiInput?.addEventListener("compositionstart", () => { if (state.ai) state.ai.composing = true; });
+  dom.aiInput?.addEventListener("compositionend", () => {
+    if (state.ai) state.ai.composing = false;
+    sendAiDraft();
+  });
+  dom.aiInput?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !state.ai?.composing) {
+      e.preventDefault();
+      sendAiPrompt();
+    }
+  });
+  dom.aiInput?.addEventListener("scroll", () => { if (dom.aiInputMirror) dom.aiInputMirror.scrollTop = dom.aiInput.scrollTop; });
+  dom.aiSendButton?.addEventListener("click", sendAiPrompt);
+  dom.aiNewButton?.addEventListener("click", () => {
+    if (state.ai) sendSocket({ type: "ai:new", roomId: state.ai.roomId });
+  });
+  dom.aiHistoryButton?.addEventListener("click", () => {
+    if (!dom.aiSessions) return;
+    dom.aiSessions.hidden = !dom.aiSessions.hidden;
+    dom.aiHistoryButton.setAttribute("aria-pressed", dom.aiSessions.hidden ? "false" : "true");
+  });
+  dom.aiSessions?.addEventListener("click", (e) => {
+    const item = e.target?.closest?.("[data-session-id]");
+    if (!item || !state.ai) return;
+    if (item.dataset.sessionId === state.ai.activeSessionId) return;
+    sendSocket({ type: "ai:switch", roomId: state.ai.roomId, sessionId: item.dataset.sessionId });
+  });
+  dom.aiSettingsSave?.addEventListener("click", () => {
+    const channel = currentChannel();
+    if (!channel || !isChannelOwner(channel)) return;
+    const payload = { type: "channel:set-ai", channelId: channel.id };
+    const key = (dom.aiKeyInput?.value || "").trim();
+    if (key) payload.key = key; // 빈칸 저장은 키를 건드리지 않음(모델만 변경 가능)
+    if (dom.aiModelInput) payload.model = dom.aiModelInput.value.trim();
+    sendSocket(payload);
+    if (dom.aiKeyInput) dom.aiKeyInput.value = "";
+    setAiSettingsState("저장했습니다.", true);
+  });
+}
+
+function setAiSettingsState(text, ok = false) {
+  if (!dom.aiSettingsState) return;
+  dom.aiSettingsState.textContent = text || "";
+  dom.aiSettingsState.classList.toggle("ok", Boolean(ok));
 }
 
 function handleIncomingChat(msg) {
@@ -15036,6 +15411,15 @@ function openChannelMenu() {
   // 채널 아이콘: 대표자만 변경 가능
   if (dom.channelIconRow) dom.channelIconRow.hidden = !owner;
   setAvatar(dom.channelIconPreview, { avatar: channel.icon, displayName: channel.name });
+  // AI방 설정: 대표자만, AI방이 하나라도 있을 때만 노출
+  const hasAiRoom = (channel.rooms || []).some((r) => r.type === "ai");
+  if (dom.aiSettingsRow) dom.aiSettingsRow.hidden = !(owner && hasAiRoom);
+  if (owner && hasAiRoom) {
+    const cfg = channel.aiConfig || { hasKey: false, model: "" };
+    if (dom.aiKeyInput) { dom.aiKeyInput.value = ""; dom.aiKeyInput.placeholder = cfg.hasKey ? "키 저장됨 · 새 키를 넣으면 교체" : "API 키 붙여넣기"; }
+    if (dom.aiModelInput) dom.aiModelInput.value = cfg.model || "";
+    setAiSettingsState(cfg.hasKey ? "현재 키가 설정되어 있습니다." : "키가 없어 AI방을 쓸 수 없습니다.");
+  }
   setChannelMenuMessage("");
   dom.channelMenuModal.hidden = false;
 }

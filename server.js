@@ -459,6 +459,7 @@ function handleUpgrade(req, socket) {
     userId: "",
     isAdmin: false,
     chatRoomId: "", // 현재 보고 있는 채팅방(입력중 표시 대상 판별용)
+    aiRoomId: "", // 현재 보고 있는 AI방(브로드캐스트 대상 판별용)
     memoRoomId: "", // 현재 보고 있는 메모장(실시간 동기화 대상 판별용)
     drawRoomId: "", // 현재 보고 있는 그림판(실시간 동기화 대상 판별용)
     logRoomId: "", // 현재 보고 있는 로그방(실시간 로그 대상 판별용)
@@ -625,6 +626,7 @@ function handleMessage(client, message) {
   if (handleAdminMessage(client, message)) return;
   if (handleChannelMessage(client, message)) return;
   if (handleChatMessage(client, message)) return;
+  if (handleAiMessage(client, message)) return;
   if (handleMemoMessage(client, message)) return;
   if (handleDrawMessage(client, message)) return;
   if (handleLogMessage(client, message)) return;
@@ -1047,6 +1049,7 @@ function removeClient(client) {
   leaveMemo(client);
   leaveDraw(client);
   leaveChatView(client);
+  leaveAiView(client);
   client.logRoomId = "";
   client.logChannelId = "";
   client.dmUserId = "";
@@ -1142,7 +1145,7 @@ function broadcastPresence() {
   // 다른 사람이 어느 방에 있는지 방 옆에 표시할 수 있게 한다. (방 id는 전역 고유라 통화방과 겹치지 않음)
   for (const client of clients.values()) {
     if (!client.userId) continue;
-    for (const rid of [client.chatRoomId, client.memoRoomId, client.drawRoomId, client.logRoomId]) {
+    for (const rid of [client.chatRoomId, client.aiRoomId, client.memoRoomId, client.drawRoomId, client.logRoomId]) {
       if (!rid) continue;
       if (!presence[rid]) presence[rid] = [];
       presence[rid].push({ clientId: client.id, userId: client.userId, name: client.name || "Guest" });
@@ -1341,6 +1344,20 @@ function handleChannelMessage(client, message) {
         const r = store.setChannelIcon(message.channelId, message.icon);
         if (r.error) return channelError(client, r.error);
         notifyChannelMembers(message.channelId);
+        return true;
+      });
+    case "channel:set-ai":
+      return ownerAction(client, message.channelId, () => {
+        const patch = {};
+        if (typeof message.key === "string") patch.key = message.key.slice(0, 400);
+        if (typeof message.model === "string") patch.model = message.model;
+        store.setAiConfig(message.channelId, patch);
+        notifyChannelMembers(message.channelId); // aiConfig 가 channelSummary 로 다시 나감
+        // 이 채널 AI방을 보고 있는 사람에게 갱신된 설정을 즉시 반영
+        const channel = store.getChannel(message.channelId);
+        for (const room of channel?.rooms || []) {
+          if (room.type === "ai") broadcastAi(room.id, { type: "ai:config", roomId: room.id, config: store.getAiConfig(message.channelId) });
+        }
         return true;
       });
     case "channel:create-role":
@@ -1872,6 +1889,211 @@ function broadcastChat(channel, payload) {
   for (const c of clients.values()) {
     if (!c.userId) continue;
     if (store.isChannelMember(channel.id, c.userId, c.isAdmin)) send(c, payload);
+  }
+}
+
+// ===== AI방 (다같이 쓰는 AI 대화방) =====
+// 방 멤버가 하나의 공용 입력창을 공유하고, 보낸 프롬프트와 AI 응답을 방 전원이 함께 본다.
+// 세션(대화 스레드)은 server-data/ai/<roomId>.json 에 저장되고, 공용 입력창(draft)은 메모리에만 둔다.
+const AI_TEXT_MAX = 4000;
+const AI_CONTEXT_TURNS = 20; // Gemini 에 함께 보내는 최근 메시지 수
+const AI_TIMEOUT_MS = 60000;
+const AI_SYSTEM_PROMPT = "당신은 Accord 안의 'AI방'에서 여러 사용자가 함께 쓰는 어시스턴트입니다. 각 사용자 발화 앞의 '이름:' 은 말한 사람 표시입니다. 한국어로 간결하고 정확하게 답하세요.";
+
+const aiDrafts = new Map(); // roomId -> { text, caret, byId, byName }
+const aiBusy = new Set();   // 응답 생성 중인 roomId (동시 요청/비용 방어)
+
+function leaveAiView(client) {
+  if (!client.aiRoomId) return;
+  client.aiRoomId = "";
+}
+
+function resolveAiRoom(client, roomId) {
+  const found = store.findRoom(String(roomId || ""));
+  if (!found || found.room.type !== "ai") {
+    send(client, { type: "ai:error", message: "AI방을 찾지 못했습니다." });
+    return null;
+  }
+  if (!store.isChannelMember(found.channel.id, client.userId, client.isAdmin)) {
+    send(client, { type: "ai:error", message: "채널 멤버만 이용할 수 있습니다." });
+    return null;
+  }
+  if (!store.canAccessRoom(found.channel.id, found.room.id, client.userId, client.isAdmin)) {
+    send(client, { type: "ai:error", message: "이 방에 접근할 권한이 없습니다." });
+    return null;
+  }
+  return found;
+}
+
+function broadcastAi(roomId, payload) {
+  for (const c of clients.values()) {
+    if (c.userId && c.aiRoomId === roomId) send(c, payload);
+  }
+}
+
+function aiSessionMetas(doc) {
+  return doc.sessions.map((s) => ({ id: s.id, title: s.title || "새 대화", createdAt: s.createdAt || 0, count: (s.messages || []).length }));
+}
+
+function aiActiveSession(doc) {
+  return doc.sessions.find((s) => s.id === doc.activeSessionId) || null;
+}
+
+function aiEnsureSession(doc) {
+  let s = aiActiveSession(doc);
+  if (!s) {
+    s = { id: crypto.randomBytes(8).toString("hex"), title: "새 대화", createdAt: Date.now(), messages: [] };
+    doc.sessions.push(s);
+    doc.activeSessionId = s.id;
+  }
+  return s;
+}
+
+async function callGemini({ apiKey, model, contents }) {
+  if (typeof fetch !== "function") throw new Error("이 서버의 Node 버전이 낮습니다. Node 18 이상이 필요합니다.");
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), AI_TIMEOUT_MS);
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ contents, systemInstruction: { parts: [{ text: AI_SYSTEM_PROMPT }] } }),
+      signal: ctrl.signal,
+    });
+  } catch (err) {
+    clearTimeout(timer);
+    throw new Error(err.name === "AbortError" ? "AI 응답이 시간 내에 오지 않았습니다." : "AI 서버에 연결하지 못했습니다.");
+  }
+  clearTimeout(timer);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data?.error?.message ? `Gemini 오류: ${data.error.message}` : `Gemini 오류 (HTTP ${res.status})`);
+  }
+  const cand = data?.candidates?.[0];
+  const text = (cand?.content?.parts || []).map((p) => p.text || "").join("").trim();
+  if (!text) {
+    const reason = data?.promptFeedback?.blockReason || cand?.finishReason;
+    throw new Error(reason ? `응답이 비어 있습니다 (${reason}).` : "빈 응답을 받았습니다.");
+  }
+  return text;
+}
+
+function handleAiMessage(client, message) {
+  if (typeof message.type !== "string" || !message.type.startsWith("ai:")) return false;
+  switch (message.type) {
+    case "ai:open": {
+      const ctx = resolveAiRoom(client, message.roomId);
+      if (!ctx) return true;
+      if (client.aiRoomId && client.aiRoomId !== ctx.room.id) leaveAiView(client);
+      client.aiRoomId = ctx.room.id;
+      const doc = store.getAiDoc(ctx.room.id);
+      const active = aiActiveSession(doc);
+      send(client, {
+        type: "ai:state",
+        roomId: ctx.room.id,
+        config: store.getAiConfig(ctx.channel.id),
+        sessions: aiSessionMetas(doc),
+        activeSessionId: doc.activeSessionId || "",
+        messages: active ? active.messages : [],
+        thinking: aiBusy.has(ctx.room.id),
+        writable: isRoomWritable(ctx, client),
+        draft: aiDrafts.get(ctx.room.id) || null,
+      });
+      broadcastPresence();
+      return true;
+    }
+    case "ai:close": {
+      leaveAiView(client);
+      broadcastPresence();
+      return true;
+    }
+    case "ai:draft": {
+      const ctx = resolveAiRoom(client, message.roomId);
+      if (!ctx) return true;
+      const text = String(message.text || "").slice(0, AI_TEXT_MAX);
+      const caret = Math.max(0, Math.min(text.length, Number(message.caret) || 0));
+      const draft = { text, caret, byId: client.userId, byName: client.name || "" };
+      if (text) aiDrafts.set(ctx.room.id, draft);
+      else aiDrafts.delete(ctx.room.id);
+      for (const c of clients.values()) {
+        if (c.id !== client.id && c.userId && c.aiRoomId === ctx.room.id) send(c, { type: "ai:draft", roomId: ctx.room.id, ...draft });
+      }
+      return true;
+    }
+    case "ai:new": {
+      const ctx = resolveAiRoom(client, message.roomId);
+      if (!ctx) return true;
+      if (!isRoomWritable(ctx, client)) { send(client, { type: "ai:error", message: "읽기 전용 방입니다." }); return true; }
+      const doc = store.getAiDoc(ctx.room.id);
+      const s = { id: crypto.randomBytes(8).toString("hex"), title: "새 대화", createdAt: Date.now(), messages: [] };
+      doc.sessions.push(s);
+      doc.activeSessionId = s.id;
+      store.saveAiDoc(ctx.room.id, doc);
+      broadcastAi(ctx.room.id, { type: "ai:state", roomId: ctx.room.id, config: store.getAiConfig(ctx.channel.id), sessions: aiSessionMetas(doc), activeSessionId: doc.activeSessionId, messages: [], thinking: false, writable: true });
+      return true;
+    }
+    case "ai:switch": {
+      const ctx = resolveAiRoom(client, message.roomId);
+      if (!ctx) return true;
+      const doc = store.getAiDoc(ctx.room.id);
+      const target = doc.sessions.find((s) => s.id === String(message.sessionId || ""));
+      if (!target) { send(client, { type: "ai:error", message: "대화를 찾지 못했습니다." }); return true; }
+      doc.activeSessionId = target.id;
+      store.saveAiDoc(ctx.room.id, doc);
+      broadcastAi(ctx.room.id, { type: "ai:state", roomId: ctx.room.id, config: store.getAiConfig(ctx.channel.id), sessions: aiSessionMetas(doc), activeSessionId: doc.activeSessionId, messages: target.messages, thinking: aiBusy.has(ctx.room.id), writable: isRoomWritable(ctx, client) });
+      return true;
+    }
+    case "ai:send": {
+      const ctx = resolveAiRoom(client, message.roomId);
+      if (!ctx) return true;
+      if (!isRoomWritable(ctx, client)) { send(client, { type: "ai:error", message: "읽기 전용 방입니다." }); return true; }
+      const text = String(message.text || "").replace(/\s+$/, "").slice(0, AI_TEXT_MAX);
+      if (!text) { send(client, { type: "ai:error", message: "빈 메시지는 보낼 수 없습니다." }); return true; }
+      const secret = store.getAiSecret(ctx.channel.id);
+      if (!secret || !secret.key) {
+        send(client, { type: "ai:error", message: "AI API 키가 없습니다. 채널 관리 → AI 설정에서 Gemini 키를 등록하세요." });
+        return true;
+      }
+      if (aiBusy.has(ctx.room.id)) { send(client, { type: "ai:error", message: "AI가 이미 응답 중입니다. 잠시 후 다시 시도하세요." }); return true; }
+
+      const doc = store.getAiDoc(ctx.room.id);
+      const session = aiEnsureSession(doc);
+      const user = store.findById(client.userId);
+      const userMsg = { role: "user", text, at: Date.now(), userId: client.userId, name: user ? user.displayName : client.name };
+      session.messages.push(userMsg);
+      if (session.title === "새 대화") session.title = text.slice(0, 40);
+      store.saveAiDoc(ctx.room.id, doc);
+      aiDrafts.delete(ctx.room.id);
+      broadcastAi(ctx.room.id, { type: "ai:message", roomId: ctx.room.id, sessionId: session.id, message: userMsg });
+      broadcastAi(ctx.room.id, { type: "ai:draft", roomId: ctx.room.id, text: "", caret: 0, byId: client.userId, byName: "" });
+
+      aiBusy.add(ctx.room.id);
+      broadcastAi(ctx.room.id, { type: "ai:thinking", roomId: ctx.room.id, on: true });
+      const model = secret.model || store.DEFAULT_AI_MODEL;
+      callGemini({ apiKey: secret.key, model, contents: store.toGeminiContents(session.messages, AI_CONTEXT_TURNS) })
+        .then((reply) => {
+          const fresh = store.getAiDoc(ctx.room.id);
+          const s = fresh.sessions.find((x) => x.id === session.id);
+          if (!s) return;
+          const aiMsg = { role: "model", text: reply, at: Date.now(), model };
+          s.messages.push(aiMsg);
+          store.saveAiDoc(ctx.room.id, fresh);
+          broadcastAi(ctx.room.id, { type: "ai:message", roomId: ctx.room.id, sessionId: s.id, message: aiMsg });
+          broadcastAi(ctx.room.id, { type: "ai:sessions", roomId: ctx.room.id, sessions: aiSessionMetas(fresh), activeSessionId: fresh.activeSessionId });
+        })
+        .catch((err) => {
+          broadcastAi(ctx.room.id, { type: "ai:error", roomId: ctx.room.id, message: String(err && err.message || err || "AI 응답 실패") });
+        })
+        .finally(() => {
+          aiBusy.delete(ctx.room.id);
+          broadcastAi(ctx.room.id, { type: "ai:thinking", roomId: ctx.room.id, on: false });
+        });
+      return true;
+    }
+    default:
+      return false;
   }
 }
 

@@ -414,6 +414,43 @@
           </div>
         </section>
 
+        <section class="ai-panel" id="aiPanel" aria-hidden="true">
+          <header class="ai-head">
+            <div class="ai-title">
+              <span class="ai-title-icon">🤖</span>
+              <h2 id="aiRoomName">AI방</h2>
+            </div>
+            <p class="ai-subtitle" id="aiSubtitle"></p>
+            <span class="ai-model-tag" id="aiModelTag" title="사용 모델"></span>
+            <button class="focus-btn" id="aiHistoryButton" type="button" title="대화 기록" aria-label="대화 기록" aria-pressed="false">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l4 2"/></svg>
+            </button>
+            <button class="focus-btn" id="aiNewButton" type="button" title="새 대화" aria-label="새 대화">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+            </button>
+          </header>
+          <div class="ai-body">
+            <aside class="ai-sessions" id="aiSessions" hidden></aside>
+            <div class="ai-main">
+              <div class="ai-scroll" id="aiScroll">
+                <div class="ai-messages" id="aiMessages"></div>
+              </div>
+              <div class="ai-thinking" id="aiThinking" hidden>AI가 답변을 작성 중…</div>
+              <div class="ai-composer">
+                <p class="ai-draft-by" id="aiDraftBy" aria-live="polite"></p>
+                <div class="ai-composer-row">
+                  <div class="ai-input-wrap">
+                    <div class="ai-input-mirror" id="aiInputMirror" aria-hidden="true"></div>
+                    <textarea id="aiInput" rows="1" placeholder="다같이 쓰는 입력창 — 무엇이든 물어보세요" maxlength="4000"></textarea>
+                  </div>
+                  <button class="ai-send-button" id="aiSendButton" type="button">보내기</button>
+                </div>
+                <p class="ai-composer-hint" id="aiComposerHint" aria-live="polite"></p>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <section class="dm-panel" id="dmPanel" aria-hidden="true">
           <aside class="dm-threads">
             <header class="dm-threads-head">
@@ -898,6 +935,7 @@
               <label class="room-type-option"><input type="radio" name="roomType" value="memo" /><span>📝 메모장</span></label>
               <label class="room-type-option"><input type="radio" name="roomType" value="draw" /><span>🎨 그림판</span></label>
               <label class="room-type-option"><input type="radio" name="roomType" value="log" /><span>📜 전역 로그</span></label>
+              <label class="room-type-option"><input type="radio" name="roomType" value="ai" /><span>🤖 AI방</span></label>
             </div>
           </div>
           <p class="account-message" id="roomModalMessage" aria-live="polite"></p>
@@ -977,6 +1015,19 @@
             <span>채널 이름 변경</span>
             <input id="channelRenameInput" autocomplete="off" maxlength="32" />
           </label>
+          <div class="field ai-settings-field" id="aiSettingsRow" hidden>
+            <span>AI방 설정 (Gemini)</span>
+            <input id="aiKeyInput" type="password" autocomplete="off" placeholder="API 키 붙여넣기 (비우고 저장하면 삭제)" />
+            <input id="aiModelInput" list="aiModelList" autocomplete="off" placeholder="모델 ID (예: gemini-2.5-flash)" />
+            <datalist id="aiModelList">
+              <option value="gemini-2.5-flash"></option>
+              <option value="gemini-2.5-pro"></option>
+              <option value="gemini-2.5-flash-lite"></option>
+              <option value="gemini-2.0-flash"></option>
+            </datalist>
+            <button class="secondary" id="aiSettingsSave" type="button">AI 설정 저장</button>
+            <p class="ai-settings-state" id="aiSettingsState" aria-live="polite"></p>
+          </div>
           <div class="modal-actions channel-menu-actions">
             <button class="secondary" id="channelRenameButton" type="button">이름 저장</button>
             <button class="secondary" id="channelRolesButton" type="button">역할 · 권한 관리</button>

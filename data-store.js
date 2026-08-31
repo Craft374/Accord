@@ -12,6 +12,8 @@ const CHANNELS_FILE = path.join(DATA_DIR, "channels.json");
 const MESSAGES_DIR = path.join(DATA_DIR, "messages");
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const MEMO_DIR = path.join(DATA_DIR, "memo");
+const AI_DIR = path.join(DATA_DIR, "ai");
+const AI_KEYS_FILE = path.join(DATA_DIR, "ai-keys.json"); // { [channelId]: { key, model } } — 클라이언트로 절대 나가지 않음
 const DRAW_DIR = path.join(DATA_DIR, "draw");
 const LOG_DIR = path.join(DATA_DIR, "log");
 const DM_DIR = path.join(DATA_DIR, "dm");
@@ -31,7 +33,8 @@ const INVITE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 혼동 문자 제
 const MAX_CONN_LOG = 40; // 유저별 접속 로그 보관 개수
 const AVATAR_MAX_LEN = 400000; // 프로필 이미지 data URL 최대 길이(약 300KB)
 const BANNER_MAX_LEN = 900000; // 프로필 배경 이미지 data URL 최대 길이(약 670KB)
-const ROOM_TYPES = ["voice", "chat", "memo", "draw", "log"];
+const ROOM_TYPES = ["voice", "chat", "memo", "draw", "log", "ai"];
+const DEFAULT_AI_MODEL = "gemini-2.5-flash";
 const DEFAULT_ROOM_LIMIT = 8; // 통화방 기본 정원
 const ROOM_LIMIT_MAX = 99;
 const ROOM_LAYOUT_MAX_DEPTH = 32;
@@ -380,7 +383,7 @@ function cleanChannelName(value) {
 }
 
 function cleanRoomTypeName(value, type) {
-  const fallback = { voice: "통화방", chat: "채팅방", memo: "메모장", draw: "그림판", log: "전역 로그" }[type] || "새 방";
+  const fallback = { voice: "통화방", chat: "채팅방", memo: "메모장", draw: "그림판", log: "전역 로그", ai: "AI방" }[type] || "새 방";
   return String(value || "").trim().slice(0, 32) || fallback;
 }
 
@@ -757,6 +760,7 @@ function removeRoom(channelId, roomId) {
   deleteRoomMessages(roomId); // 방 삭제 시 저장된 채팅도 정리
   deleteRoomMemo(roomId);
   deleteRoomDraw(roomId);
+  deleteRoomAi(roomId);
   deleteRoomStats(roomId);
   return { channel };
 }
@@ -1263,6 +1267,7 @@ function channelSummary(channel) {
     })),
     emojiUseRestricted: Boolean(channel.emojiUseRestricted),
     attachRestricted: Boolean(channel.attachRestricted),
+    aiConfig: getAiConfig(channel.id), // { hasKey, model } — 키 자체는 포함하지 않음
     userPerms: Object.fromEntries(Object.entries(channel.userPerms || {}).map(([k, v]) => [k, { ...v }])),
     emojis: emojisOf(channel).map((e) => ({ id: e.id, name: e.name, url: e.url })),
     fonts: fontsOf(channel).map((f) => ({ id: f.id, name: f.name, url: f.url, family: f.family || "", weightText: f.weightText || "" })),
@@ -1353,6 +1358,73 @@ function deleteMessage(roomId, msgId) {
   writeJsonAtomic(messagesFile(roomId), list);
   deleteUploadsFromFiles(removed.files); // 첨부 파일도 서버 저장소에서 정리
   return removed;
+}
+
+// ===== AI방 =====
+// 방마다 server-data/ai/<roomId>.json 에 세션 목록을 저장한다.
+// 문서: { sessions: [{ id, title, createdAt, messages: [{ role:'user'|'model', text, at, userId, name, images? }] }], activeSessionId }
+function aiFile(roomId) {
+  return path.join(AI_DIR, `${roomId}.json`);
+}
+
+function getAiDoc(roomId) {
+  if (!isSafeRoomId(roomId)) return { sessions: [], activeSessionId: "" };
+  const doc = readJson(aiFile(roomId), { sessions: [], activeSessionId: "" });
+  if (!doc || !Array.isArray(doc.sessions)) return { sessions: [], activeSessionId: "" };
+  return doc;
+}
+
+function saveAiDoc(roomId, doc) {
+  if (!isSafeRoomId(roomId)) return;
+  fs.mkdirSync(AI_DIR, { recursive: true });
+  writeJsonAtomic(aiFile(roomId), doc);
+}
+
+function deleteRoomAi(roomId) {
+  if (!isSafeRoomId(roomId)) return;
+  try { fs.unlinkSync(aiFile(roomId)); } catch { /* 없으면 무시 */ }
+}
+
+// ----- AI API 키 (채널별, 서버 전용) -----
+let aiKeys = null;
+function loadAiKeys() {
+  if (!aiKeys) aiKeys = readJson(AI_KEYS_FILE, {}) || {};
+  return aiKeys;
+}
+// 서버에서만 사용: 실제 키 포함
+function getAiSecret(channelId) {
+  return loadAiKeys()[channelId] || null;
+}
+// 클라이언트로 나가도 안전한 형태(키 없음)
+function getAiConfig(channelId) {
+  const c = loadAiKeys()[channelId];
+  return { hasKey: Boolean(c && c.key), model: (c && c.model) || DEFAULT_AI_MODEL };
+}
+// 저장된 AI 세션 메시지 목록 -> Gemini generateContent 의 contents 배열.
+// 순수 함수(네트워크 무관). 사용자 발화에는 화자 이름을 접두어로 붙여 모델이 누가 말했는지 알게 한다.
+function toGeminiContents(messages, limit = 20) {
+  const recent = (Array.isArray(messages) ? messages : []).slice(-limit);
+  const out = [];
+  for (const m of recent) {
+    if (!m || !m.text || (m.role !== "user" && m.role !== "model")) continue;
+    const text = m.role === "user" && m.name ? `${m.name}: ${m.text}` : String(m.text);
+    out.push({ role: m.role, parts: [{ text }] });
+  }
+  return out;
+}
+
+function setAiConfig(channelId, { key, model } = {}) {
+  const all = loadAiKeys();
+  const cur = { ...(all[channelId] || {}) };
+  if (typeof key === "string") {
+    const k = key.trim();
+    if (k) cur.key = k;
+    else delete cur.key; // 빈 문자열이면 키 삭제
+  }
+  if (typeof model === "string" && model.trim()) cur.model = model.trim().slice(0, 80);
+  all[channelId] = cur;
+  writeJsonAtomic(AI_KEYS_FILE, all);
+  return getAiConfig(channelId);
 }
 
 // ===== 파일 업로드 =====
@@ -1703,6 +1775,14 @@ module.exports = {
   reorderRoomLayout,
   setRoomLimit,
   setRoomReadOnly,
+  // AI방
+  getAiDoc,
+  saveAiDoc,
+  getAiSecret,
+  getAiConfig,
+  setAiConfig,
+  toGeminiContents,
+  DEFAULT_AI_MODEL,
   // 권한 역할
   createRole,
   updateRole,

@@ -391,6 +391,25 @@ const reviews = [
         && mixed.charsTyped === 4 && mixed.charsDeleted === 2 && mixed.linesTyped === 1;
     } catch { return false; }
   })(), "memoOpDelta counts inserted/deleted chars and inserted lines correctly (runtime)"],
+  [(() => {
+    // AI방: 저장 메시지 -> Gemini contents 변환. 최근 N개만, 화자 이름 접두, model 역할 유지, 빈/이상 항목 제외.
+    try {
+      const src = dataStore.match(/function toGeminiContents\(messages, limit = 20\) \{[\s\S]*?\n\}/);
+      if (!src) return false;
+      const fn = new Function(`${src[0]}\nreturn toGeminiContents;`)();
+      const out = fn([
+        { role: "user", text: "안녕", name: "철수" },
+        { role: "model", text: "네 안녕하세요" },
+        { role: "user", text: "", name: "영희" },
+        { role: "system", text: "무시" },
+      ]);
+      const limited = fn([{ role: "user", text: "a" }, { role: "user", text: "b" }], 1);
+      return out.length === 2
+        && out[0].role === "user" && out[0].parts[0].text === "철수: 안녕"
+        && out[1].role === "model" && out[1].parts[0].text === "네 안녕하세요"
+        && limited.length === 1 && limited[0].parts[0].text === "b";
+    } catch { return false; }
+  })(), "AI방 toGeminiContents maps stored messages to Gemini contents (runtime)"],
 ];
 
 for (const [ok, label] of reviews) {
