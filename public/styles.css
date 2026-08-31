@@ -6471,7 +6471,7 @@ body.ai-open .dm-panel { display: none !important; }
 .ai-composer { flex-shrink: 0; border-top: 1px solid var(--line); padding: 10px 16px 14px; }
 .ai-draft-by { margin: 0 0 6px; font-size: 11px; color: var(--green); min-height: 14px; }
 .ai-composer-row { display: flex; gap: 8px; align-items: flex-end; }
-.ai-input-wrap { position: relative; flex: 1; min-width: 0; }
+.ai-input-wrap { position: relative; flex: 1; min-width: 0; background: var(--bg-input); border-radius: var(--radius-sm); }
 .ai-input-mirror,
 #aiInput {
   font: inherit;
@@ -6500,7 +6500,7 @@ body.ai-open .dm-panel { display: none !important; }
 #aiInput {
   position: relative;
   z-index: 1;
-  background: var(--bg-input);
+  background: transparent; /* 뒤의 미러(원격 커서)가 비쳐 보이도록 */
   color: var(--text);
   resize: none;
   max-height: 180px;
@@ -6516,20 +6516,6 @@ body.ai-open .dm-panel { display: none !important; }
   vertical-align: text-bottom;
   background: var(--green);
   animation: aiCaretBlink 1s step-end infinite;
-  position: relative;
-}
-.ai-remote-caret::after {
-  content: attr(data-name);
-  position: absolute;
-  left: 0;
-  top: -1.4em;
-  font-size: 10px;
-  line-height: 1;
-  color: #fff;
-  background: var(--green);
-  padding: 2px 4px;
-  border-radius: 3px;
-  white-space: nowrap;
 }
 @keyframes aiCaretBlink { 50% { opacity: 0; } }
 .ai-send-button {

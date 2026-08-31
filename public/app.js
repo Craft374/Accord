@@ -9382,7 +9382,6 @@ function updateAiMirror() {
   mirror.append(document.createTextNode(rd.text.slice(0, caretPos)));
   const caret = document.createElement("span");
   caret.className = "ai-remote-caret";
-  caret.dataset.name = rd.byName || "누군가";
   mirror.append(caret, document.createTextNode(rd.text.slice(caretPos)));
   mirror.scrollTop = dom.aiInput?.scrollTop || 0;
 }
