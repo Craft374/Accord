@@ -846,6 +846,14 @@ function handleAdminMessage(client, message) {
       sendAdminUsers(client);
       return true;
     }
+    case "admin:get-ai-prompt":
+      send(client, { type: "admin-ai-prompt", prompt: store.getAiGlobalPrompt() });
+      return true;
+    case "admin:set-ai-prompt": {
+      const prompt = store.setAiGlobalPrompt(message.prompt);
+      send(client, { type: "admin-ai-prompt", prompt, saved: true });
+      return true;
+    }
     default:
       return false;
   }
@@ -1893,19 +1901,39 @@ function broadcastChat(channel, payload) {
 }
 
 // ===== AI방 (다같이 쓰는 AI 대화방) =====
-// 방 멤버가 하나의 공용 입력창을 공유하고, 보낸 프롬프트와 AI 응답을 방 전원이 함께 본다.
-// 세션(대화 스레드)은 server-data/ai/<roomId>.json 에 저장되고, 공용 입력창(draft)은 메모리에만 둔다.
+// 각 사용자는 자기 입력창을 쓰고, 입력 중인 내용은 방의 다른 사람에게 미리보기로만 보인다(입력창을 공유하지 않음).
+// 보낸 프롬프트와 AI 응답은 방 전원이 함께 본다.
+// 세션(대화 스레드) + 방 메모리는 server-data/ai/<roomId>.json 에 저장되고, 입력 미리보기(draft)는 메모리에만 둔다.
 const AI_TEXT_MAX = 4000;
 const AI_CONTEXT_TURNS = 20; // Gemini 에 함께 보내는 최근 메시지 수
 const AI_TIMEOUT_MS = 60000;
-const AI_SYSTEM_PROMPT = "당신은 Accord 안의 'AI방'에서 여러 사용자가 함께 쓰는 어시스턴트입니다. 각 사용자 발화 앞의 '이름:' 은 말한 사람 표시입니다. 한국어로 간결하고 정확하게 답하세요.";
+const AI_IMG_MIME = { "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp" };
 
-const aiDrafts = new Map(); // roomId -> { text, caret, byId, byName }
+const aiDrafts = new Map(); // roomId -> Map(userId -> { text, name, at })
 const aiBusy = new Set();   // 응답 생성 중인 roomId (동시 요청/비용 방어)
 
+// 이 방에서 나(byId 제외) 말고 입력 중인 사람들의 미리보기 목록.
+function aiDraftList(roomId, exceptId) {
+  const m = aiDrafts.get(roomId);
+  if (!m) return [];
+  const out = [];
+  for (const [uid, d] of m) {
+    if (uid === exceptId || !d.text) continue;
+    out.push({ byId: uid, byName: d.name || "", text: d.text });
+  }
+  return out;
+}
+
 function leaveAiView(client) {
-  if (!client.aiRoomId) return;
+  const roomId = client.aiRoomId;
+  if (!roomId) return;
   client.aiRoomId = "";
+  const m = aiDrafts.get(roomId);
+  if (m && m.delete(client.userId)) {
+    if (!m.size) aiDrafts.delete(roomId);
+    // 자리를 뜬 사람의 "입력 중" 잔상을 즉시 지운다.
+    broadcastAi(roomId, { type: "ai:draft", roomId, byId: client.userId, byName: client.name || "", text: "" });
+  }
 }
 
 function resolveAiRoom(client, roomId) {
@@ -1931,12 +1959,35 @@ function broadcastAi(roomId, payload) {
   }
 }
 
+// ai:state 를 방 전원에게, 각자 관점(writable·본인 제외 draft 목록)으로 보낸다.
+function broadcastAiState(ctx, doc, messages) {
+  for (const c of clients.values()) {
+    if (c.userId && c.aiRoomId === ctx.room.id) send(c, aiStatePayload(ctx, c, doc, messages));
+  }
+}
+
 function aiSessionMetas(doc) {
   return doc.sessions.map((s) => ({ id: s.id, title: s.title || "새 대화", createdAt: s.createdAt || 0, count: (s.messages || []).length }));
 }
 
 function aiActiveSession(doc) {
   return doc.sessions.find((s) => s.id === doc.activeSessionId) || null;
+}
+
+// ai:state 공통 페이로드. messages 를 주면 그 목록을, 아니면 활성 세션 메시지를 담는다.
+function aiStatePayload(ctx, client, doc, messages) {
+  return {
+    type: "ai:state",
+    roomId: ctx.room.id,
+    config: store.getAiConfig(ctx.channel.id),
+    memory: doc.memory,
+    sessions: aiSessionMetas(doc),
+    activeSessionId: doc.activeSessionId || "",
+    messages: messages || (aiActiveSession(doc)?.messages ?? []),
+    thinking: aiBusy.has(ctx.room.id),
+    writable: isRoomWritable(ctx, client),
+    drafts: aiDraftList(ctx.room.id, client.userId),
+  };
 }
 
 function aiEnsureSession(doc) {
@@ -1949,9 +2000,15 @@ function aiEnsureSession(doc) {
   return s;
 }
 
-async function callGemini({ apiKey, model, contents }) {
+// Gemini generateContent 호출. { text, images:[{mime,dataB64}] } 반환.
+// ponytail: 이미지 생성은 모델 ID 에 "image" 가 들어가면 responseModalities 로 IMAGE 를 요청하는 휴리스틱.
+//           전용 토글이 필요해지면 그때 만든다.
+async function callGemini({ apiKey, model, contents, system }) {
   if (typeof fetch !== "function") throw new Error("이 서버의 Node 버전이 낮습니다. Node 18 이상이 필요합니다.");
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const body = { contents };
+  if (system) body.systemInstruction = { parts: [{ text: system }] };
+  if (/image/i.test(model)) body.generationConfig = { responseModalities: ["TEXT", "IMAGE"] };
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), AI_TIMEOUT_MS);
   let res;
@@ -1959,7 +2016,7 @@ async function callGemini({ apiKey, model, contents }) {
     res = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ contents, systemInstruction: { parts: [{ text: AI_SYSTEM_PROMPT }] } }),
+      body: JSON.stringify(body),
       signal: ctrl.signal,
     });
   } catch (err) {
@@ -1975,12 +2032,20 @@ async function callGemini({ apiKey, model, contents }) {
     throw new Error(data?.error?.message ? `Gemini 오류: ${data.error.message}` : `Gemini 오류 (HTTP ${res.status})`);
   }
   const cand = data?.candidates?.[0];
-  const text = (cand?.content?.parts || []).map((p) => p.text || "").join("").trim();
-  if (!text) {
+  const parts = cand?.content?.parts || [];
+  const text = parts.map((p) => p.text || "").join("").trim();
+  const images = [];
+  for (const p of parts) {
+    const d = p.inlineData || p.inline_data;
+    if (d && d.data && AI_IMG_MIME[d.mimeType || d.mime_type]) {
+      images.push({ mime: d.mimeType || d.mime_type, dataB64: d.data });
+    }
+  }
+  if (!text && !images.length) {
     const reason = data?.promptFeedback?.blockReason || cand?.finishReason;
     throw new Error(reason ? `응답이 비어 있습니다 (${reason}).` : "빈 응답을 받았습니다.");
   }
-  return text;
+  return { text, images };
 }
 
 function handleAiMessage(client, message) {
@@ -1992,18 +2057,7 @@ function handleAiMessage(client, message) {
       if (client.aiRoomId && client.aiRoomId !== ctx.room.id) leaveAiView(client);
       client.aiRoomId = ctx.room.id;
       const doc = store.getAiDoc(ctx.room.id);
-      const active = aiActiveSession(doc);
-      send(client, {
-        type: "ai:state",
-        roomId: ctx.room.id,
-        config: store.getAiConfig(ctx.channel.id),
-        sessions: aiSessionMetas(doc),
-        activeSessionId: doc.activeSessionId || "",
-        messages: active ? active.messages : [],
-        thinking: aiBusy.has(ctx.room.id),
-        writable: isRoomWritable(ctx, client),
-        draft: aiDrafts.get(ctx.room.id) || null,
-      });
+      send(client, aiStatePayload(ctx, client, doc));
       broadcastPresence();
       return true;
     }
@@ -2016,13 +2070,28 @@ function handleAiMessage(client, message) {
       const ctx = resolveAiRoom(client, message.roomId);
       if (!ctx) return true;
       const text = String(message.text || "").slice(0, AI_TEXT_MAX);
-      const caret = Math.max(0, Math.min(text.length, Number(message.caret) || 0));
-      const draft = { text, caret, byId: client.userId, byName: client.name || "" };
-      if (text) aiDrafts.set(ctx.room.id, draft);
-      else aiDrafts.delete(ctx.room.id);
-      for (const c of clients.values()) {
-        if (c.id !== client.id && c.userId && c.aiRoomId === ctx.room.id) send(c, { type: "ai:draft", roomId: ctx.room.id, ...draft });
+      let m = aiDrafts.get(ctx.room.id);
+      if (text) {
+        if (!m) { m = new Map(); aiDrafts.set(ctx.room.id, m); }
+        m.set(client.userId, { text, name: client.name || "", at: Date.now() });
+      } else if (m) {
+        m.delete(client.userId);
+        if (!m.size) aiDrafts.delete(ctx.room.id);
       }
+      // 다른 사람에게만 내 입력 미리보기를 보낸다(입력창은 공유하지 않음).
+      for (const c of clients.values()) {
+        if (c.userId && c.userId !== client.userId && c.aiRoomId === ctx.room.id) {
+          send(c, { type: "ai:draft", roomId: ctx.room.id, byId: client.userId, byName: client.name || "", text });
+        }
+      }
+      return true;
+    }
+    case "ai:set-memory": {
+      const ctx = resolveAiRoom(client, message.roomId);
+      if (!ctx) return true;
+      if (!isRoomWritable(ctx, client)) { send(client, { type: "ai:error", message: "읽기 전용 방입니다." }); return true; }
+      const memory = store.setAiMemory(ctx.room.id, { prompt: message.prompt, notes: message.notes });
+      broadcastAi(ctx.room.id, { type: "ai:memory", roomId: ctx.room.id, memory });
       return true;
     }
     case "ai:new": {
@@ -2034,7 +2103,7 @@ function handleAiMessage(client, message) {
       doc.sessions.push(s);
       doc.activeSessionId = s.id;
       store.saveAiDoc(ctx.room.id, doc);
-      broadcastAi(ctx.room.id, { type: "ai:state", roomId: ctx.room.id, config: store.getAiConfig(ctx.channel.id), sessions: aiSessionMetas(doc), activeSessionId: doc.activeSessionId, messages: [], thinking: false, writable: true });
+      broadcastAiState(ctx, doc, []);
       return true;
     }
     case "ai:switch": {
@@ -2045,7 +2114,7 @@ function handleAiMessage(client, message) {
       if (!target) { send(client, { type: "ai:error", message: "대화를 찾지 못했습니다." }); return true; }
       doc.activeSessionId = target.id;
       store.saveAiDoc(ctx.room.id, doc);
-      broadcastAi(ctx.room.id, { type: "ai:state", roomId: ctx.room.id, config: store.getAiConfig(ctx.channel.id), sessions: aiSessionMetas(doc), activeSessionId: doc.activeSessionId, messages: target.messages, thinking: aiBusy.has(ctx.room.id), writable: isRoomWritable(ctx, client) });
+      broadcastAiState(ctx, doc, target.messages);
       return true;
     }
     case "ai:send": {
@@ -2056,7 +2125,7 @@ function handleAiMessage(client, message) {
       if (!text) { send(client, { type: "ai:error", message: "빈 메시지는 보낼 수 없습니다." }); return true; }
       const secret = store.getAiSecret(ctx.channel.id);
       if (!secret || !secret.key) {
-        send(client, { type: "ai:error", message: "AI API 키가 없습니다. 채널 관리 → AI 설정에서 Gemini 키를 등록하세요." });
+        send(client, { type: "ai:error", message: "AI API 키가 없습니다. 채널 관리 → AI방 설정에서 Gemini 키를 등록하세요." });
         return true;
       }
       if (aiBusy.has(ctx.room.id)) { send(client, { type: "ai:error", message: "AI가 이미 응답 중입니다. 잠시 후 다시 시도하세요." }); return true; }
@@ -2068,19 +2137,31 @@ function handleAiMessage(client, message) {
       session.messages.push(userMsg);
       if (session.title === "새 대화") session.title = text.slice(0, 40);
       store.saveAiDoc(ctx.room.id, doc);
-      aiDrafts.delete(ctx.room.id);
+      // 보낸 사람 본인의 입력 미리보기만 지운다.
+      const dm = aiDrafts.get(ctx.room.id);
+      if (dm) { dm.delete(client.userId); if (!dm.size) aiDrafts.delete(ctx.room.id); }
       broadcastAi(ctx.room.id, { type: "ai:message", roomId: ctx.room.id, sessionId: session.id, message: userMsg });
-      broadcastAi(ctx.room.id, { type: "ai:draft", roomId: ctx.room.id, text: "", caret: 0, byId: client.userId, byName: "" });
+      broadcastAi(ctx.room.id, { type: "ai:draft", roomId: ctx.room.id, byId: client.userId, byName: client.name || "", text: "" });
 
       aiBusy.add(ctx.room.id);
       broadcastAi(ctx.room.id, { type: "ai:thinking", roomId: ctx.room.id, on: true });
       const model = secret.model || store.DEFAULT_AI_MODEL;
-      callGemini({ apiKey: secret.key, model, contents: store.toGeminiContents(session.messages, AI_CONTEXT_TURNS) })
+      const system = store.buildAiSystemInstruction(doc, store.getAiGlobalPrompt());
+      callGemini({ apiKey: secret.key, model, system, contents: store.toGeminiContents(session.messages, AI_CONTEXT_TURNS) })
         .then((reply) => {
           const fresh = store.getAiDoc(ctx.room.id);
           const s = fresh.sessions.find((x) => x.id === session.id);
           if (!s) return;
-          const aiMsg = { role: "model", text: reply, at: Date.now(), model };
+          // 생성된 이미지는 세션 JSON 이 아니라 업로드 저장소에 두고, 메시지에는 URL 만 남긴다.
+          const urls = [];
+          for (const img of reply.images || []) {
+            try {
+              const saved = store.saveUpload({ buffer: Buffer.from(img.dataB64, "base64"), name: `ai${AI_IMG_MIME[img.mime] || ".png"}`, mime: img.mime });
+              urls.push(`/uploads/${saved.fileName}`);
+            } catch (e) { console.error("[ai] 이미지 저장 실패:", e?.message || e); }
+          }
+          const aiMsg = { role: "model", text: reply.text, at: Date.now(), model };
+          if (urls.length) aiMsg.images = urls;
           s.messages.push(aiMsg);
           store.saveAiDoc(ctx.room.id, fresh);
           broadcastAi(ctx.room.id, { type: "ai:message", roomId: ctx.room.id, sessionId: s.id, message: aiMsg });

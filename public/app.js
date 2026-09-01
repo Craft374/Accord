@@ -42,7 +42,8 @@ const ROOM_TYPE_META = {
   log: { icon: "📜", label: "전역 로그" },
   ai: { icon: "🤖", label: "AI방" },
 };
-const AI_DRAFT_THROTTLE = 180; // 공용 입력창 draft 전송 최소 간격(ms)
+const AI_DRAFT_THROTTLE = 180; // 입력 미리보기(draft) 전송 최소 간격(ms)
+const AI_DRAFT_TTL = 8000; // 남의 "입력 중" 표시가 갱신 없이 살아 있는 최대 시간(ms)
 
 function readCollapsedRoomGroups() {
   try {
@@ -547,15 +548,20 @@ const dom = {
   aiRoomName: document.querySelector("#aiRoomName"),
   aiSubtitle: document.querySelector("#aiSubtitle"),
   aiModelTag: document.querySelector("#aiModelTag"),
+  aiMemoryButton: document.querySelector("#aiMemoryButton"),
   aiHistoryButton: document.querySelector("#aiHistoryButton"),
   aiNewButton: document.querySelector("#aiNewButton"),
   aiSessions: document.querySelector("#aiSessions"),
+  aiMemory: document.querySelector("#aiMemory"),
+  aiMemoryPrompt: document.querySelector("#aiMemoryPrompt"),
+  aiMemoryNotes: document.querySelector("#aiMemoryNotes"),
+  aiMemorySave: document.querySelector("#aiMemorySave"),
+  aiMemoryState: document.querySelector("#aiMemoryState"),
   aiScroll: document.querySelector("#aiScroll"),
   aiMessages: document.querySelector("#aiMessages"),
   aiThinking: document.querySelector("#aiThinking"),
-  aiDraftBy: document.querySelector("#aiDraftBy"),
+  aiDrafts: document.querySelector("#aiDrafts"),
   aiInput: document.querySelector("#aiInput"),
-  aiInputMirror: document.querySelector("#aiInputMirror"),
   aiSendButton: document.querySelector("#aiSendButton"),
   aiComposerHint: document.querySelector("#aiComposerHint"),
   aiSettingsRow: document.querySelector("#aiSettingsRow"),
@@ -563,6 +569,9 @@ const dom = {
   aiModelInput: document.querySelector("#aiModelInput"),
   aiSettingsSave: document.querySelector("#aiSettingsSave"),
   aiSettingsState: document.querySelector("#aiSettingsState"),
+  adminAiPrompt: document.querySelector("#adminAiPrompt"),
+  adminAiPromptSave: document.querySelector("#adminAiPromptSave"),
+  adminAiPromptState: document.querySelector("#adminAiPromptState"),
 };
 var memoEditorController = null;
 
@@ -1344,6 +1353,7 @@ function toggleAdminModal(show) {
   if (show) {
     setAdminMessage("");
     sendSocket({ type: "admin:list-users" });
+    sendSocket({ type: "admin:get-ai-prompt" });
   }
 }
 
@@ -1852,6 +1862,22 @@ async function handleSocketMessage(message) {
       state.ai.config = message.config || state.ai.config;
       renderAiModelTag();
       applyAiWritable();
+    }
+    return;
+  }
+  if (message.type === "ai:memory") {
+    if (state.ai && message.roomId === state.ai.roomId && message.memory) {
+      state.ai.memory = message.memory;
+      renderAiMemory();
+      setAiMemoryState("저장했습니다.", true);
+    }
+    return;
+  }
+  if (message.type === "admin-ai-prompt") {
+    if (dom.adminAiPrompt) dom.adminAiPrompt.value = message.prompt || "";
+    if (dom.adminAiPromptState) {
+      dom.adminAiPromptState.textContent = message.saved ? "저장했습니다." : "";
+      dom.adminAiPromptState.classList.toggle("ok", Boolean(message.saved));
     }
     return;
   }
@@ -9146,8 +9172,9 @@ function verifyActiveChat() {
 }
 
 // ===== AI방 (다같이 쓰는 AI 대화방) =====
+// 각자 자기 입력창을 쓰고, 입력 중인 내용은 남에게 미리보기로만 보인다(입력창 공유 없음).
 let aiDraftTimer = 0;
-let aiRemoteDraftTimer = 0;
+let aiDraftPruneTimer = 0;
 
 function openAiRoom(roomId) {
   const found = findRoomInChannels(roomId);
@@ -9162,13 +9189,13 @@ function openAiRoom(roomId) {
     channelId: found.channel.id,
     name: found.room.name,
     config: found.channel.aiConfig || { hasKey: false, model: "" },
+    memory: { prompt: "", notes: "" },
     sessions: [],
     activeSessionId: "",
     messages: [],
     thinking: false,
     writable: true,
-    remoteDraft: null,
-    localEditAt: 0,
+    remoteDrafts: {}, // byId -> { name, text, at }
     composing: false,
   };
   document.body.classList.add("ai-open");
@@ -9177,7 +9204,10 @@ function openAiRoom(roomId) {
   if (dom.aiSubtitle) dom.aiSubtitle.textContent = found.channel.name;
   if (dom.aiMessages) dom.aiMessages.innerHTML = '<p class="ai-empty">불러오는 중…</p>';
   if (dom.aiSessions) dom.aiSessions.hidden = true;
+  if (dom.aiMemory) dom.aiMemory.hidden = true;
   dom.aiHistoryButton?.setAttribute("aria-pressed", "false");
+  dom.aiMemoryButton?.setAttribute("aria-pressed", "false");
+  if (dom.aiDrafts) dom.aiDrafts.innerHTML = "";
   if (dom.aiInput) { dom.aiInput.value = ""; autoResizeAi(); }
   setAiHint("");
   renderAiModelTag();
@@ -9190,9 +9220,9 @@ function closeAiView() {
   if (!state.ai) return;
   sendSocket({ type: "ai:close" });
   state.ai = null;
-  clearTimeout(aiRemoteDraftTimer);
-  if (dom.aiInputMirror) dom.aiInputMirror.textContent = "";
-  if (dom.aiDraftBy) dom.aiDraftBy.textContent = "";
+  clearTimeout(aiDraftPruneTimer);
+  if (dom.aiDrafts) dom.aiDrafts.innerHTML = "";
+  if (dom.aiMemory) dom.aiMemory.hidden = true;
   document.body.classList.remove("ai-open");
   renderRooms();
 }
@@ -9216,16 +9246,23 @@ function verifyActiveAi() {
 function applyAiState(msg) {
   if (!state.ai || msg.roomId !== state.ai.roomId) return;
   if (msg.config) state.ai.config = msg.config;
+  if (msg.memory) state.ai.memory = msg.memory;
   state.ai.sessions = Array.isArray(msg.sessions) ? msg.sessions : [];
   state.ai.activeSessionId = msg.activeSessionId || "";
   state.ai.messages = Array.isArray(msg.messages) ? msg.messages : [];
   state.ai.thinking = Boolean(msg.thinking);
   if (typeof msg.writable === "boolean") state.ai.writable = msg.writable;
-  if (msg.draft && msg.draft.text) showAiRemoteDraft(msg.draft);
+  const now = Date.now();
+  state.ai.remoteDrafts = {};
+  for (const d of Array.isArray(msg.drafts) ? msg.drafts : []) {
+    if (d && d.byId && d.text) state.ai.remoteDrafts[d.byId] = { name: d.byName || "누군가", text: d.text, at: now };
+  }
   renderAiModelTag();
+  renderAiMemory();
   renderAiSessions();
   renderAiMessages();
   renderAiThinking();
+  renderAiDrafts();
   applyAiWritable();
 }
 
@@ -9282,10 +9319,37 @@ function renderAiMessages() {
     const body = document.createElement("div");
     body.className = "ai-msg-body";
     body.textContent = m.text || "";
+    for (const url of Array.isArray(m.images) ? m.images : []) {
+      if (typeof url !== "string" || !url.startsWith("/uploads/")) continue;
+      const img = document.createElement("img");
+      img.src = url;
+      img.alt = "생성된 이미지";
+      img.loading = "lazy";
+      img.addEventListener("load", () => { if (dom.aiScroll) dom.aiScroll.scrollTop = dom.aiScroll.scrollHeight; });
+      body.append(img);
+    }
     row.append(role, body);
     box.append(row);
   }
   if (dom.aiScroll) dom.aiScroll.scrollTop = dom.aiScroll.scrollHeight;
+}
+
+function renderAiMemory() {
+  if (!state.ai) return;
+  const mem = state.ai.memory || { prompt: "", notes: "" };
+  // 편집 중이 아닐 때만 값을 덮어써서 입력을 방해하지 않는다.
+  if (dom.aiMemoryPrompt && document.activeElement !== dom.aiMemoryPrompt) dom.aiMemoryPrompt.value = mem.prompt || "";
+  if (dom.aiMemoryNotes && document.activeElement !== dom.aiMemoryNotes) dom.aiMemoryNotes.value = mem.notes || "";
+  const ro = state.ai.writable === false;
+  if (dom.aiMemoryPrompt) dom.aiMemoryPrompt.disabled = ro;
+  if (dom.aiMemoryNotes) dom.aiMemoryNotes.disabled = ro;
+  if (dom.aiMemorySave) dom.aiMemorySave.disabled = ro;
+}
+
+function setAiMemoryState(text, ok = false) {
+  if (!dom.aiMemoryState) return;
+  dom.aiMemoryState.textContent = text || "";
+  dom.aiMemoryState.classList.toggle("ok", Boolean(ok));
 }
 
 function renderAiThinking() {
@@ -9299,11 +9363,12 @@ function applyAiWritable() {
   if (dom.aiInput) {
     dom.aiInput.disabled = !ok;
     dom.aiInput.placeholder = ok
-      ? (cfg.hasKey ? "다같이 쓰는 입력창 — 무엇이든 물어보세요" : "채널 관리 → AI방 설정에서 Gemini 키를 등록하세요")
+      ? (cfg.hasKey ? "무엇이든 물어보세요 — 결과는 방 전원이 함께 봅니다" : "채널 관리 → AI방 설정에서 Gemini 키를 등록하세요")
       : "읽기 전용 방입니다";
   }
   if (dom.aiSendButton) dom.aiSendButton.disabled = !ok;
   if (dom.aiNewButton) dom.aiNewButton.disabled = !ok;
+  renderAiMemory();
 }
 
 function setAiHint(text) {
@@ -9327,63 +9392,50 @@ function handleAiIncomingMessage(msg) {
   renderAiMessages();
 }
 
-// ----- 공용 입력창 draft 동기화 (last-writer-wins) -----
+// ----- 입력 미리보기(draft): 내가 입력 중인 내용을 남에게만 보여준다 -----
 function sendAiDraft() {
   if (!state.ai) return;
-  state.ai.localEditAt = Date.now();
   if (aiDraftTimer) return;
   aiDraftTimer = setTimeout(() => {
     aiDraftTimer = 0;
     if (!state.ai || !dom.aiInput) return;
-    sendSocket({ type: "ai:draft", roomId: state.ai.roomId, text: dom.aiInput.value, caret: dom.aiInput.selectionStart || 0 });
+    sendSocket({ type: "ai:draft", roomId: state.ai.roomId, text: dom.aiInput.value });
   }, AI_DRAFT_THROTTLE);
 }
 
-function clearSharedDraft() {
-  if (state.ai) sendSocket({ type: "ai:draft", roomId: state.ai.roomId, text: "", caret: 0 });
+function clearMyDraft() {
+  if (state.ai) sendSocket({ type: "ai:draft", roomId: state.ai.roomId, text: "" });
 }
 
 function handleAiDraft(msg) {
   if (!state.ai || msg.roomId !== state.ai.roomId) return;
   if (msg.byId && msg.byId === state.auth.user?.id) return;
-  if (!msg.text) { clearAiRemoteDraft(); return; }
-  // 내가 방금(1.2초 내) 입력했다면 덮어쓰지 않는다(타이핑 충돌 완화).
-  const iAmTyping = document.activeElement === dom.aiInput && (Date.now() - (state.ai.localEditAt || 0) < 1200);
-  if (!iAmTyping && dom.aiInput && dom.aiInput.value !== msg.text) {
-    dom.aiInput.value = msg.text;
-    autoResizeAi();
+  const drafts = state.ai.remoteDrafts || (state.ai.remoteDrafts = {});
+  if (!msg.text) delete drafts[msg.byId];
+  else drafts[msg.byId] = { name: msg.byName || "누군가", text: msg.text, at: Date.now() };
+  renderAiDrafts();
+}
+
+// 갱신 없이 오래된 "입력 중" 표시는 걷어낸다.
+function renderAiDrafts() {
+  const box = dom.aiDrafts;
+  if (!box || !state.ai) return;
+  const drafts = state.ai.remoteDrafts || {};
+  const now = Date.now();
+  box.innerHTML = "";
+  let live = 0;
+  for (const [id, d] of Object.entries(drafts)) {
+    if (!d || !d.text || now - (d.at || 0) > AI_DRAFT_TTL) { delete drafts[id]; continue; }
+    live++;
+    const line = document.createElement("p");
+    line.className = "ai-draft-line";
+    const who = document.createElement("b");
+    who.textContent = `${d.name} 입력 중`;
+    line.append(who, document.createTextNode(`: ${d.text}`));
+    box.append(line);
   }
-  showAiRemoteDraft(msg);
-}
-
-function showAiRemoteDraft(rd) {
-  if (!state.ai) return;
-  state.ai.remoteDraft = { text: rd.text || "", caret: rd.caret || 0, byName: rd.byName || "누군가" };
-  updateAiMirror();
-  if (dom.aiDraftBy) dom.aiDraftBy.textContent = `${state.ai.remoteDraft.byName}님이 입력 중…`;
-  clearTimeout(aiRemoteDraftTimer);
-  aiRemoteDraftTimer = setTimeout(clearAiRemoteDraft, 4000);
-}
-
-function clearAiRemoteDraft() {
-  clearTimeout(aiRemoteDraftTimer);
-  if (state.ai) state.ai.remoteDraft = null;
-  if (dom.aiInputMirror) dom.aiInputMirror.textContent = "";
-  if (dom.aiDraftBy) dom.aiDraftBy.textContent = "";
-}
-
-function updateAiMirror() {
-  const mirror = dom.aiInputMirror;
-  const rd = state.ai?.remoteDraft;
-  if (!mirror) return;
-  mirror.textContent = "";
-  if (!rd || !rd.text) return;
-  const caretPos = Math.max(0, Math.min(rd.text.length, rd.caret));
-  mirror.append(document.createTextNode(rd.text.slice(0, caretPos)));
-  const caret = document.createElement("span");
-  caret.className = "ai-remote-caret";
-  mirror.append(caret, document.createTextNode(rd.text.slice(caretPos)));
-  mirror.scrollTop = dom.aiInput?.scrollTop || 0;
+  clearTimeout(aiDraftPruneTimer);
+  if (live) aiDraftPruneTimer = setTimeout(renderAiDrafts, AI_DRAFT_TTL + 500);
 }
 
 function sendAiPrompt() {
@@ -9397,8 +9449,7 @@ function sendAiPrompt() {
   sendSocket({ type: "ai:send", roomId: state.ai.roomId, text });
   dom.aiInput.value = "";
   autoResizeAi();
-  clearSharedDraft();
-  clearAiRemoteDraft();
+  clearMyDraft();
 }
 
 function bindAiEvents() {
@@ -9417,21 +9468,31 @@ function bindAiEvents() {
       sendAiPrompt();
     }
   });
-  dom.aiInput?.addEventListener("scroll", () => { if (dom.aiInputMirror) dom.aiInputMirror.scrollTop = dom.aiInput.scrollTop; });
+  dom.aiInput?.addEventListener("blur", clearMyDraft);
   dom.aiSendButton?.addEventListener("click", sendAiPrompt);
   dom.aiNewButton?.addEventListener("click", () => {
     if (state.ai) sendSocket({ type: "ai:new", roomId: state.ai.roomId });
   });
-  dom.aiHistoryButton?.addEventListener("click", () => {
-    if (!dom.aiSessions) return;
-    dom.aiSessions.hidden = !dom.aiSessions.hidden;
-    dom.aiHistoryButton.setAttribute("aria-pressed", dom.aiSessions.hidden ? "false" : "true");
-  });
+  dom.aiHistoryButton?.addEventListener("click", () => toggleAiAside("sessions"));
+  dom.aiMemoryButton?.addEventListener("click", () => toggleAiAside("memory"));
   dom.aiSessions?.addEventListener("click", (e) => {
     const item = e.target?.closest?.("[data-session-id]");
     if (!item || !state.ai) return;
     if (item.dataset.sessionId === state.ai.activeSessionId) return;
     sendSocket({ type: "ai:switch", roomId: state.ai.roomId, sessionId: item.dataset.sessionId });
+  });
+  dom.aiMemorySave?.addEventListener("click", () => {
+    if (!state.ai || state.ai.writable === false) return;
+    sendSocket({
+      type: "ai:set-memory",
+      roomId: state.ai.roomId,
+      prompt: dom.aiMemoryPrompt?.value || "",
+      notes: dom.aiMemoryNotes?.value || "",
+    });
+    setAiMemoryState("저장 중…");
+  });
+  dom.adminAiPromptSave?.addEventListener("click", () => {
+    sendSocket({ type: "admin:set-ai-prompt", prompt: dom.adminAiPrompt?.value || "" });
   });
   dom.aiSettingsSave?.addEventListener("click", () => {
     const channel = currentChannel();
@@ -9450,6 +9511,21 @@ function setAiSettingsState(text, ok = false) {
   if (!dom.aiSettingsState) return;
   dom.aiSettingsState.textContent = text || "";
   dom.aiSettingsState.classList.toggle("ok", Boolean(ok));
+}
+
+// AI방 좌측 패널(대화 기록 / 메모리)은 한 번에 하나만 연다.
+function toggleAiAside(which) {
+  const panels = { sessions: dom.aiSessions, memory: dom.aiMemory };
+  const buttons = { sessions: dom.aiHistoryButton, memory: dom.aiMemoryButton };
+  const target = panels[which];
+  if (!target) return;
+  const open = target.hidden;
+  for (const [k, el] of Object.entries(panels)) {
+    if (!el) continue;
+    el.hidden = k !== which || !open;
+    buttons[k]?.setAttribute("aria-pressed", el.hidden ? "false" : "true");
+  }
+  if (which === "memory" && open) renderAiMemory();
 }
 
 function handleIncomingChat(msg) {

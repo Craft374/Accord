@@ -14,6 +14,7 @@ const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const MEMO_DIR = path.join(DATA_DIR, "memo");
 const AI_DIR = path.join(DATA_DIR, "ai");
 const AI_KEYS_FILE = path.join(DATA_DIR, "ai-keys.json"); // { [channelId]: { key, model } } — 클라이언트로 절대 나가지 않음
+const AI_GLOBAL_FILE = path.join(DATA_DIR, "ai-global.json"); // { prompt } — 모든 AI방 공통 프롬프트(서버 관리자)
 const DRAW_DIR = path.join(DATA_DIR, "draw");
 const LOG_DIR = path.join(DATA_DIR, "log");
 const DM_DIR = path.join(DATA_DIR, "dm");
@@ -1361,17 +1362,87 @@ function deleteMessage(roomId, msgId) {
 }
 
 // ===== AI방 =====
-// 방마다 server-data/ai/<roomId>.json 에 세션 목록을 저장한다.
-// 문서: { sessions: [{ id, title, createdAt, messages: [{ role:'user'|'model', text, at, userId, name, images? }] }], activeSessionId }
+// 방마다 server-data/ai/<roomId>.json 에 세션 목록 + 방 메모리를 저장한다.
+// 문서: {
+//   sessions: [{ id, title, createdAt, messages: [{ role:'user'|'model', text, at, userId, name, images? }] }],
+//   activeSessionId,
+//   memory: { prompt, notes }   // 이 AI방 전용 시스템 지침 + 자유 메모(모든 대화에 함께 전달)
+// }
 function aiFile(roomId) {
   return path.join(AI_DIR, `${roomId}.json`);
 }
 
+function emptyAiDoc() {
+  return { sessions: [], activeSessionId: "", memory: { prompt: "", notes: "" } };
+}
+
 function getAiDoc(roomId) {
-  if (!isSafeRoomId(roomId)) return { sessions: [], activeSessionId: "" };
-  const doc = readJson(aiFile(roomId), { sessions: [], activeSessionId: "" });
-  if (!doc || !Array.isArray(doc.sessions)) return { sessions: [], activeSessionId: "" };
+  if (!isSafeRoomId(roomId)) return emptyAiDoc();
+  const doc = readJson(aiFile(roomId), emptyAiDoc());
+  if (!doc || !Array.isArray(doc.sessions)) return emptyAiDoc();
+  const m = doc.memory && typeof doc.memory === "object" ? doc.memory : {};
+  doc.memory = { prompt: String(m.prompt || ""), notes: String(m.notes || "") };
+  if (typeof doc.activeSessionId !== "string") doc.activeSessionId = "";
   return doc;
+}
+
+const AI_MEMORY_FIELD_MAX = 4000;
+function setAiMemory(roomId, { prompt, notes } = {}) {
+  const doc = getAiDoc(roomId);
+  if (typeof prompt === "string") doc.memory.prompt = prompt.slice(0, AI_MEMORY_FIELD_MAX);
+  if (typeof notes === "string") doc.memory.notes = notes.slice(0, AI_MEMORY_FIELD_MAX);
+  saveAiDoc(roomId, doc);
+  return doc.memory;
+}
+
+// ----- AI방 공통 프롬프트 (서버 관리자, 모든 AI방에 공통 적용) -----
+let aiGlobal = null;
+function loadAiGlobal() {
+  if (!aiGlobal) aiGlobal = readJson(AI_GLOBAL_FILE, { prompt: "" }) || { prompt: "" };
+  return aiGlobal;
+}
+function getAiGlobalPrompt() {
+  return String(loadAiGlobal().prompt || "");
+}
+function setAiGlobalPrompt(text) {
+  aiGlobal = { prompt: String(text || "").slice(0, 8000) };
+  writeJsonAtomic(AI_GLOBAL_FILE, aiGlobal);
+  return aiGlobal.prompt;
+}
+
+// AI방에 보낼 systemInstruction 텍스트를 만든다. 순수 함수(네트워크·파일 무관).
+// 서버 공통 지침 + 이 방 지침 + 이 방 메모리 + "이 방의 다른 대화 기록" 요약을 이어붙인다.
+// ponytail: 다른 대화 맥락은 제목 + 앞부분 스니펫을 그냥 이어붙이는 naive 방식. 최근 10개·스니펫당 600자·총 6000자 상한.
+//           리콜이 나쁘면 요약/임베딩 검색으로 승급.
+function buildAiSystemInstruction(doc, globalPrompt) {
+  const base = "당신은 Accord 안의 'AI방'에서 여러 사용자가 함께 쓰는 어시스턴트입니다. 각 사용자 발화 앞의 '이름:' 은 말한 사람 표시입니다. 한국어로 간결하고 정확하게 답하세요.";
+  const parts = [base];
+  const mem = (doc && doc.memory) || {};
+  const g = String(globalPrompt || "").trim();
+  if (g) parts.push(`[서버 공통 지침]\n${g}`);
+  const rp = String(mem.prompt || "").trim();
+  if (rp) parts.push(`[이 AI방 지침]\n${rp}`);
+  const rn = String(mem.notes || "").trim();
+  if (rn) parts.push(`[이 AI방 메모리]\n${rn}`);
+  const sessions = Array.isArray(doc && doc.sessions) ? doc.sessions : [];
+  const activeId = doc && doc.activeSessionId;
+  const digest = [];
+  let budget = 6000;
+  for (const s of sessions.slice(-11).reverse()) {
+    if (!s || s.id === activeId || digest.length >= 10 || budget <= 0) continue;
+    const msgs = Array.isArray(s.messages) ? s.messages : [];
+    const firstUser = msgs.find((m) => m && m.role === "user" && m.text);
+    const lastModel = [...msgs].reverse().find((m) => m && m.role === "model" && m.text);
+    let snip = "";
+    if (firstUser) snip += `Q: ${String(firstUser.text).slice(0, 300)}`;
+    if (lastModel) snip += `${snip ? "\n" : ""}A: ${String(lastModel.text).slice(0, 300)}`;
+    snip = snip.slice(0, 600);
+    if (!snip) continue;
+    budget -= snip.length;
+    digest.push(`- 대화 "${String(s.title || "무제").slice(0, 40)}"\n${snip}`);
+  }
+  if (digest.length) parts.push(`[이 AI방의 다른 대화 기록 — 참고용]\n${digest.join("\n")}`);
+  return parts.join("\n\n");
 }
 
 function saveAiDoc(roomId, doc) {
@@ -1778,10 +1849,14 @@ module.exports = {
   // AI방
   getAiDoc,
   saveAiDoc,
+  setAiMemory,
   getAiSecret,
   getAiConfig,
   setAiConfig,
+  getAiGlobalPrompt,
+  setAiGlobalPrompt,
   toGeminiContents,
+  buildAiSystemInstruction,
   DEFAULT_AI_MODEL,
   // 권한 역할
   createRole,

@@ -410,6 +410,26 @@ const reviews = [
         && limited.length === 1 && limited[0].parts[0].text === "b";
     } catch { return false; }
   })(), "AI방 toGeminiContents maps stored messages to Gemini contents (runtime)"],
+  [(() => {
+    // AI방: systemInstruction 조립. 공통 지침 + 방 지침 + 방 메모리 + 활성 세션 제외한 다른 대화 요약.
+    try {
+      const src = dataStore.match(/function buildAiSystemInstruction\(doc, globalPrompt\) \{[\s\S]*?\n\}/);
+      if (!src) return false;
+      const fn = new Function(`${src[0]}\nreturn buildAiSystemInstruction;`)();
+      const doc = {
+        activeSessionId: "cur",
+        memory: { prompt: "존댓말로", notes: "코드명 Orbit" },
+        sessions: [
+          { id: "old", title: "지난 회의", messages: [{ role: "user", text: "배포 언제?" }, { role: "model", text: "목요일" }] },
+          { id: "cur", title: "지금", messages: [{ role: "user", text: "무시돼야 함" }] },
+        ],
+      };
+      const out = fn(doc, "한국어로 답할 것");
+      return out.includes("한국어로 답할 것") && out.includes("존댓말로") && out.includes("코드명 Orbit")
+        && out.includes("지난 회의") && out.includes("목요일") && !out.includes("무시돼야 함")
+        && fn({ sessions: [] }, "").indexOf("다른 대화 기록") === -1;
+    } catch { return false; }
+  })(), "AI방 buildAiSystemInstruction assembles global+room prompt+memory+other-session digest (runtime)"],
 ];
 
 for (const [ok, label] of reviews) {

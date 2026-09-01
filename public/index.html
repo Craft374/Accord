@@ -422,6 +422,9 @@
             </div>
             <p class="ai-subtitle" id="aiSubtitle"></p>
             <span class="ai-model-tag" id="aiModelTag" title="사용 모델"></span>
+            <button class="focus-btn" id="aiMemoryButton" type="button" title="이 AI방 메모리" aria-label="이 AI방 메모리" aria-pressed="false">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a9 9 0 0 0-9 9c0 4 3 7 5 8v-3M12 3a9 9 0 0 1 9 9c0 4-3 7-5 8v-3M9 21h6"/></svg>
+            </button>
             <button class="focus-btn" id="aiHistoryButton" type="button" title="대화 기록" aria-label="대화 기록" aria-pressed="false">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l4 2"/></svg>
             </button>
@@ -431,18 +434,27 @@
           </header>
           <div class="ai-body">
             <aside class="ai-sessions" id="aiSessions" hidden></aside>
+            <aside class="ai-memory" id="aiMemory" hidden>
+              <h3>이 AI방 메모리</h3>
+              <p class="ai-memory-note">이 방의 모든 대화에 함께 전달됩니다. AI는 이 방의 다른 대화 내용도 참고해 답합니다.</p>
+              <label>이 AI방 지침 (시스템 프롬프트)
+                <textarea id="aiMemoryPrompt" rows="4" maxlength="4000" placeholder="예: 항상 존댓말로, 표는 마크다운으로."></textarea>
+              </label>
+              <label>메모리 (자유 메모)
+                <textarea id="aiMemoryNotes" rows="6" maxlength="4000" placeholder="예: 우리 팀 프로젝트 코드명은 Orbit. 배포는 매주 목요일."></textarea>
+              </label>
+              <button class="secondary" id="aiMemorySave" type="button">메모리 저장</button>
+              <p class="ai-memory-state" id="aiMemoryState" aria-live="polite"></p>
+            </aside>
             <div class="ai-main">
               <div class="ai-scroll" id="aiScroll">
                 <div class="ai-messages" id="aiMessages"></div>
               </div>
               <div class="ai-thinking" id="aiThinking" hidden>AI가 답변을 작성 중…</div>
               <div class="ai-composer">
-                <p class="ai-draft-by" id="aiDraftBy" aria-live="polite"></p>
+                <div class="ai-drafts" id="aiDrafts" aria-live="polite"></div>
                 <div class="ai-composer-row">
-                  <div class="ai-input-wrap">
-                    <div class="ai-input-mirror" id="aiInputMirror" aria-hidden="true"></div>
-                    <textarea id="aiInput" rows="1" placeholder="다같이 쓰는 입력창 — 무엇이든 물어보세요" maxlength="4000"></textarea>
-                  </div>
+                  <textarea id="aiInput" rows="1" placeholder="무엇이든 물어보세요 — 결과는 방 전원이 함께 봅니다" maxlength="4000"></textarea>
                   <button class="ai-send-button" id="aiSendButton" type="button">보내기</button>
                 </div>
                 <p class="ai-composer-hint" id="aiComposerHint" aria-live="polite"></p>
@@ -856,6 +868,13 @@
           </div>
           <p class="admin-message" id="adminMessage" aria-live="polite"></p>
           <div class="admin-user-list" id="adminUserList"></div>
+          <details class="admin-ai-prompt">
+            <summary>AI방 공통 프롬프트</summary>
+            <p class="admin-ai-note">모든 채널의 AI방에 공통으로 먼저 적용되는 시스템 지침입니다. 방별 지침보다 앞섭니다.</p>
+            <textarea id="adminAiPrompt" rows="5" maxlength="8000" placeholder="예: 답변은 한국어로. 확실하지 않으면 모른다고 말할 것."></textarea>
+            <button class="secondary" id="adminAiPromptSave" type="button">공통 프롬프트 저장</button>
+            <p class="admin-ai-state" id="adminAiPromptState" aria-live="polite"></p>
+          </details>
         </div>
       </div>
     </div>
