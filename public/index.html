@@ -452,6 +452,11 @@
               </div>
               <div class="ai-thinking" id="aiThinking" hidden>AI가 답변을 작성 중…</div>
               <div class="ai-composer">
+                <div class="ai-controls">
+                  <select id="aiModelSelect" aria-label="AI 모델" title="모델"></select>
+                  <select id="aiThinkingSelect" aria-label="생각 수준" title="생각 수준"></select>
+                  <span class="ai-controls-hint">#방이름 을 넣으면 그 메모장·채팅방을 읽고 수정할 수 있습니다</span>
+                </div>
                 <div class="ai-drafts" id="aiDrafts" aria-live="polite"></div>
                 <div class="ai-composer-row">
                   <textarea id="aiInput" rows="1" placeholder="무엇이든 물어보세요 — 결과는 방 전원이 함께 봅니다" maxlength="4000"></textarea>

@@ -44,6 +44,15 @@ const ROOM_TYPE_META = {
 };
 const AI_DRAFT_THROTTLE = 180; // 입력 미리보기(draft) 전송 최소 간격(ms)
 const AI_DRAFT_TTL = 8000; // 남의 "입력 중" 표시가 갱신 없이 살아 있는 최대 시간(ms)
+const AI_MODEL_CHOICES = [
+  ["", "채널 기본"],
+  ["gemini-2.5-flash", "gemini-2.5-flash"],
+  ["gemini-2.5-pro", "gemini-2.5-pro"],
+  ["gemini-2.5-flash-lite", "gemini-2.5-flash-lite"],
+  ["gemini-2.0-flash", "gemini-2.0-flash"],
+  ["gemini-2.5-flash-image-preview", "gemini-2.5-flash-image (그림)"],
+];
+const AI_THINKING_CHOICES = [["auto", "생각: 자동"], ["off", "생각: 끔"], ["high", "생각: 깊게"]];
 
 function readCollapsedRoomGroups() {
   try {
@@ -548,6 +557,8 @@ const dom = {
   aiRoomName: document.querySelector("#aiRoomName"),
   aiSubtitle: document.querySelector("#aiSubtitle"),
   aiModelTag: document.querySelector("#aiModelTag"),
+  aiModelSelect: document.querySelector("#aiModelSelect"),
+  aiThinkingSelect: document.querySelector("#aiThinkingSelect"),
   aiMemoryButton: document.querySelector("#aiMemoryButton"),
   aiHistoryButton: document.querySelector("#aiHistoryButton"),
   aiNewButton: document.querySelector("#aiNewButton"),
@@ -1870,6 +1881,14 @@ async function handleSocketMessage(message) {
       state.ai.memory = message.memory;
       renderAiMemory();
       setAiMemoryState("저장했습니다.", true);
+    }
+    return;
+  }
+  if (message.type === "ai:settings") {
+    if (state.ai && message.roomId === state.ai.roomId && message.settings) {
+      state.ai.settings = message.settings;
+      renderAiControls();
+      renderAiModelTag();
     }
     return;
   }
@@ -9190,6 +9209,7 @@ function openAiRoom(roomId) {
     name: found.room.name,
     config: found.channel.aiConfig || { hasKey: false, model: "" },
     memory: { prompt: "", notes: "" },
+    settings: { model: "", thinking: "auto" },
     sessions: [],
     activeSessionId: "",
     messages: [],
@@ -9247,6 +9267,7 @@ function applyAiState(msg) {
   if (!state.ai || msg.roomId !== state.ai.roomId) return;
   if (msg.config) state.ai.config = msg.config;
   if (msg.memory) state.ai.memory = msg.memory;
+  if (msg.settings) state.ai.settings = msg.settings;
   state.ai.sessions = Array.isArray(msg.sessions) ? msg.sessions : [];
   state.ai.activeSessionId = msg.activeSessionId || "";
   state.ai.messages = Array.isArray(msg.messages) ? msg.messages : [];
@@ -9258,6 +9279,7 @@ function applyAiState(msg) {
     if (d && d.byId && d.text) state.ai.remoteDrafts[d.byId] = { name: d.byName || "누군가", text: d.text, at: now };
   }
   renderAiModelTag();
+  renderAiControls();
   renderAiMemory();
   renderAiSessions();
   renderAiMessages();
@@ -9269,8 +9291,22 @@ function applyAiState(msg) {
 function renderAiModelTag() {
   if (!dom.aiModelTag) return;
   const cfg = state.ai?.config || {};
-  dom.aiModelTag.textContent = cfg.model || "";
-  dom.aiModelTag.title = cfg.hasKey ? `모델: ${cfg.model}` : "API 키가 설정되지 않았습니다";
+  const eff = state.ai?.settings?.model || cfg.model || "";
+  dom.aiModelTag.textContent = eff;
+  dom.aiModelTag.title = cfg.hasKey ? `모델: ${eff}` : "API 키가 설정되지 않았습니다";
+}
+
+function renderAiControls() {
+  if (!state.ai || !dom.aiModelSelect || !dom.aiThinkingSelect) return;
+  const st = state.ai.settings || { model: "", thinking: "auto" };
+  const chDefault = state.ai.config?.model || "?";
+  dom.aiModelSelect.innerHTML = "";
+  for (const [v, l] of AI_MODEL_CHOICES) dom.aiModelSelect.append(new Option(v ? l : `모델: 채널 기본 (${chDefault})`, v, false, v === st.model));
+  dom.aiThinkingSelect.innerHTML = "";
+  for (const [v, l] of AI_THINKING_CHOICES) dom.aiThinkingSelect.append(new Option(l, v, false, v === st.thinking));
+  const ro = state.ai.writable === false;
+  dom.aiModelSelect.disabled = ro;
+  dom.aiThinkingSelect.disabled = ro;
 }
 
 function renderAiSessions() {
@@ -9285,6 +9321,8 @@ function renderAiSessions() {
     return;
   }
   for (const s of [...state.ai.sessions].reverse()) {
+    const row = document.createElement("div");
+    row.className = "ai-session-row";
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "ai-session-item" + (s.id === state.ai.activeSessionId ? " active" : "");
@@ -9295,7 +9333,14 @@ function renderAiSessions() {
     meta.className = "ai-session-meta";
     meta.textContent = `${s.count || 0}개 메시지 · ${s.createdAt ? new Date(s.createdAt).toLocaleDateString() : ""}`;
     btn.append(title, meta);
-    box.append(btn);
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "ai-session-del";
+    del.dataset.delSession = s.id;
+    del.title = "이 대화 삭제";
+    del.textContent = "✕";
+    row.append(btn, del);
+    box.append(row);
   }
 }
 
@@ -9369,6 +9414,7 @@ function applyAiWritable() {
   if (dom.aiSendButton) dom.aiSendButton.disabled = !ok;
   if (dom.aiNewButton) dom.aiNewButton.disabled = !ok;
   renderAiMemory();
+  renderAiControls();
 }
 
 function setAiHint(text) {
@@ -9475,9 +9521,29 @@ function bindAiEvents() {
   });
   dom.aiHistoryButton?.addEventListener("click", () => toggleAiAside("sessions"));
   dom.aiMemoryButton?.addEventListener("click", () => toggleAiAside("memory"));
+  dom.aiModelSelect?.addEventListener("change", () => {
+    if (state.ai) sendSocket({ type: "ai:set-settings", roomId: state.ai.roomId, model: dom.aiModelSelect.value });
+  });
+  dom.aiThinkingSelect?.addEventListener("change", () => {
+    if (state.ai) sendSocket({ type: "ai:set-settings", roomId: state.ai.roomId, thinking: dom.aiThinkingSelect.value });
+  });
   dom.aiSessions?.addEventListener("click", (e) => {
+    if (!state.ai) return;
+    const del = e.target?.closest?.("[data-del-session]");
+    if (del) {
+      // 두 번 눌러 삭제(모달 없이). 첫 클릭 = 확인 표시, 3초 뒤 원복.
+      if (del.dataset.armed === "1") {
+        sendSocket({ type: "ai:delete", roomId: state.ai.roomId, sessionId: del.dataset.delSession });
+      } else {
+        del.dataset.armed = "1";
+        del.textContent = "삭제?";
+        del.classList.add("armed");
+        setTimeout(() => { del.dataset.armed = ""; del.textContent = "✕"; del.classList.remove("armed"); }, 3000);
+      }
+      return;
+    }
     const item = e.target?.closest?.("[data-session-id]");
-    if (!item || !state.ai) return;
+    if (!item) return;
     if (item.dataset.sessionId === state.ai.activeSessionId) return;
     sendSocket({ type: "ai:switch", roomId: state.ai.roomId, sessionId: item.dataset.sessionId });
   });

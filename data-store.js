@@ -1372,8 +1372,9 @@ function aiFile(roomId) {
   return path.join(AI_DIR, `${roomId}.json`);
 }
 
+const AI_THINKING_LEVELS = ["auto", "off", "high"];
 function emptyAiDoc() {
-  return { sessions: [], activeSessionId: "", memory: { prompt: "", notes: "" } };
+  return { sessions: [], activeSessionId: "", memory: { prompt: "", notes: "" }, settings: { model: "", thinking: "auto" } };
 }
 
 function getAiDoc(roomId) {
@@ -1382,6 +1383,11 @@ function getAiDoc(roomId) {
   if (!doc || !Array.isArray(doc.sessions)) return emptyAiDoc();
   const m = doc.memory && typeof doc.memory === "object" ? doc.memory : {};
   doc.memory = { prompt: String(m.prompt || ""), notes: String(m.notes || "") };
+  const st = doc.settings && typeof doc.settings === "object" ? doc.settings : {};
+  doc.settings = {
+    model: String(st.model || "").slice(0, 80),
+    thinking: AI_THINKING_LEVELS.includes(st.thinking) ? st.thinking : "auto",
+  };
   if (typeof doc.activeSessionId !== "string") doc.activeSessionId = "";
   return doc;
 }
@@ -1393,6 +1399,15 @@ function setAiMemory(roomId, { prompt, notes } = {}) {
   if (typeof notes === "string") doc.memory.notes = notes.slice(0, AI_MEMORY_FIELD_MAX);
   saveAiDoc(roomId, doc);
   return doc.memory;
+}
+
+// 방별 모델/생각수준 오버라이드. model "" = 채널 기본 사용.
+function setAiSettings(roomId, { model, thinking } = {}) {
+  const doc = getAiDoc(roomId);
+  if (typeof model === "string") doc.settings.model = model.trim().slice(0, 80);
+  if (typeof thinking === "string" && AI_THINKING_LEVELS.includes(thinking)) doc.settings.thinking = thinking;
+  saveAiDoc(roomId, doc);
+  return doc.settings;
 }
 
 // ----- AI방 공통 프롬프트 (서버 관리자, 모든 AI방에 공통 적용) -----
@@ -1410,11 +1425,13 @@ function setAiGlobalPrompt(text) {
   return aiGlobal.prompt;
 }
 
-// AI방에 보낼 systemInstruction 텍스트를 만든다. 순수 함수(네트워크·파일 무관).
-// 서버 공통 지침 + 이 방 지침 + 이 방 메모리 + "이 방의 다른 대화 기록" 요약을 이어붙인다.
-// ponytail: 다른 대화 맥락은 제목 + 앞부분 스니펫을 그냥 이어붙이는 naive 방식. 최근 10개·스니펫당 600자·총 6000자 상한.
-//           리콜이 나쁘면 요약/임베딩 검색으로 승급.
+// AI방에 보낼 systemInstruction 텍스트를 만든다. 순수 함수(네트워크·파일 무관, 외부 참조 없음 — check-v2 가 단독 실행).
+// 서버 공통 지침 + 이 방 지침 + 이 방 메모리 + "이 방의 다른 대화 전체"(GPT 프로젝트처럼)를 이어붙인다.
+// ponytail: 다른 대화는 전문을 그대로 이어붙임. 총 40000자 상한, 넘으면 오래된 대화부터 버림.
+//           길어져서 비용/컨텍스트가 문제되면 요약·임베딩 검색으로 승급.
 function buildAiSystemInstruction(doc, globalPrompt) {
+  const PROJECT_CHARS = 40000;
+  const SESSION_CHARS = 12000;
   const base = "당신은 Accord 안의 'AI방'에서 여러 사용자가 함께 쓰는 어시스턴트입니다. 각 사용자 발화 앞의 '이름:' 은 말한 사람 표시입니다. 한국어로 간결하고 정확하게 답하세요.";
   const parts = [base];
   const mem = (doc && doc.memory) || {};
@@ -1426,23 +1443,41 @@ function buildAiSystemInstruction(doc, globalPrompt) {
   if (rn) parts.push(`[이 AI방 메모리]\n${rn}`);
   const sessions = Array.isArray(doc && doc.sessions) ? doc.sessions : [];
   const activeId = doc && doc.activeSessionId;
-  const digest = [];
-  let budget = 6000;
-  for (const s of sessions.slice(-11).reverse()) {
-    if (!s || s.id === activeId || digest.length >= 10 || budget <= 0) continue;
-    const msgs = Array.isArray(s.messages) ? s.messages : [];
-    const firstUser = msgs.find((m) => m && m.role === "user" && m.text);
-    const lastModel = [...msgs].reverse().find((m) => m && m.role === "model" && m.text);
-    let snip = "";
-    if (firstUser) snip += `Q: ${String(firstUser.text).slice(0, 300)}`;
-    if (lastModel) snip += `${snip ? "\n" : ""}A: ${String(lastModel.text).slice(0, 300)}`;
-    snip = snip.slice(0, 600);
-    if (!snip) continue;
-    budget -= snip.length;
-    digest.push(`- 대화 "${String(s.title || "무제").slice(0, 40)}"\n${snip}`);
+  const others = sessions.filter((s) => s && s.id !== activeId);
+  const blocks = [];
+  let used = 0;
+  let omitted = 0;
+  for (let i = others.length - 1; i >= 0; i--) { // 최신 대화부터
+    const s = others[i];
+    const lines = [];
+    for (const m of Array.isArray(s.messages) ? s.messages : []) {
+      if (m && m.text) lines.push(`${m.role === "user" ? (m.name || "사용자") : "AI"}: ${String(m.text)}`);
+    }
+    const body = lines.join("\n").slice(0, SESSION_CHARS);
+    if (!body) continue;
+    const block = `── 대화 "${String(s.title || "무제").slice(0, 60)}" ──\n${body}`;
+    if (used + block.length <= PROJECT_CHARS) { blocks.unshift(block); used += block.length; }
+    else omitted++;
   }
-  if (digest.length) parts.push(`[이 AI방의 다른 대화 기록 — 참고용]\n${digest.join("\n")}`);
+  if (blocks.length || omitted) {
+    let head = "[이 AI방의 다른 대화 전체 — 이 방의 지식으로 활용]";
+    if (omitted) head += `\n(오래된 대화 ${omitted}개는 분량 제한으로 생략됨)`;
+    parts.push(`${head}\n\n${blocks.join("\n\n")}`.trim());
+  }
   return parts.join("\n\n");
+}
+
+// 사용자가 #방이름 으로 참조한 메모장/채팅방 내용 + 수정 방법 안내. 순수.
+// refs: [{ name, type:'memo'|'chat', content }]
+function buildAiReferenceBlock(refs) {
+  const out = [];
+  for (const r of Array.isArray(refs) ? refs : []) {
+    if (!r || !r.name) continue;
+    const kind = r.type === "memo" ? "메모장" : "채팅방";
+    out.push(`[참조된 ${kind} #${r.name}]\n${String(r.content || "").slice(0, 8000) || "(비어 있음)"}`);
+  }
+  if (!out.length) return "";
+  return `${out.join("\n\n")}\n\n[참조된 방 수정하기] 사용자가 이번 메시지에서 #으로 지정한 방만 고칠 수 있습니다. 필요하면 응답에 아래 코드블록을 그대로 포함하세요(사용자에게는 결과 요약만 보입니다):\n\`\`\`accord:memo #방이름\n<메모장 전체를 대체할 새 내용>\n\`\`\`\n\`\`\`accord:memo-append #방이름\n<메모장 끝에 덧붙일 내용>\n\`\`\`\n\`\`\`accord:chat #방이름\n<채팅방에 보낼 한 줄 메시지>\n\`\`\``;
 }
 
 function saveAiDoc(roomId, doc) {
@@ -1850,6 +1885,7 @@ module.exports = {
   getAiDoc,
   saveAiDoc,
   setAiMemory,
+  setAiSettings,
   getAiSecret,
   getAiConfig,
   setAiConfig,
@@ -1857,6 +1893,7 @@ module.exports = {
   setAiGlobalPrompt,
   toGeminiContents,
   buildAiSystemInstruction,
+  buildAiReferenceBlock,
   DEFAULT_AI_MODEL,
   // 권한 역할
   createRole,

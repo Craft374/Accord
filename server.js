@@ -1905,9 +1905,12 @@ function broadcastChat(channel, payload) {
 // 보낸 프롬프트와 AI 응답은 방 전원이 함께 본다.
 // 세션(대화 스레드) + 방 메모리는 server-data/ai/<roomId>.json 에 저장되고, 입력 미리보기(draft)는 메모리에만 둔다.
 const AI_TEXT_MAX = 4000;
-const AI_CONTEXT_TURNS = 20; // Gemini 에 함께 보내는 최근 메시지 수
+const AI_CONTEXT_TURNS = 20; // Gemini 에 함께 보내는 최근 메시지 수(활성 세션)
 const AI_TIMEOUT_MS = 60000;
 const AI_IMG_MIME = { "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp" };
+const AI_REF_MAX = 5; // 한 메시지에서 처리하는 #방 참조 최대 개수
+// 모델이 참조된 방을 고칠 때 쓰는 지시 블록: ```accord:<memo|memo-append|chat> #방이름 \n 내용 ```
+const AI_ACTION_RE = /```accord:(memo|memo-append|chat)[ \t]+#([^\s#`]{1,40})[^\n]*\n([\s\S]*?)```/g;
 
 const aiDrafts = new Map(); // roomId -> Map(userId -> { text, name, at })
 const aiBusy = new Set();   // 응답 생성 중인 roomId (동시 요청/비용 방어)
@@ -1981,6 +1984,7 @@ function aiStatePayload(ctx, client, doc, messages) {
     roomId: ctx.room.id,
     config: store.getAiConfig(ctx.channel.id),
     memory: doc.memory,
+    settings: doc.settings,
     sessions: aiSessionMetas(doc),
     activeSessionId: doc.activeSessionId || "",
     messages: messages || (aiActiveSession(doc)?.messages ?? []),
@@ -2003,12 +2007,19 @@ function aiEnsureSession(doc) {
 // Gemini generateContent 호출. { text, images:[{mime,dataB64}] } 반환.
 // ponytail: 이미지 생성은 모델 ID 에 "image" 가 들어가면 responseModalities 로 IMAGE 를 요청하는 휴리스틱.
 //           전용 토글이 필요해지면 그때 만든다.
-async function callGemini({ apiKey, model, contents, system }) {
+async function callGemini({ apiKey, model, contents, system, thinking }) {
   if (typeof fetch !== "function") throw new Error("이 서버의 Node 버전이 낮습니다. Node 18 이상이 필요합니다.");
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
   const body = { contents };
   if (system) body.systemInstruction = { parts: [{ text: system }] };
-  if (/image/i.test(model)) body.generationConfig = { responseModalities: ["TEXT", "IMAGE"] };
+  const gen = {};
+  const isImageModel = /image/i.test(model);
+  if (isImageModel) gen.responseModalities = ["TEXT", "IMAGE"];
+  // 생각 수준: Gemini 2.5 계열(이미지 모델 제외)만 thinkingConfig 지원. auto = 모델 자동(미지정).
+  if (/2\.5/.test(model) && !isImageModel && thinking && thinking !== "auto") {
+    gen.thinkingConfig = { thinkingBudget: thinking === "off" ? 0 : 24576 };
+  }
+  if (Object.keys(gen).length) body.generationConfig = gen;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), AI_TIMEOUT_MS);
   let res;
@@ -2046,6 +2057,81 @@ async function callGemini({ apiKey, model, contents, system }) {
     throw new Error(reason ? `응답이 비어 있습니다 (${reason}).` : "빈 응답을 받았습니다.");
   }
   return { text, images };
+}
+
+// 사용자가 이번 메시지에서 #으로 지정한 memo/chat 방만 해석한다(모델이 지어낸 #는 못 건드림).
+// ponytail: 방 이름에 공백 있으면 #참조 불가(토큰이 공백에서 끊김). 필요해지면 따옴표 문법 추가.
+function resolveAiRefs(text, ctx, client) {
+  const tokens = [...new Set((String(text).match(/#[^\s#]{1,40}/g) || []).map((t) => t.slice(1)))].slice(0, AI_REF_MAX);
+  const map = new Map(); // 소문자 방이름 -> { room, type }
+  const refs = [];
+  for (const tok of tokens) {
+    const key = tok.toLowerCase();
+    if (map.has(key)) continue;
+    const room = (ctx.channel.rooms || []).find((r) => (r.type === "memo" || r.type === "chat") && r.name.toLowerCase() === key);
+    if (!room) continue;
+    if (!store.canAccessRoom(ctx.channel.id, room.id, client.userId, client.isAdmin)) continue;
+    const content = room.type === "memo"
+      ? (store.getMemo(room.id).text || "")
+      : store.getMessages(room.id, 60).map((m) => `${m.name || "?"}: ${m.text || ""}`).join("\n");
+    map.set(key, { room, type: room.type });
+    refs.push({ name: room.name, type: room.type, content });
+  }
+  return { map, refs };
+}
+
+// 라이브 메모(편집자 있음)면 OT op 로 반영, 아니면 파일에 직접 저장.
+function applyAiMemoWrite(roomId, mode, body, client) {
+  const live = memoDocs.get(roomId);
+  const cur = live ? live.text : (store.getMemo(roomId).text || "");
+  const addition = mode === "append" ? ((cur ? "\n" : "") + body) : body;
+  const next = mode === "append" ? cur + addition : body;
+  if (live) {
+    const op = mode === "append"
+      ? (cur.length ? [cur.length, addition] : [addition])
+      : (cur.length ? [-cur.length, body] : [body]);
+    live.history.push(op);
+    live.text = next;
+    const rev = live.history.length;
+    for (const c of clients.values()) if (c.memoRoomId === roomId) send(c, { type: "memo:op", roomId, rev, ops: op, by: "" });
+    scheduleMemoPersist(roomId, client.userId);
+  } else {
+    store.saveMemo(roomId, next, client.userId); // font 인자 생략 = 기존 글꼴 유지
+  }
+}
+
+// 모델 응답의 accord: 지시 블록을 실행하고, 블록을 뺀 표시용 텍스트 + 결과 메모를 돌려준다.
+function applyAiActions(replyText, refMap, ctx, client) {
+  const notes = [];
+  const display = String(replyText || "").replace(AI_ACTION_RE, (_m, kind, name, payload) => {
+    const body = String(payload).replace(/\s+$/, "");
+    const target = refMap.get(name.toLowerCase());
+    if (!target) { notes.push(`⚠️ #${name}: 이번 메시지에서 #로 지정한 방이 아니어서 건드리지 않았습니다.`); return ""; }
+    const tctx = { channel: ctx.channel, room: target.room };
+    if (!isRoomWritable(tctx, client)) { notes.push(`⚠️ #${target.room.name}: 쓰기 권한이 없어 건너뜀`); return ""; }
+    try {
+      if (kind === "chat") {
+        if (target.type !== "chat") { notes.push(`⚠️ #${target.room.name}: 채팅방이 아님`); return ""; }
+        const cu = store.findById(client.userId);
+        const cmsg = {
+          id: crypto.randomBytes(8).toString("hex"), roomId: target.room.id,
+          userId: client.userId, name: cu ? cu.displayName : client.name, code: cu ? cu.code : "",
+          text: `🤖 (AI방 요청) ${body}`.slice(0, 4000), mentions: [], files: [], at: Date.now(),
+        };
+        store.addMessage(target.room.id, cmsg);
+        broadcastChat(ctx.channel, { type: "chat:message", message: cmsg });
+        notes.push(`✅ #${target.room.name} 채팅에 메시지를 보냈습니다.`);
+      } else {
+        if (target.type !== "memo") { notes.push(`⚠️ #${target.room.name}: 메모장이 아님`); return ""; }
+        applyAiMemoWrite(target.room.id, kind === "memo-append" ? "append" : "replace", body, client);
+        notes.push(`✅ #${target.room.name} 메모장을 ${kind === "memo-append" ? "이어썼" : "수정했"}습니다.`);
+      }
+    } catch (e) {
+      notes.push(`⚠️ #${target.room.name}: 적용 실패 (${(e && e.message) || e})`);
+    }
+    return "";
+  }).trim();
+  return { display, notes };
 }
 
 function handleAiMessage(client, message) {
@@ -2092,6 +2178,30 @@ function handleAiMessage(client, message) {
       if (!isRoomWritable(ctx, client)) { send(client, { type: "ai:error", message: "읽기 전용 방입니다." }); return true; }
       const memory = store.setAiMemory(ctx.room.id, { prompt: message.prompt, notes: message.notes });
       broadcastAi(ctx.room.id, { type: "ai:memory", roomId: ctx.room.id, memory });
+      return true;
+    }
+    case "ai:set-settings": {
+      const ctx = resolveAiRoom(client, message.roomId);
+      if (!ctx) return true;
+      if (!isRoomWritable(ctx, client)) { send(client, { type: "ai:error", message: "읽기 전용 방입니다." }); return true; }
+      const settings = store.setAiSettings(ctx.room.id, { model: message.model, thinking: message.thinking });
+      broadcastAi(ctx.room.id, { type: "ai:settings", roomId: ctx.room.id, settings });
+      return true;
+    }
+    case "ai:delete": {
+      const ctx = resolveAiRoom(client, message.roomId);
+      if (!ctx) return true;
+      if (!isRoomWritable(ctx, client)) { send(client, { type: "ai:error", message: "읽기 전용 방입니다." }); return true; }
+      if (aiBusy.has(ctx.room.id)) { send(client, { type: "ai:error", message: "AI 응답 중에는 대화를 삭제할 수 없습니다." }); return true; }
+      const doc = store.getAiDoc(ctx.room.id);
+      const idx = doc.sessions.findIndex((s) => s.id === String(message.sessionId || ""));
+      if (idx < 0) { send(client, { type: "ai:error", message: "대화를 찾지 못했습니다." }); return true; }
+      const [removed] = doc.sessions.splice(idx, 1);
+      if (doc.activeSessionId === removed.id) {
+        doc.activeSessionId = doc.sessions.length ? doc.sessions[doc.sessions.length - 1].id : "";
+      }
+      store.saveAiDoc(ctx.room.id, doc);
+      broadcastAiState(ctx, doc);
       return true;
     }
     case "ai:new": {
@@ -2143,11 +2253,15 @@ function handleAiMessage(client, message) {
       broadcastAi(ctx.room.id, { type: "ai:message", roomId: ctx.room.id, sessionId: session.id, message: userMsg });
       broadcastAi(ctx.room.id, { type: "ai:draft", roomId: ctx.room.id, byId: client.userId, byName: client.name || "", text: "" });
 
+      // 사용자가 #으로 지정한 방(메모장/채팅) 읽어서 문맥에 넣고, 나중에 수정 대상으로도 쓴다.
+      const { map: refMap, refs } = resolveAiRefs(text, ctx, client);
+
       aiBusy.add(ctx.room.id);
       broadcastAi(ctx.room.id, { type: "ai:thinking", roomId: ctx.room.id, on: true });
-      const model = secret.model || store.DEFAULT_AI_MODEL;
-      const system = store.buildAiSystemInstruction(doc, store.getAiGlobalPrompt());
-      callGemini({ apiKey: secret.key, model, system, contents: store.toGeminiContents(session.messages, AI_CONTEXT_TURNS) })
+      const model = doc.settings.model || secret.model || store.DEFAULT_AI_MODEL;
+      let system = store.buildAiSystemInstruction(doc, store.getAiGlobalPrompt());
+      if (refs.length) system += `\n\n${store.buildAiReferenceBlock(refs)}`;
+      callGemini({ apiKey: secret.key, model, system, thinking: doc.settings.thinking, contents: store.toGeminiContents(session.messages, AI_CONTEXT_TURNS) })
         .then((reply) => {
           const fresh = store.getAiDoc(ctx.room.id);
           const s = fresh.sessions.find((x) => x.id === session.id);
@@ -2160,7 +2274,11 @@ function handleAiMessage(client, message) {
               urls.push(`/uploads/${saved.fileName}`);
             } catch (e) { console.error("[ai] 이미지 저장 실패:", e?.message || e); }
           }
-          const aiMsg = { role: "model", text: reply.text, at: Date.now(), model };
+          // accord: 지시 블록 실행(#으로 지정한 방만) 후, 블록을 뺀 텍스트 + 결과 요약을 남긴다.
+          const { display, notes } = applyAiActions(reply.text, refMap, ctx, client);
+          let outText = display;
+          if (notes.length) outText += `${outText ? "\n\n" : ""}> ${notes.join("\n> ")}`;
+          const aiMsg = { role: "model", text: outText, at: Date.now(), model };
           if (urls.length) aiMsg.images = urls;
           s.messages.push(aiMsg);
           store.saveAiDoc(ctx.room.id, fresh);
