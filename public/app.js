@@ -44,13 +44,20 @@ const ROOM_TYPE_META = {
 };
 const AI_DRAFT_THROTTLE = 180; // 입력 미리보기(draft) 전송 최소 간격(ms)
 const AI_DRAFT_TTL = 8000; // 남의 "입력 중" 표시가 갱신 없이 살아 있는 최대 시간(ms)
+// 채널 설정의 datalist(#aiModelList)와 목록을 맞춰 둘 것. 모델 ID는 자유 입력도 가능하다.
 const AI_MODEL_CHOICES = [
   ["", "채널 기본"],
-  ["gemini-2.5-flash", "gemini-2.5-flash"],
+  ["gemini-3.7-flash", "gemini-3.7-flash"],
+  ["gemini-3.6-flash", "gemini-3.6-flash"],
+  ["gemini-3.5-flash", "gemini-3.5-flash"],
+  ["gemini-3.5-flash-lite", "gemini-3.5-flash-lite"],
+  ["gemini-3.1-pro-preview", "gemini-3.1-pro-preview"],
   ["gemini-2.5-pro", "gemini-2.5-pro"],
+  ["gemini-2.5-flash", "gemini-2.5-flash"],
   ["gemini-2.5-flash-lite", "gemini-2.5-flash-lite"],
-  ["gemini-2.0-flash", "gemini-2.0-flash"],
-  ["gemini-2.5-flash-image-preview", "gemini-2.5-flash-image (그림)"],
+  ["gemini-3-pro-image", "gemini-3-pro-image (그림)"],
+  ["gemini-3.1-flash-image", "gemini-3.1-flash-image (그림)"],
+  ["gemini-2.5-flash-image", "gemini-2.5-flash-image (그림)"],
 ];
 const AI_THINKING_CHOICES = [["auto", "생각: 자동"], ["off", "생각: 끔"], ["high", "생각: 깊게"]];
 
@@ -556,7 +563,6 @@ const dom = {
   aiPanel: document.querySelector("#aiPanel"),
   aiRoomName: document.querySelector("#aiRoomName"),
   aiSubtitle: document.querySelector("#aiSubtitle"),
-  aiModelTag: document.querySelector("#aiModelTag"),
   aiModelSelect: document.querySelector("#aiModelSelect"),
   aiThinkingSelect: document.querySelector("#aiThinkingSelect"),
   aiMemoryButton: document.querySelector("#aiMemoryButton"),
@@ -572,6 +578,7 @@ const dom = {
   aiMessages: document.querySelector("#aiMessages"),
   aiThinking: document.querySelector("#aiThinking"),
   aiDrafts: document.querySelector("#aiDrafts"),
+  aiRefMenu: document.querySelector("#aiRefMenu"),
   aiInput: document.querySelector("#aiInput"),
   aiSendButton: document.querySelector("#aiSendButton"),
   aiComposerHint: document.querySelector("#aiComposerHint"),
@@ -1871,7 +1878,6 @@ async function handleSocketMessage(message) {
   if (message.type === "ai:config") {
     if (state.ai && message.roomId === state.ai.roomId) {
       state.ai.config = message.config || state.ai.config;
-      renderAiModelTag();
       applyAiWritable();
     }
     return;
@@ -1888,7 +1894,6 @@ async function handleSocketMessage(message) {
     if (state.ai && message.roomId === state.ai.roomId && message.settings) {
       state.ai.settings = message.settings;
       renderAiControls();
-      renderAiModelTag();
     }
     return;
   }
@@ -9230,7 +9235,8 @@ function openAiRoom(roomId) {
   if (dom.aiDrafts) dom.aiDrafts.innerHTML = "";
   if (dom.aiInput) { dom.aiInput.value = ""; autoResizeAi(); }
   setAiHint("");
-  renderAiModelTag();
+  closeAiRefMenu();
+  renderAiControls();
   sendSocket({ type: "ai:open", roomId });
   renderRooms();
   dom.aiInput?.focus();
@@ -9241,6 +9247,7 @@ function closeAiView() {
   sendSocket({ type: "ai:close" });
   state.ai = null;
   clearTimeout(aiDraftPruneTimer);
+  closeAiRefMenu();
   if (dom.aiDrafts) dom.aiDrafts.innerHTML = "";
   if (dom.aiMemory) dom.aiMemory.hidden = true;
   document.body.classList.remove("ai-open");
@@ -9259,7 +9266,6 @@ function verifyActiveAi() {
   if (dom.aiRoomName) dom.aiRoomName.textContent = found.room.name;
   markRoomNameClickable(dom.aiRoomName, found.channel);
   if (dom.aiSubtitle) dom.aiSubtitle.textContent = found.channel.name;
-  renderAiModelTag();
   applyAiWritable();
 }
 
@@ -9278,7 +9284,6 @@ function applyAiState(msg) {
   for (const d of Array.isArray(msg.drafts) ? msg.drafts : []) {
     if (d && d.byId && d.text) state.ai.remoteDrafts[d.byId] = { name: d.byName || "누군가", text: d.text, at: now };
   }
-  renderAiModelTag();
   renderAiControls();
   renderAiMemory();
   renderAiSessions();
@@ -9288,25 +9293,25 @@ function applyAiState(msg) {
   applyAiWritable();
 }
 
-function renderAiModelTag() {
-  if (!dom.aiModelTag) return;
-  const cfg = state.ai?.config || {};
-  const eff = state.ai?.settings?.model || cfg.model || "";
-  dom.aiModelTag.textContent = eff;
-  dom.aiModelTag.title = cfg.hasKey ? `모델: ${eff}` : "API 키가 설정되지 않았습니다";
-}
-
 function renderAiControls() {
   if (!state.ai || !dom.aiModelSelect || !dom.aiThinkingSelect) return;
   const st = state.ai.settings || { model: "", thinking: "auto" };
   const chDefault = state.ai.config?.model || "?";
   dom.aiModelSelect.innerHTML = "";
   for (const [v, l] of AI_MODEL_CHOICES) dom.aiModelSelect.append(new Option(v ? l : `모델: 채널 기본 (${chDefault})`, v, false, v === st.model));
+  // 목록에 없는 모델(채널이 자유 입력한 값 등)도 선택 상태로 보이게 한 항목 추가.
+  if (st.model && !AI_MODEL_CHOICES.some(([v]) => v === st.model)) {
+    dom.aiModelSelect.append(new Option(st.model, st.model, false, true));
+  }
   dom.aiThinkingSelect.innerHTML = "";
   for (const [v, l] of AI_THINKING_CHOICES) dom.aiThinkingSelect.append(new Option(l, v, false, v === st.thinking));
   const ro = state.ai.writable === false;
   dom.aiModelSelect.disabled = ro;
-  dom.aiThinkingSelect.disabled = ro;
+  // 서버는 Gemini 2.5 계열에서만 thinkingConfig 를 보낸다. 그 외 모델에선 생각 수준이 무의미하므로 비활성.
+  const eff = st.model || state.ai.config?.model || "";
+  const thinkable = /2\.5/.test(eff) && !/image/i.test(eff);
+  dom.aiThinkingSelect.disabled = ro || !thinkable;
+  dom.aiThinkingSelect.title = thinkable ? "생각 수준" : "이 모델은 생각 수준 조절을 지원하지 않습니다";
 }
 
 function renderAiSessions() {
@@ -9408,7 +9413,7 @@ function applyAiWritable() {
   if (dom.aiInput) {
     dom.aiInput.disabled = !ok;
     dom.aiInput.placeholder = ok
-      ? (cfg.hasKey ? "무엇이든 물어보세요 — 결과는 방 전원이 함께 봅니다" : "채널 관리 → AI방 설정에서 Gemini 키를 등록하세요")
+      ? (cfg.hasKey ? "무엇이든 물어보세요 · #로 방 참조 · 결과는 전원 공유" : "채널 관리 → AI방 설정에서 Gemini 키를 등록하세요")
       : "읽기 전용 방입니다";
   }
   if (dom.aiSendButton) dom.aiSendButton.disabled = !ok;
@@ -9473,6 +9478,7 @@ function renderAiDrafts() {
   for (const [id, d] of Object.entries(drafts)) {
     if (!d || !d.text || now - (d.at || 0) > AI_DRAFT_TTL) { delete drafts[id]; continue; }
     live++;
+    if (live > 3) continue; // 표시는 최대 3명까지(줄 자체도 CSS 로 한 줄 말줄임).
     const line = document.createElement("p");
     line.className = "ai-draft-line";
     const who = document.createElement("b");
@@ -9482,6 +9488,95 @@ function renderAiDrafts() {
   }
   clearTimeout(aiDraftPruneTimer);
   if (live) aiDraftPruneTimer = setTimeout(renderAiDrafts, AI_DRAFT_TTL + 500);
+}
+
+// ----- #방이름 자동완성: 같은 채널의 메모장·채팅방을 골라 넣는다(서버가 canAccessRoom 재확인) -----
+// 서버는 /#[^\s#]{1,40}/ 로 토큰을 뽑고 방 이름과 정확히(대소문자 무시) 매칭하므로, 공백/# 없는 이름만 제시한다.
+const aiRefState = { items: [], index: 0, start: -1, end: -1 };
+
+function closeAiRefMenu() {
+  aiRefState.items = [];
+  aiRefState.index = 0;
+  aiRefState.start = -1;
+  aiRefState.end = -1;
+  if (dom.aiRefMenu) { dom.aiRefMenu.hidden = true; dom.aiRefMenu.innerHTML = ""; }
+}
+
+function updateAiRefMenu() {
+  const input = dom.aiInput;
+  const menu = dom.aiRefMenu;
+  if (!input || !menu || input.disabled || !state.ai || state.ai.composing) { closeAiRefMenu(); return; }
+  const caret = input.selectionStart ?? input.value.length;
+  if (caret !== (input.selectionEnd ?? caret)) { closeAiRefMenu(); return; }
+  const match = input.value.slice(0, caret).match(/(?:^|\s)#([^\s#]{0,40})$/u);
+  if (!match) { closeAiRefMenu(); return; }
+  const query = (match[1] || "").toLocaleLowerCase("ko");
+  const channel = state.channels.find((c) => c.id === state.ai.channelId);
+  const rooms = (channel?.rooms || []).filter((r) => {
+    if (r.type !== "memo" && r.type !== "chat") return false;
+    if (/[\s#]/.test(r.name || "")) return false; // 공백 있는 이름은 #참조가 안 됨
+    return !query || String(r.name).toLocaleLowerCase("ko").includes(query);
+  }).slice(0, 8);
+  if (!rooms.length) { closeAiRefMenu(); return; }
+  aiRefState.items = rooms;
+  aiRefState.index = Math.min(aiRefState.index, rooms.length - 1);
+  aiRefState.start = caret - match[1].length - 1;
+  aiRefState.end = caret;
+  renderAiRefMenu();
+}
+
+function renderAiRefMenu() {
+  const menu = dom.aiRefMenu;
+  if (!menu || !aiRefState.items.length) { closeAiRefMenu(); return; }
+  menu.innerHTML = "";
+  aiRefState.items.forEach((room, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "chat-mention-option" + (index === aiRefState.index ? " active" : "");
+    button.dataset.refIndex = String(index);
+    const avatar = document.createElement("span");
+    avatar.className = "account-avatar small special";
+    avatar.textContent = room.type === "memo" ? "📝" : "💬";
+    const label = document.createElement("span");
+    label.className = "chat-mention-option-label";
+    const name = document.createElement("b");
+    name.textContent = room.name;
+    const kind = document.createElement("em");
+    kind.textContent = room.type === "memo" ? "메모장" : "채팅방";
+    label.append(name, kind);
+    button.append(avatar, label);
+    menu.append(button);
+  });
+  menu.hidden = false;
+}
+
+function insertAiRef(index = aiRefState.index) {
+  const input = dom.aiInput;
+  const room = aiRefState.items[index];
+  if (!input || !room || aiRefState.start < 0) return;
+  input.setRangeText(`#${room.name} `, aiRefState.start, aiRefState.end, "end");
+  input.focus();
+  closeAiRefMenu();
+  autoResizeAi();
+  if (!state.ai?.composing) sendAiDraft();
+}
+
+function handleAiRefKeydown(event) {
+  if (!aiRefState.items.length || dom.aiRefMenu?.hidden) return false;
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    const step = event.key === "ArrowDown" ? 1 : -1;
+    aiRefState.index = (aiRefState.index + step + aiRefState.items.length) % aiRefState.items.length;
+    renderAiRefMenu();
+    return true;
+  }
+  if (((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") && !event.isComposing && !state.ai?.composing) {
+    event.preventDefault();
+    insertAiRef();
+    return true;
+  }
+  if (event.key === "Escape") { event.preventDefault(); closeAiRefMenu(); return true; }
+  return false;
 }
 
 function sendAiPrompt() {
@@ -9496,25 +9591,40 @@ function sendAiPrompt() {
   dom.aiInput.value = "";
   autoResizeAi();
   clearMyDraft();
+  closeAiRefMenu();
 }
 
 function bindAiEvents() {
   dom.aiInput?.addEventListener("input", () => {
     autoResizeAi();
     if (!state.ai?.composing) sendAiDraft();
+    updateAiRefMenu();
   });
   dom.aiInput?.addEventListener("compositionstart", () => { if (state.ai) state.ai.composing = true; });
   dom.aiInput?.addEventListener("compositionend", () => {
     if (state.ai) state.ai.composing = false;
     sendAiDraft();
+    updateAiRefMenu();
   });
   dom.aiInput?.addEventListener("keydown", (e) => {
+    if (handleAiRefKeydown(e)) return;
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !state.ai?.composing) {
       e.preventDefault();
       sendAiPrompt();
     }
   });
-  dom.aiInput?.addEventListener("blur", clearMyDraft);
+  for (const eventName of ["click", "keyup"]) {
+    dom.aiInput?.addEventListener(eventName, (e) => {
+      if (eventName === "keyup" && ["ArrowDown", "ArrowUp", "Enter", "Tab", "Escape"].includes(e.key)) return;
+      updateAiRefMenu();
+    });
+  }
+  dom.aiRefMenu?.addEventListener("pointerdown", (e) => e.preventDefault());
+  dom.aiRefMenu?.addEventListener("click", (e) => {
+    const option = e.target?.closest?.("[data-ref-index]");
+    if (option) insertAiRef(Number(option.dataset.refIndex));
+  });
+  dom.aiInput?.addEventListener("blur", () => { clearMyDraft(); closeAiRefMenu(); });
   dom.aiSendButton?.addEventListener("click", sendAiPrompt);
   dom.aiNewButton?.addEventListener("click", () => {
     if (state.ai) sendSocket({ type: "ai:new", roomId: state.ai.roomId });

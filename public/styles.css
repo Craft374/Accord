@@ -6388,8 +6388,9 @@ body.ai-open .dm-panel { display: none !important; }
 
 .ai-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
   flex-shrink: 0;
   padding: 12px 16px;
   border-bottom: 1px solid var(--line);
@@ -6397,16 +6398,19 @@ body.ai-open .dm-panel { display: none !important; }
 .ai-title { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .ai-title-icon { font-size: 15px; }
 .ai-head h2 { margin: 0; font-size: 16px; color: var(--heading); white-space: nowrap; }
-.ai-subtitle { margin: 0; color: var(--muted); font-size: 12px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ai-model-tag {
-  font-size: 11px;
-  color: var(--muted);
+.ai-subtitle { margin: 0; color: var(--muted); font-size: 12px; flex: 1; min-width: 60px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-head-controls { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ai-head-controls select {
+  font-family: inherit;
+  font-size: 12px;
+  max-width: 40vw;
+  padding: 4px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
   background: var(--bg-input);
-  border-radius: 999px;
-  padding: 2px 8px;
-  white-space: nowrap;
+  color: var(--text);
 }
-.ai-model-tag:empty { display: none; }
+.ai-head-controls select:disabled { opacity: 0.5; }
 
 .ai-body { display: flex; flex: 1; min-height: 0; }
 .ai-sessions {
@@ -6487,19 +6491,7 @@ body.ai-open .dm-panel { display: none !important; }
   font-style: italic;
 }
 
-.ai-composer { flex-shrink: 0; border-top: 1px solid var(--line); padding: 10px 16px 14px; }
-.ai-controls { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
-.ai-controls select {
-  font-family: inherit;
-  font-size: 12px;
-  padding: 4px 8px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-sm);
-  background: var(--bg-input);
-  color: var(--text);
-}
-.ai-controls select:disabled { opacity: 0.5; }
-.ai-controls-hint { font-size: 11px; color: var(--muted); flex: 1; min-width: 0; }
+.ai-composer { position: relative; flex-shrink: 0; border-top: 1px solid var(--line); padding: 10px 16px 14px; }
 .ai-drafts { display: flex; flex-direction: column; gap: 3px; margin-bottom: 6px; }
 .ai-drafts:empty { display: none; }
 .ai-draft-line {
