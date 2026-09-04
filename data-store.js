@@ -1373,8 +1373,18 @@ function aiFile(roomId) {
 }
 
 const AI_THINKING_LEVELS = ["auto", "off", "high"];
+// 방 지식 파일(GPT 프로젝트 파일과 비슷): 텍스트로 추출 가능한 파일만 내용을 읽어 systemInstruction 에 포함한다.
+const AI_FILES_MAX = 12;
+const AI_FILE_TEXT_MAX = 20000;
+// 순수 함수(정규식도 내부에 둬 check-v2 가 단독 추출·실행 가능).
+function isAiTextyFile(mime, name) {
+  const mimeRe = /^text\/|^application\/(json|xml|x-yaml|yaml)$/i;
+  const extRe = /\.(txt|md|markdown|csv|tsv|json|jsonl|ya?ml|xml|html?|css|jsx?|tsx?|py|java|c|cc|cpp|h|hpp|go|rs|rb|php|sh|sql|log)$/i;
+  return mimeRe.test(String(mime || "")) || extRe.test(String(name || ""));
+}
+
 function emptyAiDoc() {
-  return { sessions: [], activeSessionId: "", memory: { prompt: "", notes: "" }, settings: { model: "", thinking: "auto" } };
+  return { sessions: [], activeSessionId: "", memory: { prompt: "", notes: "" }, settings: { model: "", thinking: "auto" }, files: [] };
 }
 
 function getAiDoc(roomId) {
@@ -1389,7 +1399,54 @@ function getAiDoc(roomId) {
     thinking: AI_THINKING_LEVELS.includes(st.thinking) ? st.thinking : "auto",
   };
   if (typeof doc.activeSessionId !== "string") doc.activeSessionId = "";
+  doc.files = (Array.isArray(doc.files) ? doc.files : []).slice(0, AI_FILES_MAX).map((f) => ({
+    id: String(f?.id || ""),
+    url: String(f?.url || ""),
+    name: String(f?.name || "file").slice(0, 200),
+    mime: String(f?.mime || "").slice(0, 100),
+    size: Number(f?.size) || 0,
+    text: String(f?.text || "").slice(0, AI_FILE_TEXT_MAX),
+    addedAt: Number(f?.addedAt) || 0,
+    addedBy: String(f?.addedBy || ""),
+  })).filter((f) => f.id && f.url);
   return doc;
+}
+
+// 파일을 방 지식으로 추가한다. 텍스트류 파일만 내용을 읽어 둔다(이미지 등은 메타데이터만).
+// 꽉 찼으면 null 을 돌려주고, 호출자(server.js)가 그 전에 개수를 확인해 에러로 안내한다.
+function addAiFile(roomId, { url, name, mime, size, addedBy } = {}) {
+  const doc = getAiDoc(roomId);
+  if (doc.files.length >= AI_FILES_MAX) return null;
+  let text = "";
+  if (isAiTextyFile(mime, name)) {
+    const raw = String(url || "");
+    const filePath = raw.startsWith("/uploads/") ? getUploadPath(raw.slice("/uploads/".length)) : null;
+    if (filePath) {
+      try { text = fs.readFileSync(filePath, "utf8").slice(0, AI_FILE_TEXT_MAX); } catch { text = ""; }
+    }
+  }
+  doc.files.push({
+    id: crypto.randomBytes(6).toString("hex"),
+    url: String(url || ""),
+    name: String(name || "file").slice(0, 200),
+    mime: String(mime || "").slice(0, 100),
+    size: Number(size) || 0,
+    text,
+    addedAt: Date.now(),
+    addedBy: String(addedBy || ""),
+  });
+  saveAiDoc(roomId, doc);
+  return doc.files;
+}
+
+function removeAiFile(roomId, fileId) {
+  const doc = getAiDoc(roomId);
+  const idx = doc.files.findIndex((f) => f.id === String(fileId || ""));
+  if (idx < 0) return null;
+  const [removed] = doc.files.splice(idx, 1);
+  saveAiDoc(roomId, doc);
+  deleteUpload(removed.url);
+  return doc.files;
 }
 
 const AI_MEMORY_FIELD_MAX = 4000;
@@ -1441,6 +1498,21 @@ function buildAiSystemInstruction(doc, globalPrompt) {
   if (rp) parts.push(`[이 AI방 지침]\n${rp}`);
   const rn = String(mem.notes || "").trim();
   if (rn) parts.push(`[이 AI방 메모리]\n${rn}`);
+  const files = Array.isArray(doc && doc.files) ? doc.files : [];
+  if (files.length) {
+    const FILES_TOTAL_CHARS = 80000;
+    let usedChars = 0;
+    const lines = files.map((f) => {
+      const label = `${f.name}${f.mime ? ` (${f.mime})` : ""}`;
+      if (!f.text) return `- ${label}: (텍스트로 추출할 수 없는 파일 — 이름만 참고 가능)`;
+      const remain = FILES_TOTAL_CHARS - usedChars;
+      if (remain <= 0) return `- ${label}: (분량 제한으로 생략됨)`;
+      const body = f.text.slice(0, remain);
+      usedChars += body.length;
+      return `- ${label}:\n${body}`;
+    });
+    parts.push(`[이 AI방에 업로드된 파일 — GPT 프로젝트 파일처럼 모든 대화에서 참고]\n${lines.join("\n\n")}`);
+  }
   const sessions = Array.isArray(doc && doc.sessions) ? doc.sessions : [];
   const activeId = doc && doc.activeSessionId;
   const others = sessions.filter((s) => s && s.id !== activeId);
@@ -1894,6 +1966,9 @@ module.exports = {
   toGeminiContents,
   buildAiSystemInstruction,
   buildAiReferenceBlock,
+  addAiFile,
+  removeAiFile,
+  AI_FILES_MAX,
   DEFAULT_AI_MODEL,
   // 권한 역할
   createRole,

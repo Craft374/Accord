@@ -1991,7 +1991,13 @@ function aiStatePayload(ctx, client, doc, messages) {
     thinking: aiBusy.has(ctx.room.id),
     writable: isRoomWritable(ctx, client),
     drafts: aiDraftList(ctx.room.id, client.userId),
+    files: aiFilesForClient(doc.files),
   };
+}
+
+// 추출된 본문(text)은 클라에 보내지 않는다(용량·정보 노출 방지) — 목록 표시에 필요한 메타데이터만.
+function aiFilesForClient(files) {
+  return (Array.isArray(files) ? files : []).map((f) => ({ id: f.id, name: f.name, mime: f.mime, size: f.size, url: f.url, addedAt: f.addedAt }));
 }
 
 function aiEnsureSession(doc) {
@@ -2225,6 +2231,38 @@ function handleAiMessage(client, message) {
       doc.activeSessionId = target.id;
       store.saveAiDoc(ctx.room.id, doc);
       broadcastAiState(ctx, doc, target.messages);
+      return true;
+    }
+    case "ai:add-file": {
+      const ctx = resolveAiRoom(client, message.roomId);
+      if (!ctx) return true;
+      if (!isRoomWritable(ctx, client)) { send(client, { type: "ai:error", message: "읽기 전용 방입니다." }); return true; }
+      const url = String(message.url || "");
+      if (!/^\/uploads\/[a-f0-9]{24}_[A-Za-z0-9._-]+$/.test(url)) {
+        send(client, { type: "ai:error", message: "잘못된 파일입니다." });
+        return true;
+      }
+      const files = store.addAiFile(ctx.room.id, {
+        url,
+        name: String(message.name || "file").slice(0, 200),
+        mime: String(message.mime || "").slice(0, 100),
+        size: Number(message.size) || 0,
+        addedBy: client.userId,
+      });
+      if (!files) {
+        send(client, { type: "ai:error", message: `파일은 최대 ${store.AI_FILES_MAX}개까지 추가할 수 있습니다. 먼저 하나를 지워주세요.` });
+        return true;
+      }
+      broadcastAi(ctx.room.id, { type: "ai:files", roomId: ctx.room.id, files: aiFilesForClient(files) });
+      return true;
+    }
+    case "ai:remove-file": {
+      const ctx = resolveAiRoom(client, message.roomId);
+      if (!ctx) return true;
+      if (!isRoomWritable(ctx, client)) { send(client, { type: "ai:error", message: "읽기 전용 방입니다." }); return true; }
+      const files = store.removeAiFile(ctx.room.id, message.fileId);
+      if (!files) { send(client, { type: "ai:error", message: "파일을 찾지 못했습니다." }); return true; }
+      broadcastAi(ctx.room.id, { type: "ai:files", roomId: ctx.room.id, files: aiFilesForClient(files) });
       return true;
     }
     case "ai:send": {

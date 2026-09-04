@@ -425,12 +425,33 @@ const reviews = [
         ],
       };
       const out = fn(doc, "한국어로 답할 것");
+      const withFiles = fn({
+        sessions: [], files: [
+          { name: "readme.md", mime: "text/markdown", text: "프로젝트 개요: Orbit" },
+          { name: "photo.png", mime: "image/png", text: "" },
+        ],
+      }, "");
       return out.includes("한국어로 답할 것") && out.includes("존댓말로") && out.includes("코드명 Orbit")
         && out.includes("지난 회의") && out.includes("철수: 배포 언제?") && out.includes("AI: 목요일이라고 했어요")
         && !out.includes("무시돼야 함") && !out.includes("지금")
-        && fn({ sessions: [] }, "").indexOf("다른 대화 전체") === -1;
+        && fn({ sessions: [] }, "").indexOf("다른 대화 전체") === -1
+        && withFiles.includes("readme.md") && withFiles.includes("프로젝트 개요: Orbit")
+        && withFiles.includes("photo.png") && withFiles.includes("텍스트로 추출할 수 없는 파일");
     } catch { return false; }
-  })(), "AI방 buildAiSystemInstruction inlines full other-session transcripts, excludes active session (runtime)"],
+  })(), "AI방 buildAiSystemInstruction inlines uploaded room files, notes non-text ones (runtime)"],
+  [(() => {
+    // AI방: 방 파일 중 텍스트로 추출할 파일을 mime/확장자로 판별.
+    try {
+      const src = dataStore.match(/function isAiTextyFile\(mime, name\) \{[\s\S]*?\n\}/);
+      if (!src) return false;
+      const fn = new Function(`${src[0]}\nreturn isAiTextyFile;`)();
+      return fn("text/plain", "a.bin") === true
+        && fn("application/json", "x") === true
+        && fn("", "notes.md") === true
+        && fn("image/png", "photo.png") === false
+        && fn("application/pdf", "doc.pdf") === false;
+    } catch { return false; }
+  })(), "AI방 isAiTextyFile detects text-extractable files by mime/extension (runtime)"],
   [(() => {
     // AI방: #방 참조 블록. 내용 주입 + 수정용 코드블록 안내. refs 없으면 빈 문자열.
     try {

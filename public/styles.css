@@ -6480,7 +6480,7 @@ body.ai-open .dm-panel { display: none !important; }
 .ai-msg.user { align-items: flex-end; }
 .ai-msg.user .ai-msg-body { background: var(--blurple); color: #fff; max-width: 80%; }
 .ai-msg.model .ai-msg-body { background: var(--bg-elevated); }
-.ai-msg-body img { display: block; max-width: 100%; margin-top: 8px; border-radius: var(--radius-sm); }
+.ai-msg-body .chat-image-wrap { margin-top: 8px; }
 .ai-msg-body:empty { display: none; }
 
 .ai-thinking {
@@ -6572,6 +6572,7 @@ body.ai-open .dm-panel { display: none !important; }
 .ai-memory textarea:focus { outline: none; border-color: var(--blurple); }
 .ai-memory-state { margin: 0; font-size: 12px; color: var(--muted); }
 .ai-memory-state.ok { color: var(--green); }
+.ai-files-list { display: flex; flex-direction: column; gap: 4px; }
 
 .admin-ai-prompt { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
 .admin-ai-prompt summary { cursor: pointer; font-size: 13px; color: var(--heading); }

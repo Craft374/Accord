@@ -574,6 +574,9 @@ const dom = {
   aiMemoryNotes: document.querySelector("#aiMemoryNotes"),
   aiMemorySave: document.querySelector("#aiMemorySave"),
   aiMemoryState: document.querySelector("#aiMemoryState"),
+  aiFilesList: document.querySelector("#aiFilesList"),
+  aiAttachButton: document.querySelector("#aiAttachButton"),
+  aiFileInput: document.querySelector("#aiFileInput"),
   aiScroll: document.querySelector("#aiScroll"),
   aiMessages: document.querySelector("#aiMessages"),
   aiThinking: document.querySelector("#aiThinking"),
@@ -1894,6 +1897,13 @@ async function handleSocketMessage(message) {
     if (state.ai && message.roomId === state.ai.roomId && message.settings) {
       state.ai.settings = message.settings;
       renderAiControls();
+    }
+    return;
+  }
+  if (message.type === "ai:files") {
+    if (state.ai && message.roomId === state.ai.roomId) {
+      state.ai.files = Array.isArray(message.files) ? message.files : state.ai.files;
+      renderAiFiles();
     }
     return;
   }
@@ -9218,6 +9228,7 @@ function openAiRoom(roomId) {
     sessions: [],
     activeSessionId: "",
     messages: [],
+    files: [],
     thinking: false,
     writable: true,
     remoteDrafts: {}, // byId -> { name, text, at }
@@ -9277,6 +9288,7 @@ function applyAiState(msg) {
   state.ai.sessions = Array.isArray(msg.sessions) ? msg.sessions : [];
   state.ai.activeSessionId = msg.activeSessionId || "";
   state.ai.messages = Array.isArray(msg.messages) ? msg.messages : [];
+  state.ai.files = Array.isArray(msg.files) ? msg.files : [];
   state.ai.thinking = Boolean(msg.thinking);
   if (typeof msg.writable === "boolean") state.ai.writable = msg.writable;
   const now = Date.now();
@@ -9286,6 +9298,7 @@ function applyAiState(msg) {
   }
   renderAiControls();
   renderAiMemory();
+  renderAiFiles();
   renderAiSessions();
   renderAiMessages();
   renderAiThinking();
@@ -9362,23 +9375,34 @@ function renderAiMessages() {
   }
   for (const m of state.ai.messages) {
     const row = document.createElement("div");
-    row.className = "ai-msg " + (m.role === "user" ? "user" : "model");
+    row.className = "ai-msg chat-msg " + (m.role === "user" ? "user" : "model");
     const role = document.createElement("div");
     role.className = "ai-msg-role";
     role.textContent = m.role === "user" ? (m.name || "누군가") : (m.model ? `AI · ${m.model}` : "AI");
     const body = document.createElement("div");
-    body.className = "ai-msg-body";
-    body.textContent = m.text || "";
+    body.className = "ai-msg-body chat-msg-text";
+    // 마크다운 렌더(채팅과 동일 파서). 맨션·이모지는 AI방과 무관하므로 빈 값으로 넘긴다.
+    body.innerHTML = renderChatText(m.text || "", {}, []);
     for (const url of Array.isArray(m.images) ? m.images : []) {
       if (typeof url !== "string" || !url.startsWith("/uploads/")) continue;
-      const img = document.createElement("img");
-      img.src = url;
-      img.alt = "생성된 이미지";
-      img.loading = "lazy";
-      img.addEventListener("load", () => { if (dom.aiScroll) dom.aiScroll.scrollTop = dom.aiScroll.scrollHeight; });
-      body.append(img);
+      // 채팅과 같은 컴포넌트 재사용 → 클릭 시 크게 보기, 우클릭/⋯로 저장·복사 가능.
+      const imgBox = renderChatFile({ url, kind: "image", name: url.split("/").pop() || "생성된 이미지" });
+      imgBox.querySelector("img")?.addEventListener("load", () => { if (dom.aiScroll) dom.aiScroll.scrollTop = dom.aiScroll.scrollHeight; });
+      body.append(imgBox);
     }
     row.append(role, body);
+    if (m.text) {
+      const actions = document.createElement("div");
+      actions.className = "chat-msg-actions";
+      const copyBtn = document.createElement("button");
+      copyBtn.type = "button";
+      copyBtn.className = "chat-act more";
+      copyBtn.textContent = "📋";
+      copyBtn.title = "텍스트 복사";
+      copyBtn.addEventListener("click", (e) => { e.stopPropagation(); copyAiText(m.text); });
+      actions.append(copyBtn);
+      row.append(actions);
+    }
     box.append(row);
   }
   if (dom.aiScroll) dom.aiScroll.scrollTop = dom.aiScroll.scrollHeight;
@@ -9402,6 +9426,63 @@ function setAiMemoryState(text, ok = false) {
   dom.aiMemoryState.classList.toggle("ok", Boolean(ok));
 }
 
+// ----- 이 AI방 파일(GPT 프로젝트 파일처럼, 방의 모든 대화에서 AI가 참고) -----
+function renderAiFiles() {
+  const box = dom.aiFilesList;
+  if (!box || !state.ai) return;
+  box.innerHTML = "";
+  const files = state.ai.files || [];
+  if (!files.length) {
+    const p = document.createElement("p");
+    p.className = "ai-sessions-empty";
+    p.textContent = "추가된 파일이 없습니다.";
+    box.append(p);
+    return;
+  }
+  const ro = state.ai.writable === false;
+  for (const f of files) {
+    const row = document.createElement("div");
+    row.className = "ai-session-row";
+    const item = document.createElement("span");
+    item.className = "ai-session-item";
+    const title = document.createElement("span");
+    title.textContent = f.name || "파일";
+    const meta = document.createElement("span");
+    meta.className = "ai-session-meta";
+    meta.textContent = formatBytes(f.size || 0);
+    item.append(title, meta);
+    row.append(item);
+    if (!ro) {
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "ai-session-del";
+      del.dataset.delFile = f.id;
+      del.title = "이 파일 삭제";
+      del.textContent = "✕";
+      row.append(del);
+    }
+    box.append(row);
+  }
+}
+
+async function handleAiFiles(fileList) {
+  if (!state.ai) return;
+  for (const file of [...fileList]) {
+    if (file.size > CHAT_UPLOAD_MAX) { setAiHint(`${file.name}: 50MB를 넘어 첨부할 수 없습니다.`); continue; }
+    setAiHint(`${file.name} 업로드 중…`);
+    try {
+      const result = await uploadChatFile(file);
+      sendSocket({
+        type: "ai:add-file", roomId: state.ai.roomId,
+        url: result.url, name: file.name, size: result.size, mime: result.mime || file.type,
+      });
+      setAiHint(`${file.name} 추가됨 · 이 방의 모든 대화에서 참고합니다.`);
+    } catch (error) {
+      setAiHint(error.message || "업로드에 실패했습니다.");
+    }
+  }
+}
+
 function renderAiThinking() {
   if (dom.aiThinking) dom.aiThinking.hidden = !state.ai?.thinking;
 }
@@ -9418,12 +9499,24 @@ function applyAiWritable() {
   }
   if (dom.aiSendButton) dom.aiSendButton.disabled = !ok;
   if (dom.aiNewButton) dom.aiNewButton.disabled = !ok;
+  if (dom.aiAttachButton) dom.aiAttachButton.disabled = !ok;
   renderAiMemory();
+  renderAiFiles();
   renderAiControls();
 }
 
 function setAiHint(text) {
   if (dom.aiComposerHint) dom.aiComposerHint.textContent = text || "";
+}
+
+async function copyAiText(text) {
+  try {
+    await writeTextToClipboard(text);
+  } catch {
+    if (!copyTextWithFallback(text)) { setAiHint("복사에 실패했습니다."); return; }
+  }
+  setAiHint("복사했습니다.");
+  setTimeout(() => setAiHint(""), 1500);
 }
 
 function autoResizeAi() {
@@ -9666,6 +9759,15 @@ function bindAiEvents() {
       notes: dom.aiMemoryNotes?.value || "",
     });
     setAiMemoryState("저장 중…");
+  });
+  dom.aiAttachButton?.addEventListener("click", () => dom.aiFileInput?.click());
+  dom.aiFileInput?.addEventListener("change", () => {
+    if (dom.aiFileInput.files?.length) handleAiFiles(dom.aiFileInput.files);
+    dom.aiFileInput.value = "";
+  });
+  dom.aiFilesList?.addEventListener("click", (e) => {
+    const del = e.target?.closest?.("[data-del-file]");
+    if (del && state.ai) sendSocket({ type: "ai:remove-file", roomId: state.ai.roomId, fileId: del.dataset.delFile });
   });
   dom.adminAiPromptSave?.addEventListener("click", () => {
     sendSocket({ type: "admin:set-ai-prompt", prompt: dom.adminAiPrompt?.value || "" });
