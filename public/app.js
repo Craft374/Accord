@@ -55,8 +55,8 @@ const AI_MODEL_CHOICES = [
   ["gemini-2.5-pro", "gemini-2.5-pro"],
   ["gemini-2.5-flash", "gemini-2.5-flash"],
   ["gemini-2.5-flash-lite", "gemini-2.5-flash-lite"],
-  ["gemini-3-pro-image", "gemini-3-pro-image (그림)"],
-  ["gemini-3.1-flash-image", "gemini-3.1-flash-image (그림)"],
+  ["gemini-3-pro-image-preview", "gemini-3-pro-image-preview (그림)"],
+  ["gemini-3.1-flash-image-preview", "gemini-3.1-flash-image-preview (그림)"],
   ["gemini-2.5-flash-image", "gemini-2.5-flash-image (그림)"],
 ];
 const AI_THINKING_CHOICES = [["auto", "생각: 자동"], ["off", "생각: 끔"], ["high", "생각: 깊게"]];
