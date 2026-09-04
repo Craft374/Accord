@@ -919,6 +919,8 @@ body.chat-shift .chat-act.trash {
   font-size: 14px;
   background: var(--bg-input);
 }
+/* #방참조 자동완성: 프로필 아바타 대신 방 목록과 같은 평범한 타입 아이콘 사용 */
+#aiRefMenu .room-icon { width: 22px; font-size: 16px; }
 .chat-mention-option-label { min-width: 0; display: flex; flex-direction: column; }
 .chat-mention-option-label b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-mention-option-label em { color: currentColor; font-size: 11px; font-style: normal; opacity: 0.65; }
@@ -6537,6 +6539,7 @@ body.ai-open .dm-panel { display: none !important; }
 .ai-send-button:hover { background: var(--blurple-strong); }
 .ai-send-button:disabled { opacity: 0.5; cursor: default; }
 .ai-composer-hint { margin: 6px 0 0; font-size: 12px; color: var(--danger); min-height: 14px; }
+.ai-composer-hint:empty { display: none; }
 
 .ai-settings-field { display: flex; flex-direction: column; gap: 6px; }
 .ai-settings-field input { width: 100%; }

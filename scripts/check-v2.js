@@ -402,11 +402,14 @@ const reviews = [
         { role: "model", text: "네 안녕하세요" },
         { role: "user", text: "", name: "영희" },
         { role: "system", text: "무시" },
+        { role: "user", text: "", name: "민수", files: [{ name: "사진.png" }] },
       ]);
       const limited = fn([{ role: "user", text: "a" }, { role: "user", text: "b" }], 1);
-      return out.length === 2
+      return out.length === 3
         && out[0].role === "user" && out[0].parts[0].text === "철수: 안녕"
         && out[1].role === "model" && out[1].parts[0].text === "네 안녕하세요"
+        // 글자 없이 파일만 보낸 메시지도 살아남고(붙여넣기 이미지 전송), parts 는 절대 비지 않는다.
+        && out[2].role === "user" && out[2].parts[0].text === "민수: [첨부: 사진.png]"
         && limited.length === 1 && limited[0].parts[0].text === "b";
     } catch { return false; }
   })(), "AI방 toGeminiContents maps stored messages to Gemini contents (runtime)"],

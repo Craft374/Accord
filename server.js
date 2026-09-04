@@ -1909,6 +1909,9 @@ const AI_CONTEXT_TURNS = 20; // Gemini 에 함께 보내는 최근 메시지 수
 const AI_TIMEOUT_MS = 60000;
 const AI_IMG_MIME = { "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp" };
 const AI_REF_MAX = 5; // 한 메시지에서 처리하는 #방 참조 최대 개수
+const AI_ATTACH_MAX = 3; // 메시지 하나에 첨부 가능한 파일 수(클라 상한과 동일)
+const AI_ATTACH_IMG_MAX = 4 * 1024 * 1024; // 이미지 첨부 원본 용량 상한 — base64 인플레이션(~33%) 감안해 요청이 안 커지게
+const AI_ATTACH_TEXT_MAX = 8000; // 첨부 텍스트 파일에서 프롬프트에 끼워 넣는 글자 수 상한
 // 모델이 참조된 방을 고칠 때 쓰는 지시 블록: ```accord:<memo|memo-append|chat> #방이름 \n 내용 ```
 const AI_ACTION_RE = /```accord:(memo|memo-append|chat)[ \t]+#([^\s#`]{1,40})[^\n]*\n([\s\S]*?)```/g;
 
@@ -2054,15 +2057,48 @@ async function callGemini({ apiKey, model, contents, system, thinking }) {
   const images = [];
   for (const p of parts) {
     const d = p.inlineData || p.inline_data;
-    if (d && d.data && AI_IMG_MIME[d.mimeType || d.mime_type]) {
+    // mime 화이트리스트(png/jpeg/webp)로 좁히면 모델이 다른 mime(예: 파라미터 붙은 image/png;...)을 돌려줄 때
+    // 조용히 걸러져 "이미지가 아예 안 왔다"처럼 보인다 — image/* 전체를 받고 저장 시 확장자만 기본값(.png)으로.
+    if (d && d.data && /^image\//i.test(d.mimeType || d.mime_type || "")) {
       images.push({ mime: d.mimeType || d.mime_type, dataB64: d.data });
     }
   }
+  const reason = data?.promptFeedback?.blockReason || cand?.finishReason;
   if (!text && !images.length) {
-    const reason = data?.promptFeedback?.blockReason || cand?.finishReason;
     throw new Error(reason ? `응답이 비어 있습니다 (${reason}).` : "빈 응답을 받았습니다.");
   }
-  return { text, images };
+  const imageMissing = isImageModel && !images.length;
+  if (imageMissing) {
+    // 이미지 모델인데 이미지가 안 왔을 때 원인 진단(실 키로만 재현 가능 — 사용자 테스트 시 로그 확인용).
+    console.error("[ai] 이미지 모델 응답에 이미지 없음:", { reason, parts: parts.map((p) => Object.keys(p)) });
+  }
+  return { text, images, imageBlockReason: imageMissing ? reason : "" };
+}
+
+// 메시지에 첨부된 파일을 Gemini 콘텐츠에 태울 형태로 바꾼다. toGeminiContents(순수함수)는 안 건드리고
+// 여기서 디스크를 읽어(이미지 base64 inlineData / 텍스트류는 프롬프트에 인용) contents 마지막 파트에 덧붙인다.
+function buildAiAttachmentParts(files) {
+  const imageParts = [];
+  let extraText = "";
+  for (const f of Array.isArray(files) ? files : []) {
+    const filePath = store.getUploadPath(String(f.url || "").slice("/uploads/".length));
+    if (!filePath) continue;
+    if (/^image\//i.test(f.mime || "")) {
+      try {
+        const buf = fs.readFileSync(filePath);
+        if (buf.length <= AI_ATTACH_IMG_MAX) imageParts.push({ inlineData: { mimeType: f.mime, data: buf.toString("base64") } });
+        else extraText += `\n[첨부 이미지 "${f.name}"는 용량이 커서 전달하지 못했습니다]`;
+      } catch { /* 무시 */ }
+    } else if (store.isAiTextyFile(f.mime, f.name)) {
+      try {
+        const text = fs.readFileSync(filePath, "utf8").slice(0, AI_ATTACH_TEXT_MAX);
+        extraText += `\n\n[첨부 파일 "${f.name}"]\n${text}`;
+      } catch { /* 무시 */ }
+    } else {
+      extraText += `\n[첨부 파일 "${f.name}"은 이 형식은 읽을 수 없어 이름만 전달합니다]`;
+    }
+  }
+  return { imageParts, extraText };
 }
 
 // 사용자가 이번 메시지에서 #으로 지정한 memo/chat 방만 해석한다(모델이 지어낸 #는 못 건드림).
@@ -2270,10 +2306,15 @@ function handleAiMessage(client, message) {
       if (!ctx) return true;
       if (!isRoomWritable(ctx, client)) { send(client, { type: "ai:error", message: "읽기 전용 방입니다." }); return true; }
       const text = String(message.text || "").replace(/\s+$/, "").slice(0, AI_TEXT_MAX);
-      if (!text) { send(client, { type: "ai:error", message: "빈 메시지는 보낼 수 없습니다." }); return true; }
+      const files = cleanChatFiles(message.files).slice(0, AI_ATTACH_MAX);
+      if (!text && !files.length) { send(client, { type: "ai:error", message: "빈 메시지는 보낼 수 없습니다." }); return true; }
       const secret = store.getAiSecret(ctx.channel.id);
       if (!secret || !secret.key) {
         send(client, { type: "ai:error", message: "AI API 키가 없습니다. 채널 관리 → AI방 설정에서 Gemini 키를 등록하세요." });
+        return true;
+      }
+      if (files.length && !store.canAttach(ctx.channel.id, client.userId, client.isAdmin)) {
+        send(client, { type: "ai:error", message: "파일을 첨부할 권한이 없습니다." });
         return true;
       }
       if (aiBusy.has(ctx.room.id)) { send(client, { type: "ai:error", message: "AI가 이미 응답 중입니다. 잠시 후 다시 시도하세요." }); return true; }
@@ -2282,8 +2323,9 @@ function handleAiMessage(client, message) {
       const session = aiEnsureSession(doc);
       const user = store.findById(client.userId);
       const userMsg = { role: "user", text, at: Date.now(), userId: client.userId, name: user ? user.displayName : client.name };
+      if (files.length) userMsg.files = files;
       session.messages.push(userMsg);
-      if (session.title === "새 대화") session.title = text.slice(0, 40);
+      if (session.title === "새 대화") session.title = (text || files[0]?.name || "새 대화").slice(0, 40);
       store.saveAiDoc(ctx.room.id, doc);
       // 보낸 사람 본인의 입력 미리보기만 지운다.
       const dm = aiDrafts.get(ctx.room.id);
@@ -2299,7 +2341,17 @@ function handleAiMessage(client, message) {
       const model = doc.settings.model || secret.model || store.DEFAULT_AI_MODEL;
       let system = store.buildAiSystemInstruction(doc, store.getAiGlobalPrompt());
       if (refs.length) system += `\n\n${store.buildAiReferenceBlock(refs)}`;
-      callGemini({ apiKey: secret.key, model, system, thinking: doc.settings.thinking, contents: store.toGeminiContents(session.messages, AI_CONTEXT_TURNS) })
+      const contents = store.toGeminiContents(session.messages, AI_CONTEXT_TURNS);
+      if (files.length) {
+        // 방금 보낸 메시지(마지막 항목)에만 실제 파일 내용을 실어 보낸다(디스크 I/O라 순수함수 밖에서 처리).
+        const { imageParts, extraText } = buildAiAttachmentParts(files);
+        const last = contents[contents.length - 1];
+        if (last) {
+          if (extraText) last.parts.push({ text: extraText.trim() });
+          last.parts.push(...imageParts);
+        }
+      }
+      callGemini({ apiKey: secret.key, model, system, thinking: doc.settings.thinking, contents })
         .then((reply) => {
           const fresh = store.getAiDoc(ctx.room.id);
           const s = fresh.sessions.find((x) => x.id === session.id);
@@ -2315,6 +2367,7 @@ function handleAiMessage(client, message) {
           // accord: 지시 블록 실행(#으로 지정한 방만) 후, 블록을 뺀 텍스트 + 결과 요약을 남긴다.
           const { display, notes } = applyAiActions(reply.text, refMap, ctx, client);
           let outText = display;
+          if (reply.imageBlockReason) notes.push(`⚠️ 이미지가 생성되지 않았습니다 (사유: ${reply.imageBlockReason})`);
           if (notes.length) outText += `${outText ? "\n\n" : ""}> ${notes.join("\n> ")}`;
           const aiMsg = { role: "model", text: outText, at: Date.now(), model };
           if (urls.length) aiMsg.images = urls;

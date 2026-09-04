@@ -60,6 +60,8 @@ const AI_MODEL_CHOICES = [
   ["gemini-2.5-flash-image", "gemini-2.5-flash-image (그림)"],
 ];
 const AI_THINKING_CHOICES = [["auto", "생각: 자동"], ["off", "생각: 끔"], ["high", "생각: 깊게"]];
+const AI_ATTACH_MAX_FILES = 3; // 메시지 하나당 첨부 개수(서버 AI_ATTACH_MAX 와 동일)
+const AI_ATTACH_MAX_BYTES = 4 * 1024 * 1024; // 서버 AI_ATTACH_IMG_MAX 와 동일 — 넘으면 업로드는 되지만 AI엔 전달 안 됨
 
 function readCollapsedRoomGroups() {
   try {
@@ -182,6 +184,7 @@ const state = {
   online: [],
   // AI방
   ai: null, // { roomId, channelId, name, config, sessions, activeSessionId, messages, thinking, writable, draftBy }
+  aiPendingFiles: [], // 이번 메시지에 첨부해 전송 대기 중인 파일 메타(방 지식 업로드와는 별개)
   // 채팅
   activeChat: null, // { roomId, channelId, name }
   chatMessages: [],
@@ -575,8 +578,11 @@ const dom = {
   aiMemorySave: document.querySelector("#aiMemorySave"),
   aiMemoryState: document.querySelector("#aiMemoryState"),
   aiFilesList: document.querySelector("#aiFilesList"),
+  aiRoomFileButton: document.querySelector("#aiRoomFileButton"),
+  aiRoomFileInput: document.querySelector("#aiRoomFileInput"),
   aiAttachButton: document.querySelector("#aiAttachButton"),
   aiFileInput: document.querySelector("#aiFileInput"),
+  aiAttachments: document.querySelector("#aiAttachments"),
   aiScroll: document.querySelector("#aiScroll"),
   aiMessages: document.querySelector("#aiMessages"),
   aiThinking: document.querySelector("#aiThinking"),
@@ -9245,6 +9251,9 @@ function openAiRoom(roomId) {
   dom.aiMemoryButton?.setAttribute("aria-pressed", "false");
   if (dom.aiDrafts) dom.aiDrafts.innerHTML = "";
   if (dom.aiInput) { dom.aiInput.value = ""; autoResizeAi(); }
+  for (const f of state.aiPendingFiles) if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
+  state.aiPendingFiles = [];
+  renderAiAttachments();
   setAiHint("");
   closeAiRefMenu();
   renderAiControls();
@@ -9390,6 +9399,11 @@ function renderAiMessages() {
       imgBox.querySelector("img")?.addEventListener("load", () => { if (dom.aiScroll) dom.aiScroll.scrollTop = dom.aiScroll.scrollHeight; });
       body.append(imgBox);
     }
+    // 사용자가 이번 메시지에 첨부한 파일(방 지식과 별개, 이 메시지에만).
+    for (const f of Array.isArray(m.files) ? m.files : []) {
+      if (typeof f?.url !== "string" || !f.url.startsWith("/uploads/")) continue;
+      body.append(renderChatFile({ url: f.url, kind: f.kind, name: f.name }));
+    }
     row.append(role, body);
     if (m.text) {
       const actions = document.createElement("div");
@@ -9465,7 +9479,8 @@ function renderAiFiles() {
   }
 }
 
-async function handleAiFiles(fileList) {
+// 방 지식(GPT 프로젝트 파일처럼 이 방의 모든 대화에서 참고) — 사이드바 "이 AI방 파일" 패널에서 추가.
+async function handleAiRoomFiles(fileList) {
   if (!state.ai) return;
   for (const file of [...fileList]) {
     if (file.size > CHAT_UPLOAD_MAX) { setAiHint(`${file.name}: 50MB를 넘어 첨부할 수 없습니다.`); continue; }
@@ -9480,6 +9495,82 @@ async function handleAiFiles(fileList) {
     } catch (error) {
       setAiHint(error.message || "업로드에 실패했습니다.");
     }
+  }
+}
+
+// 이번 메시지에만 붙는 첨부(채팅 첨부와 같은 느낌) — 방 지식과 달리 이 대화 턴에만 쓰인다.
+async function handleAiPendingFiles(fileList) {
+  if (!state.ai) return;
+  for (const file of [...fileList]) {
+    if (state.aiPendingFiles.length >= AI_ATTACH_MAX_FILES) {
+      setAiHint(`한 메시지에 최대 ${AI_ATTACH_MAX_FILES}개까지 첨부할 수 있습니다.`);
+      break;
+    }
+    if (file.size > CHAT_UPLOAD_MAX) { setAiHint(`${file.name}: 50MB를 넘어 첨부할 수 없습니다.`); continue; }
+    const isImage = (file.type || "").startsWith("image/");
+    const entry = {
+      name: file.name,
+      size: file.size,
+      mime: file.type || "application/octet-stream",
+      kind: isImage ? "image" : "file",
+      uploading: true,
+      url: "",
+      previewUrl: isImage ? URL.createObjectURL(file) : "",
+    };
+    state.aiPendingFiles.push(entry);
+    renderAiAttachments();
+    setAiHint("");
+    try {
+      const result = await uploadChatFile(file);
+      entry.url = result.url;
+      entry.size = Number.isFinite(result.size) ? result.size : entry.size;
+      entry.mime = result.mime || entry.mime;
+      entry.uploading = false;
+      if (isImage && entry.size > AI_ATTACH_MAX_BYTES) setAiHint(`${entry.name}: 용량이 커서 AI가 이미지를 보지 못할 수 있습니다.`);
+      renderAiAttachments();
+    } catch (error) {
+      if (entry.previewUrl) URL.revokeObjectURL(entry.previewUrl);
+      state.aiPendingFiles = state.aiPendingFiles.filter((f) => f !== entry);
+      renderAiAttachments();
+      setAiHint(error.message || "업로드에 실패했습니다.");
+    }
+  }
+}
+
+function renderAiAttachments() {
+  const box = dom.aiAttachments;
+  if (!box) return;
+  box.innerHTML = "";
+  if (!state.aiPendingFiles.length) { box.hidden = true; return; }
+  box.hidden = false;
+  for (const f of state.aiPendingFiles) {
+    const chip = document.createElement("div");
+    chip.className = "chat-attach-chip" + (f.uploading ? " uploading" : "");
+    if (f.kind === "image" && (f.previewUrl || f.url)) {
+      chip.classList.add("has-thumb");
+      const thumb = document.createElement("img");
+      thumb.className = "chat-attach-thumb";
+      thumb.src = f.previewUrl || f.url;
+      thumb.alt = f.name || "이미지";
+      chip.append(thumb);
+    }
+    const label = document.createElement("span");
+    label.className = "chat-attach-name";
+    label.textContent = f.uploading ? `${f.name} · 업로드 중…` : `${f.name} · ${formatBytes(f.size)}`;
+    chip.append(label);
+    if (!f.uploading) {
+      const remove = document.createElement("button");
+      remove.className = "chat-attach-remove";
+      remove.type = "button";
+      remove.textContent = "×";
+      remove.addEventListener("click", () => {
+        if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
+        state.aiPendingFiles = state.aiPendingFiles.filter((x) => x !== f);
+        renderAiAttachments();
+      });
+      chip.append(remove);
+    }
+    box.append(chip);
   }
 }
 
@@ -9500,6 +9591,7 @@ function applyAiWritable() {
   if (dom.aiSendButton) dom.aiSendButton.disabled = !ok;
   if (dom.aiNewButton) dom.aiNewButton.disabled = !ok;
   if (dom.aiAttachButton) dom.aiAttachButton.disabled = !ok;
+  if (dom.aiRoomFileButton) dom.aiRoomFileButton.disabled = !ok;
   renderAiMemory();
   renderAiFiles();
   renderAiControls();
@@ -9627,17 +9719,18 @@ function renderAiRefMenu() {
     button.type = "button";
     button.className = "chat-mention-option" + (index === aiRefState.index ? " active" : "");
     button.dataset.refIndex = String(index);
-    const avatar = document.createElement("span");
-    avatar.className = "account-avatar small special";
-    avatar.textContent = room.type === "memo" ? "📝" : "💬";
+    const meta = ROOM_TYPE_META[room.type] || {};
+    const icon = document.createElement("span");
+    icon.className = "room-icon";
+    icon.textContent = meta.icon || "";
     const label = document.createElement("span");
     label.className = "chat-mention-option-label";
     const name = document.createElement("b");
     name.textContent = room.name;
     const kind = document.createElement("em");
-    kind.textContent = room.type === "memo" ? "메모장" : "채팅방";
+    kind.textContent = meta.label || "";
     label.append(name, kind);
-    button.append(avatar, label);
+    button.append(icon, label);
     menu.append(button);
   });
   menu.hidden = false;
@@ -9674,17 +9767,22 @@ function handleAiRefKeydown(event) {
 
 function sendAiPrompt() {
   if (!state.ai || !dom.aiInput) return;
+  if (state.aiPendingFiles.some((f) => f.uploading)) { setAiHint("파일 업로드가 끝난 뒤 보낼 수 있습니다."); return; }
   const text = dom.aiInput.value.trim();
-  if (!text) return;
+  const files = state.aiPendingFiles.filter((f) => f.url).map((f) => ({ url: f.url, name: f.name, size: f.size, mime: f.mime, kind: f.kind }));
+  if (!text && !files.length) return;
   if (state.ai.writable === false) { setAiHint("읽기 전용 방입니다."); return; }
   if (!state.ai.config?.hasKey) { setAiHint("API 키가 없습니다. 채널 관리 → AI방 설정에서 Gemini 키를 등록하세요."); return; }
   if (state.ai.thinking) { setAiHint("AI가 응답 중입니다. 잠시 후 시도하세요."); return; }
   setAiHint("");
-  sendSocket({ type: "ai:send", roomId: state.ai.roomId, text });
+  sendSocket({ type: "ai:send", roomId: state.ai.roomId, text, files });
   dom.aiInput.value = "";
   autoResizeAi();
   clearMyDraft();
   closeAiRefMenu();
+  for (const f of state.aiPendingFiles) if (f.previewUrl) URL.revokeObjectURL(f.previewUrl);
+  state.aiPendingFiles = [];
+  renderAiAttachments();
 }
 
 function bindAiEvents() {
@@ -9762,8 +9860,25 @@ function bindAiEvents() {
   });
   dom.aiAttachButton?.addEventListener("click", () => dom.aiFileInput?.click());
   dom.aiFileInput?.addEventListener("change", () => {
-    if (dom.aiFileInput.files?.length) handleAiFiles(dom.aiFileInput.files);
+    if (dom.aiFileInput.files?.length) handleAiPendingFiles(dom.aiFileInput.files);
     dom.aiFileInput.value = "";
+  });
+  dom.aiInput?.addEventListener("paste", (event) => {
+    const items = event.clipboardData?.items;
+    if (!items) return;
+    const files = [];
+    for (const item of items) {
+      if (item.kind === "file") {
+        const file = item.getAsFile();
+        if (file) files.push(file);
+      }
+    }
+    if (files.length) { event.preventDefault(); handleAiPendingFiles(files); }
+  });
+  dom.aiRoomFileButton?.addEventListener("click", () => dom.aiRoomFileInput?.click());
+  dom.aiRoomFileInput?.addEventListener("change", () => {
+    if (dom.aiRoomFileInput.files?.length) handleAiRoomFiles(dom.aiRoomFileInput.files);
+    dom.aiRoomFileInput.value = "";
   });
   dom.aiFilesList?.addEventListener("click", (e) => {
     const del = e.target?.closest?.("[data-del-file]");

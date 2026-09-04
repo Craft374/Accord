@@ -1364,7 +1364,7 @@ function deleteMessage(roomId, msgId) {
 // ===== AI방 =====
 // 방마다 server-data/ai/<roomId>.json 에 세션 목록 + 방 메모리를 저장한다.
 // 문서: {
-//   sessions: [{ id, title, createdAt, messages: [{ role:'user'|'model', text, at, userId, name, images? }] }],
+//   sessions: [{ id, title, createdAt, messages: [{ role:'user'|'model', text, at, userId, name, images?, files? }] }],
 //   activeSessionId,
 //   memory: { prompt, notes }   // 이 AI방 전용 시스템 지침 + 자유 메모(모든 대화에 함께 전달)
 // }
@@ -1584,9 +1584,14 @@ function toGeminiContents(messages, limit = 20) {
   const recent = (Array.isArray(messages) ? messages : []).slice(-limit);
   const out = [];
   for (const m of recent) {
-    if (!m || !m.text || (m.role !== "user" && m.role !== "model")) continue;
-    const text = m.role === "user" && m.name ? `${m.name}: ${m.text}` : String(m.text);
-    out.push({ role: m.role, parts: [{ text }] });
+    if (!m || (m.role !== "user" && m.role !== "model")) continue;
+    // 이미지만 첨부하고 글자는 안 쓴 사용자 메시지도 살린다. 실제 이미지 데이터는 server.js 가 최신 메시지의
+    // parts 에만 덧붙이므로(디스크 I/O), 지난 대화 기록에서는 파일명만 문구로 남겨 parts 가 비지 않게 한다.
+    const files = m.role === "user" && Array.isArray(m.files) ? m.files : [];
+    if (!m.text && !files.length) continue;
+    const body = m.text || `[첨부: ${files.map((f) => f?.name || "파일").join(", ")}]`;
+    const text = (m.role === "user" && m.name ? `${m.name}: ${body}` : String(body)).trim();
+    out.push({ role: m.role, parts: text ? [{ text }] : [] });
   }
   return out;
 }
@@ -1968,6 +1973,7 @@ module.exports = {
   buildAiReferenceBlock,
   addAiFile,
   removeAiFile,
+  isAiTextyFile,
   AI_FILES_MAX,
   DEFAULT_AI_MODEL,
   // 권한 역할
