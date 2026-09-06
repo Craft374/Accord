@@ -5291,7 +5291,6 @@ body.ui-obsidian-sidebar .room-add-button {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 4px;
-  padding-top: 5px;
 }
 .room-list-actions .room-add-button { justify-content: center; }
 .room-add-button:hover:not(:disabled) {
