@@ -647,6 +647,7 @@ function bindEvents() {
   bindDrawEvents();
   bindDmEvents();
   bindLogEvents();
+  bindCallDockPopovers();
 
   dom.inputDeviceSelect.addEventListener("change", () => {
     resetEchoProbe();
@@ -712,6 +713,11 @@ function bindEvents() {
     openChatContextMenu(items, { x: event.clientX, y: event.clientY });
   });
   dom.participantList.addEventListener("click", (event) => {
+    const caret = event.target?.closest?.("[data-participant-caret]");
+    if (caret) {
+      caret.closest(".participant-card")?.classList.toggle("open");
+      return;
+    }
     const profile = event.target?.closest?.("[data-profile-user]");
     if (profile) {
       openProfileCard(profile.dataset.profileUser, profile, { id: profile.dataset.profileUser, displayName: profile.textContent, code: "----" });
@@ -15091,6 +15097,30 @@ function formatDuration(ms) {
   return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
 }
 
+// 통화 도크의 ▾ 캐럿 → 설정 팝오버(사운드 · 화면 공유) 토글. 바깥 클릭·Esc 로 닫힌다.
+function bindCallDockPopovers() {
+  const dock = document.querySelector("#callDock");
+  if (!dock) return;
+  const closeAll = () => dock.querySelectorAll(".call-dock-pop").forEach((p) => { p.hidden = true; });
+  dock.addEventListener("click", (event) => {
+    const caret = event.target?.closest?.("[data-dock-pop]");
+    if (caret) {
+      const pop = dock.querySelector(`#${caret.dataset.dockPop}`);
+      const willOpen = pop && pop.hidden;
+      closeAll();
+      if (pop) pop.hidden = !willOpen;
+      return;
+    }
+    if (event.target?.closest?.("[data-dock-pop-close]")) closeAll();
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (!event.target?.closest?.("#callDock")) closeAll();
+  }, true);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeAll();
+  });
+}
+
 function renderParticipants() {
   dom.participantList.innerHTML = "";
   if (!state.currentRoom) {
@@ -15123,6 +15153,12 @@ function appendParticipant({ id, name, status, self = false, peer = null, userId
   const card = document.createElement("div");
   card.className = "participant-card";
   card.dataset.participantId = String(id);
+  if (peer) card.dataset.peerId = peer.id;
+
+  const avatar = document.createElement("span");
+  avatar.className = "participant-avatar";
+  avatar.textContent = (name || "?").trim().slice(0, 1) || "?";
+
   const title = document.createElement("strong");
   title.textContent = name;
   if (userId) {
@@ -15131,10 +15167,29 @@ function appendParticipant({ id, name, status, self = false, peer = null, userId
     title.title = "프로필 보기";
   }
   const label = document.createElement("span");
+  label.className = "participant-status";
   label.textContent = status;
+  const nameCol = document.createElement("div");
+  nameCol.className = "participant-name";
+  nameCol.append(title, label);
+
   const header = document.createElement("div");
   header.className = "participant-head";
-  header.append(title, label);
+  header.append(avatar, nameCol);
+
+  if (peer && peer.remote.screen?.track?.readyState === "live") {
+    const screenButton = document.createElement("button");
+    screenButton.className = "participant-screen-button";
+    screenButton.type = "button";
+    screenButton.dataset.screenPeerId = peer.id;
+    screenButton.textContent = state.selectedScreenPeerId === peer.id ? "보고 있음" : "화면 보기";
+    header.append(screenButton);
+  } else if (!peer && state.screenSharing) {
+    const badge = document.createElement("span");
+    badge.className = "participant-screen-button";
+    badge.textContent = "화면 공유 중";
+    header.append(badge);
+  }
 
   const meters = document.createElement("div");
   meters.className = "participant-meters";
@@ -15143,32 +15198,26 @@ function appendParticipant({ id, name, status, self = false, peer = null, userId
     makeParticipantMeter("컴퓨터", self ? "self-system" : "peer-system"),
   );
 
-  if (peer) card.dataset.peerId = peer.id;
+  card.append(header, meters);
+
   if (peer) {
+    const caret = document.createElement("button");
+    caret.className = "participant-caret";
+    caret.type = "button";
+    caret.dataset.participantCaret = "1";
+    caret.title = "이 참가자 볼륨 조절";
+    caret.setAttribute("aria-label", "볼륨 조절");
+    caret.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>';
+    header.append(caret);
+
     const volumes = document.createElement("div");
     volumes.className = "participant-volumes";
     volumes.append(
       makeParticipantVolumeControl(peer, "mic", "마이크"),
       makeParticipantVolumeControl(peer, "system", "컴퓨터"),
     );
-    card.append(header, meters, volumes);
-    if (peer.remote.screen?.track?.readyState === "live") {
-      const screenButton = document.createElement("button");
-      screenButton.className = "participant-screen-button";
-      screenButton.type = "button";
-      screenButton.dataset.screenPeerId = peer.id;
-      screenButton.textContent = state.selectedScreenPeerId === peer.id ? "보고 있음" : "화면 보기";
-      card.append(screenButton);
-    }
+    card.append(volumes);
     // 강제 음소거·공유끄기·내보내기는 카드 우클릭 메뉴로 제공한다(bindEvents 의 contextmenu 핸들러).
-  } else {
-    if (state.screenSharing) {
-      const badge = document.createElement("span");
-      badge.className = "participant-screen-button";
-      badge.textContent = "화면 공유 중";
-      header.append(badge);
-    }
-    card.append(header, meters);
   }
   dom.participantList.append(card);
 }

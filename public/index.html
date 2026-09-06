@@ -106,6 +106,7 @@
           <div class="call-head">
             <div class="call-title">
               <h2 id="currentRoomName">통화 없음</h2>
+              <span class="call-title-sep" aria-hidden="true">|</span>
               <p id="currentRoomMeta">방에 들어가면 마이크가 켜집니다.</p>
             </div>
             <div class="call-head-actions">
@@ -121,7 +122,6 @@
                   <option value="8">8명</option>
                 </select>
               </label>
-              <button class="danger" id="leaveButton" type="button" disabled>나가기</button>
             </div>
           </div>
 
@@ -143,19 +143,44 @@
             <div class="participant-list" id="participantList"></div>
           </section>
 
-          <div class="call-actions">
-            <button class="secondary" id="muteButton" type="button">마이크 끄기</button>
-            <label class="switch action-switch" id="systemAudioAction">
-              <input id="systemAudioToggle" type="checkbox" />
-              <span>컴퓨터 사운드</span>
-            </label>
-            <button class="secondary" id="screenShareButton" type="button" disabled>화면 공유</button>
-            <button class="secondary" id="cameraShareButton" type="button" disabled>카메라</button>
-            <button class="secondary" id="repairAudioButton" type="button" disabled>오디오 복구</button>
-          </div>
+          <div class="call-dock" id="callDock">
+            <div class="call-dock-groups">
+              <div class="call-dock-pill">
+                <button class="call-dock-btn" id="muteButton" type="button">마이크 끄기</button>
+              </div>
+              <div class="call-dock-pill">
+                <label class="switch action-switch" id="systemAudioAction">
+                  <input id="systemAudioToggle" type="checkbox" />
+                  <span>컴퓨터 사운드</span>
+                </label>
+                <button class="call-dock-caret" type="button" data-dock-pop="callDockPopSound" aria-label="컴퓨터 사운드 설정" title="공유할 프로그램 선택">
+                  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 15 12 9 18 15"></polyline></svg>
+                </button>
+              </div>
+              <span class="call-dock-div" aria-hidden="true"></span>
+              <div class="call-dock-pill call-dock-screen">
+                <button class="call-dock-btn" id="screenShareButton" type="button" disabled>화면 공유</button>
+                <button class="call-dock-caret" type="button" data-dock-pop="callDockPopScreen" aria-label="화면 공유 설정" title="화면 공유 설정 (해상도 · 프레임 · 캡처 방식)">
+                  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 15 12 9 18 15"></polyline></svg>
+                </button>
+              </div>
+              <div class="call-dock-pill">
+                <button class="call-dock-btn" id="cameraShareButton" type="button" disabled>카메라</button>
+              </div>
+              <span class="call-dock-div" aria-hidden="true"></span>
+              <div class="call-dock-pill">
+                <button class="call-dock-btn" id="repairAudioButton" type="button" disabled>오디오 복구</button>
+              </div>
+            </div>
+            <button class="danger call-dock-leave" id="leaveButton" type="button" disabled>나가기</button>
 
-          <section class="program-audio-panel" id="programAudioPanel" hidden>
-            <div class="program-audio-head">
+            <div class="call-dock-pop" id="callDockPopSound" hidden>
+              <div class="call-dock-pop-head">
+                <strong>컴퓨터 사운드 공유</strong>
+                <button class="call-dock-pop-close" type="button" data-dock-pop-close aria-label="닫기">✕</button>
+              </div>
+              <section class="program-audio-panel" id="programAudioPanel" hidden>
+                <div class="program-audio-head">
               <div class="capture-mode-group">
                 <label class="radio-option">
                   <input id="systemCaptureFullRadio" name="systemCaptureMode" type="radio" value="full" checked />
@@ -174,11 +199,15 @@
             <p class="program-audio-status" id="programAudioStatus"></p>
             <div class="program-audio-selected" id="programAudioSelectedList" hidden></div>
             <div class="program-audio-list" id="programAudioList" hidden></div>
-          </section>
+              </section>
+            </div>
 
-          <details class="screen-share-panel" id="screenSharePanel" hidden>
-            <summary>화면 공유 설정 <span class="quality-summary">기본 1080p / 30fps</span></summary>
-            <section class="screen-share-grid">
+            <div class="call-dock-pop" id="callDockPopScreen" hidden>
+              <div class="call-dock-pop-head">
+                <strong>화면 공유 설정</strong>
+                <button class="call-dock-pop-close" type="button" data-dock-pop-close aria-label="닫기">✕</button>
+              </div>
+              <section class="screen-share-grid" id="screenSharePanel">
               <label class="field">
                 <span>해상도</span>
                 <select id="screenResolutionSelect">
@@ -216,8 +245,9 @@
               </label>
               <button class="secondary screen-test-button" id="openScreenTestButton" type="button">최소 화면 테스트</button>
               <p class="screen-share-note">60fps는 PC 성능과 인터넷 상태에 따라 불안정할 수 있습니다.</p>
-            </section>
-          </details>
+              </section>
+            </div>
+          </div>
 
           <p class="message" id="message" aria-live="polite"></p>
         </section>
