@@ -189,13 +189,16 @@ h3 {
   padding: 0 12px 12px;
 }
 
-/* 채팅/메모를 열면 페이지 전체가 늘어나지 않고 패널 안에서 스크롤되도록
-   앱 높이를 화면에 고정한다(통화 UI에는 영향 없음). */
+/* 채팅/메모/통화방을 열면 페이지 전체가 늘어나지 않고 패널 안에서 스크롤되도록
+   앱 높이를 화면에 고정한다. (통화방에서 도크가 커지면 .app 이 100vh 를 넘어
+   페이지 스크롤이 생기고, 방 목록도 높이가 안 잡혀 sticky '+방/+그룹' 바가
+   목록 중간에 겹쳐 보였다.) */
 body.chat-open .app,
 body.memo-open .app,
 body.draw-open .app,
 body.log-open .app,
-body.dm-open .app {
+body.dm-open .app,
+body.in-call .app {
   height: 100vh;
   height: 100dvh;
   min-height: 0;
@@ -3176,6 +3179,7 @@ body.dm-open .dm-panel {
   border-radius: var(--radius-lg);
   background: var(--bg-surface);
   border: 1px solid var(--line);
+  container: calldock / inline-size;
 }
 
 .call-dock-groups {
@@ -3223,7 +3227,10 @@ body.dm-open .dm-panel {
 .call-dock-ico { flex: none; display: block; }
 .call-dock-slash { display: none; } /* 마이크 꺼짐일 때만 대각선 표시 */
 
-.call-dock-btn:hover:not(:disabled):not(.is-off):not(.is-active) {
+/* 버튼과 캐럿(▾)을 한 덩어리로 hover 시킨다 — 한쪽만 칠해져 알약 오른쪽 모서리가
+   각져 보이던 것 방지. 비활성 스위치(사운드 불가)는 제외. */
+.call-dock-pill:hover:not(:has(input:disabled)) .call-dock-btn:not(:disabled):not(.is-off):not(.is-active),
+.call-dock-pill:hover:not(:has(input:disabled)) .call-dock-caret {
   background: var(--bg-elevated);
   color: var(--heading);
 }
@@ -3256,7 +3263,6 @@ body.dm-open .dm-panel {
   color: var(--muted);
   cursor: pointer;
 }
-.call-dock-caret:hover { background: var(--bg-elevated); color: var(--heading); }
 /* 캐럿이 붙는 버튼은 오른쪽 모서리를 각지게 해 한 덩어리로 보이게 한다 */
 .call-dock-btn:has(~ .call-dock-caret),
 .call-dock-switch .call-dock-btn { border-radius: 9px 0 0 9px; }
@@ -3264,8 +3270,9 @@ body.dm-open .dm-panel {
 /* 컴퓨터 사운드 토글: 체크박스는 숨기고 라벨을 버튼처럼 보이게 한다(JS는 계속 checked 사용). */
 .call-dock-switch { position: relative; display: inline-flex; align-items: stretch; margin: 0; cursor: pointer; }
 .call-dock-switch input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: inherit; }
-.call-dock-switch:hover .call-dock-btn { background: var(--bg-elevated); color: var(--heading); }
 .call-dock-switch input:checked ~ .call-dock-btn { background: var(--green); color: #fff; }
+/* 사운드 공유 켜짐이면 캐럿도 같은 초록으로 칠해 알약을 한 덩어리로 보이게 한다 */
+.call-dock-pill:has(input:checked) .call-dock-caret { background: var(--green); color: #fff; }
 .call-dock-switch:has(input:disabled) { cursor: default; }
 .call-dock-switch:has(input:disabled) .call-dock-btn { opacity: 0.5; }
 
@@ -3292,6 +3299,15 @@ body.dm-open .dm-panel {
 .call-dock:has(#programAudioPanel[hidden]) .call-dock-caret[data-dock-pop="callDockPopSound"] { display: none; }
 /* 컴퓨터 사운드 공유 자체가 불가하면(라벨 [hidden]) 알약을 통째로 숨겨 캐럿만 남지 않게 한다. */
 .call-dock-pill:has(#systemAudioAction[hidden]) { display: none; }
+
+/* 도크 폭이 좁으면(창이 작거나 방/멤버 목록을 넓혀 놓은 경우) 라벨을 숨겨 아이콘만
+   남기고 한 줄에 들어가게 한다. 라벨을 켠 채로는 ~700px 가 필요해 그보다 위에서 접는다. */
+@container calldock (max-width: 760px) {
+  .call-dock-btn > span,
+  .call-dock-leave > span { display: none; }
+  .call-dock-btn { padding: 0 11px; }
+  .call-dock-leave { padding: 0 15px; }
+}
 
 /* ─── 도크 팝오버 ─────────────────────────── */
 .call-dock-pop {
