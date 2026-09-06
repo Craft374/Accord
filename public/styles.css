@@ -505,6 +505,11 @@ body.focus-mode .layout {
 .chat-head .focus-btn {
   margin-left: auto;
 }
+/* auto 마진을 첫 버튼에만 준다. 여러 flex 항목에 margin-left:auto 를 주면
+   남는 공간이 균등 분배돼 아이콘들이 헤더에 흩어진다. */
+.chat-head .focus-btn ~ .focus-btn {
+  margin-left: 0;
+}
 
 .side-panel {
   display: flex;

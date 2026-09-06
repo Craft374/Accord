@@ -5038,7 +5038,8 @@ function bindLayoutResizeHandle(handle, kind, { target = dom.layout, growsLeft =
 function initLayoutControls() {
   applyLayoutSizing();
   bindLayoutResizeHandle(dom.roomsResizeHandle, "rooms", { onReset: applyLayoutSizing });
-  bindLayoutResizeHandle(dom.membersResizeHandle, "members", { onReset: applyLayoutSizing });
+  // 멤버 목록은 레이아웃 오른쪽 끝, 핸들은 그 왼쪽 경계에 있으므로 왼쪽으로 끌면 넓어진다(growsLeft).
+  bindLayoutResizeHandle(dom.membersResizeHandle, "members", { growsLeft: true, onReset: applyLayoutSizing });
   dom.toggleRoomsButton?.addEventListener("click", () => {
     if (isNarrowLayout()) { toggleMobileDrawer("rooms"); return; }
     setLayoutCollapsed("rooms", !dom.layout?.classList.contains("rooms-collapsed"));
