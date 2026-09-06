@@ -3206,46 +3206,76 @@ body.dm-open .dm-panel {
 }
 
 .call-dock-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   min-height: 38px;
-  padding: 0 14px;
+  padding: 0 12px;
   border: 0;
   border-radius: 9px;
-  background: var(--bg-elevated);
-  color: var(--text);
+  background: transparent;
+  color: var(--muted);
   font-size: 13px;
   font-weight: 600;
   white-space: nowrap;
   cursor: pointer;
 }
-.call-dock-btn:hover:not(:disabled) { background: var(--line-strong); color: var(--heading); }
+.call-dock-ico { flex: none; display: block; }
+.call-dock-slash { display: none; } /* 마이크 꺼짐일 때만 대각선 표시 */
+
+.call-dock-btn:hover:not(:disabled):not(.is-off):not(.is-active) {
+  background: var(--bg-elevated);
+  color: var(--heading);
+}
 .call-dock-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* 마이크는 기본(켜짐)이 채워진 상태, 꺼지면 빨강 + 슬래시 */
+#muteButton { background: var(--bg-elevated); color: var(--heading); }
+#muteButton.is-off { background: var(--danger); color: #fff; }
+#muteButton.is-off .call-dock-slash { display: inline; }
+/* 화면 공유 중이면 블러플 */
+#screenShareButton.is-active { background: var(--blurple); color: #fff; }
+/* 팝오버가 열려 있는 트리거 버튼/캐럿은 눌린 상태로 */
+.call-dock:has(#callDockPopMore:not([hidden])) .call-dock-btn[data-dock-pop="callDockPopMore"],
+.call-dock:has(#callDockPopSound:not([hidden])) .call-dock-caret[data-dock-pop="callDockPopSound"],
+.call-dock:has(#callDockPopScreen:not([hidden])) .call-dock-caret[data-dock-pop="callDockPopScreen"] {
+  background: var(--bg-elevated);
+  color: var(--heading);
+}
 
 .call-dock-caret {
   display: inline-grid;
   place-items: center;
-  width: 24px;
+  width: 26px;
   min-height: 38px;
   padding: 0;
   border: 0;
-  border-radius: 9px;
-  background: var(--bg-elevated);
+  border-left: 1px solid rgba(0, 0, 0, 0.25);
+  border-radius: 0 9px 9px 0;
+  background: transparent;
   color: var(--muted);
   cursor: pointer;
 }
-.call-dock-caret:hover { background: var(--line-strong); color: var(--heading); }
+.call-dock-caret:hover { background: var(--bg-elevated); color: var(--heading); }
+/* 캐럿이 붙는 버튼은 오른쪽 모서리를 각지게 해 한 덩어리로 보이게 한다 */
+.call-dock-btn:has(~ .call-dock-caret),
+.call-dock-switch .call-dock-btn { border-radius: 9px 0 0 9px; }
 
-/* action-switch(컴퓨터 사운드 토글)를 알약 안에 맞춘다. */
-.call-dock-pill .action-switch {
-  min-height: 38px;
-  margin: 0;
-  padding: 0 12px;
-  border-radius: 9px;
-  background: var(--bg-elevated);
-}
+/* 컴퓨터 사운드 토글: 체크박스는 숨기고 라벨을 버튼처럼 보이게 한다(JS는 계속 checked 사용). */
+.call-dock-switch { position: relative; display: inline-flex; align-items: stretch; margin: 0; cursor: pointer; }
+.call-dock-switch input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: inherit; }
+.call-dock-switch:hover .call-dock-btn { background: var(--bg-elevated); color: var(--heading); }
+.call-dock-switch input:checked ~ .call-dock-btn { background: var(--green); color: #fff; }
+.call-dock-switch:has(input:disabled) { cursor: default; }
+.call-dock-switch:has(input:disabled) .call-dock-btn { opacity: 0.5; }
 
 .call-dock-leave {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   min-height: 44px;
-  padding: 0 20px;
+  padding: 0 18px;
   border-radius: var(--radius-lg);
   font-size: 14px;
   font-weight: 700;
@@ -3253,10 +3283,15 @@ body.dm-open .dm-panel {
   flex: none;
 }
 
+/* 팝오버 안으로 옮긴 카메라 · 오디오 복구 버튼은 전체폭 메뉴 항목으로 */
+.call-dock-pop-btn { display: flex; align-items: center; width: 100%; min-height: 34px; }
+
 /* 권한 없으면 화면 공유 알약을, Windows 아니면 사운드 캐럿을 숨긴다(내부 패널이 [hidden]). */
 .call-dock:has(#screenShareButton[hidden]) .call-dock-screen { display: none; }
 .call-dock:has(#screenSharePanel[hidden]) .call-dock-screen .call-dock-caret { display: none; }
 .call-dock:has(#programAudioPanel[hidden]) .call-dock-caret[data-dock-pop="callDockPopSound"] { display: none; }
+/* 컴퓨터 사운드 공유 자체가 불가하면(라벨 [hidden]) 알약을 통째로 숨겨 캐럿만 남지 않게 한다. */
+.call-dock-pill:has(#systemAudioAction[hidden]) { display: none; }
 
 /* ─── 도크 팝오버 ─────────────────────────── */
 .call-dock-pop {

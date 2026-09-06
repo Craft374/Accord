@@ -146,12 +146,18 @@
           <div class="call-dock" id="callDock">
             <div class="call-dock-groups">
               <div class="call-dock-pill">
-                <button class="call-dock-btn" id="muteButton" type="button">마이크 끄기</button>
+                <button class="call-dock-btn" id="muteButton" type="button" aria-pressed="false" title="마이크 켜짐 · 클릭해서 끄기">
+                  <svg class="call-dock-ico" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="11" rx="3"></rect><path d="M5 10a7 7 0 0 0 14 0"></path><line x1="12" y1="17" x2="12" y2="21"></line><line x1="8" y1="21" x2="16" y2="21"></line><line class="call-dock-slash" x1="4" y1="20" x2="20" y2="4"></line></svg>
+                  <span>마이크</span>
+                </button>
               </div>
               <div class="call-dock-pill">
-                <label class="switch action-switch" id="systemAudioAction">
+                <label class="call-dock-switch" id="systemAudioAction">
                   <input id="systemAudioToggle" type="checkbox" />
-                  <span>컴퓨터 사운드</span>
+                  <span class="call-dock-btn" role="presentation">
+                    <svg class="call-dock-ico" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="4 9 8 9 13 4 13 20 8 15 4 15"></polygon><path d="M17 8a5 5 0 0 1 0 8"></path><path d="M19.5 5.5a9 9 0 0 1 0 13"></path></svg>
+                    <span>컴퓨터 사운드</span>
+                  </span>
                 </label>
                 <button class="call-dock-caret" type="button" data-dock-pop="callDockPopSound" aria-label="컴퓨터 사운드 설정" title="공유할 프로그램 선택">
                   <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 15 12 9 18 15"></polyline></svg>
@@ -159,20 +165,26 @@
               </div>
               <span class="call-dock-div" aria-hidden="true"></span>
               <div class="call-dock-pill call-dock-screen">
-                <button class="call-dock-btn" id="screenShareButton" type="button" disabled>화면 공유</button>
+                <button class="call-dock-btn" id="screenShareButton" type="button" disabled title="화면 공유 시작">
+                  <svg class="call-dock-ico" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"></rect><line x1="9" y1="21" x2="15" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
+                  <span>화면 공유</span>
+                </button>
                 <button class="call-dock-caret" type="button" data-dock-pop="callDockPopScreen" aria-label="화면 공유 설정" title="화면 공유 설정 (해상도 · 프레임 · 캡처 방식)">
                   <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 15 12 9 18 15"></polyline></svg>
                 </button>
               </div>
-              <div class="call-dock-pill">
-                <button class="call-dock-btn" id="cameraShareButton" type="button" disabled>카메라</button>
-              </div>
               <span class="call-dock-div" aria-hidden="true"></span>
               <div class="call-dock-pill">
-                <button class="call-dock-btn" id="repairAudioButton" type="button" disabled>오디오 복구</button>
+                <button class="call-dock-btn" type="button" data-dock-pop="callDockPopMore" aria-label="오디오 설정 · 진단" title="오디오 설정 · 진단">
+                  <svg class="call-dock-ico" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 14v-4M8 17V7M12 20V4M16 17V7M20 14v-4"></path></svg>
+                  <span>오디오 설정</span>
+                </button>
               </div>
             </div>
-            <button class="danger call-dock-leave" id="leaveButton" type="button" disabled>나가기</button>
+            <button class="danger call-dock-leave" id="leaveButton" type="button" disabled>
+              <svg class="call-dock-ico" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 9.5a16 16 0 0 1 17 0v3.2c0 .9-.7 1.6-1.6 1.6h-2.3c-.8 0-1.5-.6-1.6-1.4l-.2-1.4a12 12 0 0 0-5.6 0l-.2 1.4c-.1.8-.8 1.4-1.6 1.4H5.1c-.9 0-1.6-.7-1.6-1.6z"></path></svg>
+              <span>나가기</span>
+            </button>
 
             <div class="call-dock-pop" id="callDockPopSound" hidden>
               <div class="call-dock-pop-head">
@@ -246,6 +258,15 @@
               <button class="secondary screen-test-button" id="openScreenTestButton" type="button">최소 화면 테스트</button>
               <p class="screen-share-note">60fps는 PC 성능과 인터넷 상태에 따라 불안정할 수 있습니다.</p>
               </section>
+              <button class="secondary call-dock-pop-btn" id="cameraShareButton" type="button" disabled>카메라</button>
+            </div>
+
+            <div class="call-dock-pop" id="callDockPopMore" hidden>
+              <div class="call-dock-pop-head">
+                <strong>오디오 설정 · 진단</strong>
+                <button class="call-dock-pop-close" type="button" data-dock-pop-close aria-label="닫기">✕</button>
+              </div>
+              <button class="secondary call-dock-pop-btn" id="repairAudioButton" type="button" disabled>오디오 복구</button>
             </div>
           </div>
 

@@ -15472,9 +15472,13 @@ function updateControls() {
   dom.leaveButton.disabled = !inRoom;
   // 마이크는 통화방 밖에서도 켜고 끌 수 있다(다음 입장 때 적용될 선호로 저장됨). 권한으로 막힌 경우만 잠근다.
   dom.muteButton.disabled = denyVoice;
-  dom.muteButton.title = denyVoice ? "이 통화방에서 마이크·스피커 권한이 없습니다." : "";
+  dom.muteButton.title = denyVoice
+    ? "이 통화방에서 마이크·스피커 권한이 없습니다."
+    : state.muted ? "마이크 꺼짐 · 클릭해서 켜기" : "마이크 켜짐 · 클릭해서 끄기";
   dom.repairAudioButton.disabled = !inRoom || !state.rawMicTrack || state.applyingSettings;
-  dom.muteButton.textContent = state.muted ? "마이크 켜기" : "마이크 끄기";
+  // 라벨은 "마이크" 고정 — 켜짐/꺼짐은 색(빨강)과 슬래시 아이콘으로만 표시한다.
+  dom.muteButton.classList.toggle("is-off", state.muted);
+  dom.muteButton.setAttribute("aria-pressed", state.muted ? "true" : "false");
   dom.systemAudioAction.hidden = !canShareSystem || denySound;
   dom.systemAudioToggle.disabled = !canShareSystem || state.applyingSettings || denySound;
   dom.systemAudioToggle.checked = state.systemSharing || (!inRoom && dom.systemAudioToggle.checked);
@@ -15486,7 +15490,8 @@ function updateControls() {
   // 카메라 공유 중에는 화면 공유 버튼을 잠가(한 슬롯 공유), 반대도 마찬가지.
   dom.screenShareButton.disabled = !canSendScreen || !inRoom || state.applyingSettings || denyScreen || sharingCamera;
   if (dom.openScreenTestButton) dom.openScreenTestButton.disabled = !canSendScreen || typeof desktop.openScreenTestWindow !== "function";
-  dom.screenShareButton.textContent = sharingScreen ? "화면 공유 끄기" : "화면 공유";
+  dom.screenShareButton.classList.toggle("is-active", sharingScreen);
+  dom.screenShareButton.title = sharingScreen ? "화면 공유 중 · 클릭해서 중지" : "화면 공유 시작";
   if (dom.cameraShareButton) {
     dom.cameraShareButton.hidden = !canSendScreen || denyScreen;
     dom.cameraShareButton.disabled = !canSendScreen || !inRoom || state.applyingSettings || denyScreen || sharingScreen;
