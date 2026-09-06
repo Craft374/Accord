@@ -2338,7 +2338,13 @@ function handleAiMessage(client, message) {
 
       aiBusy.add(ctx.room.id);
       broadcastAi(ctx.room.id, { type: "ai:thinking", roomId: ctx.room.id, on: true });
-      const model = doc.settings.model || secret.model || store.DEFAULT_AI_MODEL;
+      let model = doc.settings.model || secret.model || store.DEFAULT_AI_MODEL;
+      // 자동 모델 선택: 그림 요청 같으면 이번 턴만 이미지 모델로. 방 설정(doc.settings.model)은 그대로 둔다.
+      let autoNote = "";
+      if (text && !/image/i.test(model) && store.aiWantsImage(text)) {
+        model = store.AI_AUTO_IMAGE_MODEL;
+        autoNote = `🎨 그림 요청으로 보고 ${model} 모델로 답합니다`;
+      }
       let system = store.buildAiSystemInstruction(doc, store.getAiGlobalPrompt());
       if (refs.length) system += `\n\n${store.buildAiReferenceBlock(refs)}`;
       const contents = store.toGeminiContents(session.messages, AI_CONTEXT_TURNS);
@@ -2367,6 +2373,7 @@ function handleAiMessage(client, message) {
           // accord: 지시 블록 실행(#으로 지정한 방만) 후, 블록을 뺀 텍스트 + 결과 요약을 남긴다.
           const { display, notes } = applyAiActions(reply.text, refMap, ctx, client);
           let outText = display;
+          if (autoNote) notes.unshift(autoNote);
           if (reply.imageBlockReason) notes.push(`⚠️ 이미지가 생성되지 않았습니다 (사유: ${reply.imageBlockReason})`);
           if (notes.length) outText += `${outText ? "\n\n" : ""}> ${notes.join("\n> ")}`;
           const aiMsg = { role: "model", text: outText, at: Date.now(), model };

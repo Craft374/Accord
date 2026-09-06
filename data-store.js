@@ -1383,6 +1383,14 @@ function isAiTextyFile(mime, name) {
   return mimeRe.test(String(mime || "")) || extRe.test(String(name || ""));
 }
 
+// 사용자 메시지가 그림/이미지 생성 요청처럼 보이면 true. AI방에서 이번 턴만 이미지 모델로
+// 자동 전환하는 데 쓴다("그려줘" 등). "그림 설명"·"그림판" 같은 표현은 걸리지 않게 동사를 요구한다.
+function aiWantsImage(text) {
+  return /그려|그림\s*그리|이미지\s*(를|좀)?\s*(생성|만들|제작|그려)|삽화|일러스트|\b(draw|sketch)\b|generate[\s\w]*\bimage\b|create[\s\w]*\bimage\b|make[\s\w]*\b(image|picture|drawing)\b/i.test(String(text || ""));
+}
+// 그림 요청으로 자동 전환할 때 쓰는 모델. 접미사 없이 동작하는 안정 이미지 모델.
+const AI_AUTO_IMAGE_MODEL = "gemini-2.5-flash-image";
+
 function emptyAiDoc() {
   return { sessions: [], activeSessionId: "", memory: { prompt: "", notes: "" }, settings: { model: "", thinking: "auto" }, files: [] };
 }
@@ -1974,8 +1982,10 @@ module.exports = {
   addAiFile,
   removeAiFile,
   isAiTextyFile,
+  aiWantsImage,
   AI_FILES_MAX,
   DEFAULT_AI_MODEL,
+  AI_AUTO_IMAGE_MODEL,
   // 권한 역할
   createRole,
   updateRole,

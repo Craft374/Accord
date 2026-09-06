@@ -456,6 +456,21 @@ const reviews = [
     } catch { return false; }
   })(), "AI방 isAiTextyFile detects text-extractable files by mime/extension (runtime)"],
   [(() => {
+    // AI방: 그림 생성 요청 자동 감지(자동 모델 선택). 동사가 있어야 하고, "그림판"·"그림 설명"은 안 걸린다.
+    try {
+      const src = dataStore.match(/function aiWantsImage\(text\) \{[\s\S]*?\n\}/);
+      if (!src) return false;
+      const fn = new Function(`${src[0]}\nreturn aiWantsImage;`)();
+      return fn("고양이 그려줘") === true
+        && fn("로고 이미지 만들어줘") === true
+        && fn("draw a sunset") === true
+        && fn("generate an image of a car") === true
+        && fn("그림판 방 열어줘") === false
+        && fn("이 그림 설명해줘") === false
+        && fn("") === false;
+    } catch { return false; }
+  })(), "AI방 aiWantsImage detects image-generation intent, ignores paint room / describe (runtime)"],
+  [(() => {
     // AI방: #방 참조 블록. 내용 주입 + 수정용 코드블록 안내. refs 없으면 빈 문자열.
     try {
       const src = dataStore.match(/function buildAiReferenceBlock\(refs\) \{[\s\S]*?\n\}/);
