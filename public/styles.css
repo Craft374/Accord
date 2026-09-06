@@ -527,6 +527,7 @@ body.focus-mode .layout {
   flex-direction: column;
   gap: 12px;
   min-width: 0;
+  overflow: hidden;
 }
 
 /* 통화 전에는 오른쪽에 아무 UI도 띄우지 않는다 */
@@ -3165,10 +3166,11 @@ body.dm-open .dm-panel {
 
 .call-dock {
   position: relative;
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 10px;
   padding: 12px 16px;
   border-radius: var(--radius-lg);
@@ -3181,6 +3183,7 @@ body.dm-open .dm-panel {
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -3198,7 +3201,7 @@ body.dm-open .dm-panel {
   gap: 2px;
   padding: 3px;
   border-radius: var(--radius-lg);
-  background: var(--bg-input);
+  background: #232428; /* 도크 표면(#2b2d31)보다 살짝만 어둡게 — bg-input(#1e1f22)은 새까매 보임 */
   flex: none;
 }
 
@@ -3677,6 +3680,13 @@ summary:hover {
 }
 
 /* ─── 참가자 카드 ─────────────────────────── */
+
+/* 참가자 영역이 남는 높이를 먹고 스스로 스크롤해야 도크가 패널 맨 아래에 붙는다. */
+.participants {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
 
 .participant-list {
   grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
@@ -5032,6 +5042,9 @@ body.ui-obsidian-sidebar .room-group > .room-group-rooms { margin-left: 6px; pad
   background: var(--bg-base);
   border: 1px solid var(--line);
   overflow: hidden;
+  /* overflow:hidden 이 flex 항목 자동 최소높이를 0으로 만들어, 목록이 꽉 차면
+     세로 flex 컨테이너가 방 상자를 찌그러뜨려 참가자 목록이 잘린다. 축소 금지. */
+  flex: none;
 }
 .room-item:hover { border-color: var(--line-strong); }
 body.ui-obsidian-sidebar .room-item { border-radius: 0; background: none; border: 0; overflow: visible; }
