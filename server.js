@@ -2029,27 +2029,41 @@ async function callGemini({ apiKey, model, contents, system, thinking }) {
     gen.thinkingConfig = { thinkingBudget: thinking === "off" ? 0 : 24576 };
   }
   if (Object.keys(gen).length) body.generationConfig = gen;
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), AI_TIMEOUT_MS);
-  let res;
-  try {
-    res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal: ctrl.signal,
-    });
-  } catch (err) {
+  // 이미지 생성처럼 오래 걸리는 요청에서 Gemini 가 DEADLINE_EXCEEDED(504)·5xx·429 를 간헐적으로 뱉는다 — 1회 재시도.
+  // ponytail: 재시도 1번 고정. 최악의 경우 대기 시간이 AI_TIMEOUT_MS 의 2배(+백오프)까지 늘고 그동안 방이 aiBusy 로 잠긴다.
+  const payload = JSON.stringify(body);
+  let data;
+  for (let attempt = 1; ; attempt++) {
+    if (attempt > 1) await new Promise((r) => setTimeout(r, 1500));
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), AI_TIMEOUT_MS);
+    let res;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: payload,
+        signal: ctrl.signal,
+      });
+    } catch (err) {
+      clearTimeout(timer);
+      if (err.name === "AbortError") {
+        if (attempt < 2) { console.warn("[ai] 응답 지연, 재시도"); continue; }
+        throw new Error("AI 응답이 시간 내에 오지 않았습니다.");
+      }
+      const detail = err?.cause?.code || err?.cause?.message || err?.code || err?.message || "unknown";
+      console.error("[ai] fetch 실패:", detail, err?.cause || err);
+      throw new Error(`AI 서버에 연결하지 못했습니다 (${detail})`);
+    }
     clearTimeout(timer);
-    if (err.name === "AbortError") throw new Error("AI 응답이 시간 내에 오지 않았습니다.");
-    const detail = err?.cause?.code || err?.cause?.message || err?.code || err?.message || "unknown";
-    console.error("[ai] fetch 실패:", detail, err?.cause || err);
-    throw new Error(`AI 서버에 연결하지 못했습니다 (${detail})`);
-  }
-  clearTimeout(timer);
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(data?.error?.message ? `Gemini 오류: ${data.error.message}` : `Gemini 오류 (HTTP ${res.status})`);
+    data = await res.json().catch(() => ({}));
+    if (res.ok) break;
+    const msg = data?.error?.message ? `Gemini 오류: ${data.error.message}` : `Gemini 오류 (HTTP ${res.status})`;
+    if ((res.status >= 500 || res.status === 429) && attempt < 2) {
+      console.warn(`[ai] ${msg} — 재시도`);
+      continue;
+    }
+    throw new Error(msg);
   }
   const cand = data?.candidates?.[0];
   const parts = cand?.content?.parts || [];
