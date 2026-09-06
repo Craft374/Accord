@@ -91,6 +91,10 @@
             <button class="ghost small channel-menu-button" id="channelMenuButton" type="button" hidden>⋯</button>
           </header>
           <div class="room-list" id="roomList"></div>
+          <div class="room-list-actions" id="roomListActions" hidden>
+            <button class="room-add-button" data-room-add="1" type="button">+ 방</button>
+            <button class="room-add-button" data-room-group-add="1" type="button">+ 그룹</button>
+          </div>
           <div class="channel-empty" id="channelEmpty">
             <p>왼쪽 <b>+</b> 로 채널을 만들거나<br />코드로 채널에 참가하세요.</p>
           </div>
@@ -106,6 +110,7 @@
           <div class="call-head">
             <div class="call-title">
               <h2 id="currentRoomName">통화 없음</h2>
+              <span class="call-title-sep" aria-hidden="true">|</span>
               <p id="currentRoomMeta">방에 들어가면 마이크가 켜집니다.</p>
             </div>
             <div class="call-head-actions">
@@ -121,7 +126,6 @@
                   <option value="8">8명</option>
                 </select>
               </label>
-              <button class="danger" id="leaveButton" type="button" disabled>나가기</button>
             </div>
           </div>
 
@@ -143,19 +147,56 @@
             <div class="participant-list" id="participantList"></div>
           </section>
 
-          <div class="call-actions">
-            <button class="secondary" id="muteButton" type="button">마이크 끄기</button>
-            <label class="switch action-switch" id="systemAudioAction">
-              <input id="systemAudioToggle" type="checkbox" />
-              <span>컴퓨터 사운드</span>
-            </label>
-            <button class="secondary" id="screenShareButton" type="button" disabled>화면 공유</button>
-            <button class="secondary" id="cameraShareButton" type="button" disabled>카메라</button>
-            <button class="secondary" id="repairAudioButton" type="button" disabled>오디오 복구</button>
-          </div>
+          <div class="call-dock" id="callDock">
+            <div class="call-dock-groups">
+              <div class="call-dock-pill">
+                <button class="call-dock-btn" id="muteButton" type="button" aria-pressed="false" title="마이크 켜짐 · 클릭해서 끄기">
+                  <svg class="call-dock-ico" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="11" rx="3"></rect><path d="M5 10a7 7 0 0 0 14 0"></path><line x1="12" y1="17" x2="12" y2="21"></line><line x1="8" y1="21" x2="16" y2="21"></line><line class="call-dock-slash" x1="4" y1="20" x2="20" y2="4"></line></svg>
+                  <span>마이크</span>
+                </button>
+              </div>
+              <div class="call-dock-pill">
+                <label class="call-dock-switch" id="systemAudioAction">
+                  <input id="systemAudioToggle" type="checkbox" />
+                  <span class="call-dock-btn" role="presentation">
+                    <svg class="call-dock-ico" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="4 9 8 9 13 4 13 20 8 15 4 15"></polygon><path d="M17 8a5 5 0 0 1 0 8"></path><path d="M19.5 5.5a9 9 0 0 1 0 13"></path></svg>
+                    <span>컴퓨터 사운드</span>
+                  </span>
+                </label>
+                <button class="call-dock-caret" type="button" data-dock-pop="callDockPopSound" aria-label="컴퓨터 사운드 설정" title="공유할 프로그램 선택">
+                  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 15 12 9 18 15"></polyline></svg>
+                </button>
+              </div>
+              <span class="call-dock-div" aria-hidden="true"></span>
+              <div class="call-dock-pill call-dock-screen">
+                <button class="call-dock-btn" id="screenShareButton" type="button" disabled title="화면 공유 시작">
+                  <svg class="call-dock-ico" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"></rect><line x1="9" y1="21" x2="15" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
+                  <span>화면 공유</span>
+                </button>
+                <button class="call-dock-caret" type="button" data-dock-pop="callDockPopScreen" aria-label="화면 공유 설정" title="화면 공유 설정 (해상도 · 프레임 · 캡처 방식)">
+                  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 15 12 9 18 15"></polyline></svg>
+                </button>
+              </div>
+              <span class="call-dock-div" aria-hidden="true"></span>
+              <div class="call-dock-pill">
+                <button class="call-dock-btn" type="button" data-dock-pop="callDockPopMore" aria-label="오디오 설정 · 진단" title="오디오 설정 · 진단">
+                  <svg class="call-dock-ico" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 14v-4M8 17V7M12 20V4M16 17V7M20 14v-4"></path></svg>
+                  <span>오디오 설정</span>
+                </button>
+              </div>
+            </div>
+            <button class="danger call-dock-leave" id="leaveButton" type="button" disabled>
+              <svg class="call-dock-ico" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 9.5a16 16 0 0 1 17 0v3.2c0 .9-.7 1.6-1.6 1.6h-2.3c-.8 0-1.5-.6-1.6-1.4l-.2-1.4a12 12 0 0 0-5.6 0l-.2 1.4c-.1.8-.8 1.4-1.6 1.4H5.1c-.9 0-1.6-.7-1.6-1.6z"></path></svg>
+              <span>나가기</span>
+            </button>
 
-          <section class="program-audio-panel" id="programAudioPanel" hidden>
-            <div class="program-audio-head">
+            <div class="call-dock-pop" id="callDockPopSound" hidden>
+              <div class="call-dock-pop-head">
+                <strong>컴퓨터 사운드 공유</strong>
+                <button class="call-dock-pop-close" type="button" data-dock-pop-close aria-label="닫기">✕</button>
+              </div>
+              <section class="program-audio-panel" id="programAudioPanel" hidden>
+                <div class="program-audio-head">
               <div class="capture-mode-group">
                 <label class="radio-option">
                   <input id="systemCaptureFullRadio" name="systemCaptureMode" type="radio" value="full" checked />
@@ -174,11 +215,15 @@
             <p class="program-audio-status" id="programAudioStatus"></p>
             <div class="program-audio-selected" id="programAudioSelectedList" hidden></div>
             <div class="program-audio-list" id="programAudioList" hidden></div>
-          </section>
+              </section>
+            </div>
 
-          <details class="screen-share-panel" id="screenSharePanel" hidden>
-            <summary>화면 공유 설정 <span class="quality-summary">기본 1080p / 30fps</span></summary>
-            <section class="screen-share-grid">
+            <div class="call-dock-pop" id="callDockPopScreen" hidden>
+              <div class="call-dock-pop-head">
+                <strong>화면 공유 설정</strong>
+                <button class="call-dock-pop-close" type="button" data-dock-pop-close aria-label="닫기">✕</button>
+              </div>
+              <section class="screen-share-grid" id="screenSharePanel">
               <label class="field">
                 <span>해상도</span>
                 <select id="screenResolutionSelect">
@@ -216,8 +261,18 @@
               </label>
               <button class="secondary screen-test-button" id="openScreenTestButton" type="button">최소 화면 테스트</button>
               <p class="screen-share-note">60fps는 PC 성능과 인터넷 상태에 따라 불안정할 수 있습니다.</p>
-            </section>
-          </details>
+              </section>
+              <button class="secondary call-dock-pop-btn" id="cameraShareButton" type="button" disabled>카메라</button>
+            </div>
+
+            <div class="call-dock-pop" id="callDockPopMore" hidden>
+              <div class="call-dock-pop-head">
+                <strong>오디오 설정 · 진단</strong>
+                <button class="call-dock-pop-close" type="button" data-dock-pop-close aria-label="닫기">✕</button>
+              </div>
+              <button class="secondary call-dock-pop-btn" id="repairAudioButton" type="button" disabled>오디오 복구</button>
+            </div>
+          </div>
 
           <p class="message" id="message" aria-live="polite"></p>
         </section>
@@ -627,7 +682,17 @@
                 <span>방·그룹 목록 옵시디언 스타일 (실험적)</span>
               </label>
             </div>
-            <p class="modal-hint">방 목록 · 멤버 목록의 경계선을 드래그하면 폭을 조절할 수 있습니다. 상단 막대의 접기 버튼으로도 각 목록을 여닫을 수 있습니다.</p>
+            <label class="field">
+              <span>화면 크기 (UI 배율)</span>
+              <select id="uiScaleSelect">
+                <option value="0.9">90%</option>
+                <option value="0.95">95%</option>
+                <option value="1">100%</option>
+                <option value="1.1">110%</option>
+                <option value="1.25">125%</option>
+              </select>
+            </label>
+            <p class="modal-hint">방 목록 · 멤버 목록의 경계선을 드래그하면 폭을 조절할 수 있습니다. 상단 막대의 접기 버튼으로도 각 목록을 여닫을 수 있습니다. 배율을 크게 하면 좁은 창에서는 일부 UI가 모바일 모드로 전환될 수 있습니다.</p>
             <div class="modal-actions">
               <button class="secondary" id="resetLayoutButton" type="button">기본 폭으로 초기화</button>
             </div>

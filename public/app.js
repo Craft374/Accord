@@ -509,6 +509,8 @@ const dom = {
   drawLayerNamesToggle: document.querySelector("#drawLayerNamesToggle"),
   drawHintToggle: document.querySelector("#drawHintToggle"),
   resetLayoutButton: document.querySelector("#resetLayoutButton"),
+  uiScaleSelect: document.querySelector("#uiScaleSelect"),
+  roomListActions: document.querySelector("#roomListActions"),
   memoAutocompleteToggle: document.querySelector("#memoAutocompleteToggle"),
   memoColorEm: document.querySelector("#memoColorEm"),
   memoColorStrong: document.querySelector("#memoColorStrong"),
@@ -709,6 +711,7 @@ function bindEvents() {
   bindDrawEvents();
   bindDmEvents();
   bindLogEvents();
+  bindCallDockPopovers();
 
   dom.inputDeviceSelect.addEventListener("change", () => {
     resetEchoProbe();
@@ -774,6 +777,11 @@ function bindEvents() {
     openChatContextMenu(items, { x: event.clientX, y: event.clientY });
   });
   dom.participantList.addEventListener("click", (event) => {
+    const caret = event.target?.closest?.("[data-participant-caret]");
+    if (caret) {
+      caret.closest(".participant-card")?.classList.toggle("open");
+      return;
+    }
     const profile = event.target?.closest?.("[data-profile-user]");
     if (profile) {
       openProfileCard(profile.dataset.profileUser, profile, { id: profile.dataset.profileUser, displayName: profile.textContent, code: "----" });
@@ -5083,6 +5091,15 @@ function setLayoutCollapsed(kind, collapsed) {
   applyLayoutSizing();
 }
 
+// UI 배율: --ui-scale 만 세팅하고 실제 확대(.app 의 zoom)와 높이 보정은 CSS 가 한다.
+// (Electron 은 Menu.setApplicationMenu(null) 이라 기본 Ctrl+± 확대가 없어 설정으로 제공한다.)
+function applyUiScale() {
+  let v = Number(localStorage.getItem("accordUiScale"));
+  if (!Number.isFinite(v) || v < 0.9 || v > 1.25) v = 1;
+  document.documentElement.style.setProperty("--ui-scale", String(v));
+  if (dom.uiScaleSelect) dom.uiScaleSelect.value = String(v);
+}
+
 function isNarrowLayout() {
   return window.matchMedia("(max-width: 920px)").matches;
 }
@@ -5105,7 +5122,9 @@ function resetLayoutSizing() {
   localStorage.removeItem(cfg.members.key);
   localStorage.setItem("accordRoomsCollapsed", "0");
   localStorage.setItem("accordMembersCollapsed", "0");
+  localStorage.removeItem("accordUiScale");
   applyLayoutSizing();
+  applyUiScale();
 }
 
 // target: 폭 CSS 변수를 적용할 요소(기본 dom.layout — 사이드바). growsLeft: 핸들을 왼쪽으로 끌 때
@@ -5158,6 +5177,11 @@ function bindLayoutResizeHandle(handle, kind, { target = dom.layout, growsLeft =
 
 function initLayoutControls() {
   applyLayoutSizing();
+  applyUiScale();
+  dom.uiScaleSelect?.addEventListener("change", () => {
+    localStorage.setItem("accordUiScale", dom.uiScaleSelect.value);
+    applyUiScale();
+  });
   bindLayoutResizeHandle(dom.roomsResizeHandle, "rooms", { onReset: applyLayoutSizing });
   // 멤버 목록은 레이아웃 오른쪽 끝, 핸들은 그 왼쪽 경계에 있으므로 왼쪽으로 끌면 넓어진다(growsLeft).
   bindLayoutResizeHandle(dom.membersResizeHandle, "members", { growsLeft: true, onReset: applyLayoutSizing });
@@ -7277,30 +7301,17 @@ function renderRooms() {
   if (!dom.roomList) return;
   dom.roomList.innerHTML = "";
   const channel = currentChannel();
-  if (!channel) return;
   // 미리보기 중에는 대표 전용 버튼(방 추가/삭제)도 숨겨 실제 유저 화면처럼 보여준다.
-  const owner = isChannelOwner(channel) && !rolePreview.active;
+  const owner = Boolean(channel) && isChannelOwner(channel) && !rolePreview.active;
+  // '+ 방 / + 그룹' 은 스크롤러 밖(.channel-panel 바닥)에 고정된 정적 요소라 보이기만 토글한다.
+  if (dom.roomListActions) dom.roomListActions.hidden = !owner;
+  if (!channel) return;
 
   // 미리보기 배너(대표가 특정 역할/유저 관점을 확인 중)
   if (rolePreview.active) dom.roomList.append(buildPreviewBanner(channel));
 
   const layout = visibleRoomLayout(channel, normalizedRoomLayout(channel), owner);
   dom.roomList.append(buildRoomTree(channel, layout, owner, "", true));
-
-  if (owner) {
-    const actions = document.createElement("div");
-    actions.className = "room-list-actions";
-    const addRoom = document.createElement("button");
-    addRoom.className = "room-add-button";
-    addRoom.dataset.roomAdd = "1";
-    addRoom.textContent = "+ 방";
-    const addGroup = document.createElement("button");
-    addGroup.className = "room-add-button";
-    addGroup.dataset.roomGroupAdd = "1";
-    addGroup.textContent = "+ 그룹";
-    actions.append(addRoom, addGroup);
-    dom.roomList.append(actions);
-  }
 }
 
 function legacyRoomLayout(channel) {
@@ -8861,8 +8872,6 @@ function bindChannelEvents() {
       toggleRoomGroup(groupToggle.dataset.channelId, groupToggle.dataset.roomGroupToggle);
       return;
     }
-    const groupAdd = event.target?.closest?.("[data-room-group-add]");
-    if (groupAdd) { openRoomGroupModal(); return; }
     const groupRename = event.target?.closest?.("[data-room-group-rename]");
     if (groupRename) { openRoomGroupModal(groupRename.dataset.roomGroupRename); return; }
     const groupDelete = event.target?.closest?.("[data-room-group-delete]");
@@ -8873,10 +8882,14 @@ function bindChannelEvents() {
       }
       return;
     }
-    const add = event.target?.closest?.("[data-room-add]");
-    if (add) { openRoomModal(); return; }
     const head = event.target?.closest?.(".room-item-head");
     if (head) openRoom(head.dataset.roomId, head.dataset.roomType);
+  });
+
+  // '+ 방 / + 그룹' 은 이제 목록 스크롤러 밖의 고정 버튼이라 직접 바인딩한다.
+  dom.roomListActions?.addEventListener("click", (event) => {
+    if (event.target?.closest?.("[data-room-group-add]")) { openRoomGroupModal(); return; }
+    if (event.target?.closest?.("[data-room-add]")) openRoomModal();
   });
 
   // 메모방 휠클릭(가운데 버튼) = 브라우저처럼 전환 없이 배경 탭으로만 열기.
@@ -15944,6 +15957,30 @@ function formatDuration(ms) {
   return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
 }
 
+// 통화 도크의 ▾ 캐럿 → 설정 팝오버(사운드 · 화면 공유) 토글. 바깥 클릭·Esc 로 닫힌다.
+function bindCallDockPopovers() {
+  const dock = document.querySelector("#callDock");
+  if (!dock) return;
+  const closeAll = () => dock.querySelectorAll(".call-dock-pop").forEach((p) => { p.hidden = true; });
+  dock.addEventListener("click", (event) => {
+    const caret = event.target?.closest?.("[data-dock-pop]");
+    if (caret) {
+      const pop = dock.querySelector(`#${caret.dataset.dockPop}`);
+      const willOpen = pop && pop.hidden;
+      closeAll();
+      if (pop) pop.hidden = !willOpen;
+      return;
+    }
+    if (event.target?.closest?.("[data-dock-pop-close]")) closeAll();
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (!event.target?.closest?.("#callDock")) closeAll();
+  }, true);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeAll();
+  });
+}
+
 function renderParticipants() {
   dom.participantList.innerHTML = "";
   if (!state.currentRoom) {
@@ -15976,6 +16013,12 @@ function appendParticipant({ id, name, status, self = false, peer = null, userId
   const card = document.createElement("div");
   card.className = "participant-card";
   card.dataset.participantId = String(id);
+  if (peer) card.dataset.peerId = peer.id;
+
+  const avatar = document.createElement("span");
+  avatar.className = "participant-avatar";
+  avatar.textContent = (name || "?").trim().slice(0, 1) || "?";
+
   const title = document.createElement("strong");
   title.textContent = name;
   if (userId) {
@@ -15984,10 +16027,29 @@ function appendParticipant({ id, name, status, self = false, peer = null, userId
     title.title = "프로필 보기";
   }
   const label = document.createElement("span");
+  label.className = "participant-status";
   label.textContent = status;
+  const nameCol = document.createElement("div");
+  nameCol.className = "participant-name";
+  nameCol.append(title, label);
+
   const header = document.createElement("div");
   header.className = "participant-head";
-  header.append(title, label);
+  header.append(avatar, nameCol);
+
+  if (peer && peer.remote.screen?.track?.readyState === "live") {
+    const screenButton = document.createElement("button");
+    screenButton.className = "participant-screen-button";
+    screenButton.type = "button";
+    screenButton.dataset.screenPeerId = peer.id;
+    screenButton.textContent = state.selectedScreenPeerId === peer.id ? "보고 있음" : "화면 보기";
+    header.append(screenButton);
+  } else if (!peer && state.screenSharing) {
+    const badge = document.createElement("span");
+    badge.className = "participant-screen-button";
+    badge.textContent = "화면 공유 중";
+    header.append(badge);
+  }
 
   const meters = document.createElement("div");
   meters.className = "participant-meters";
@@ -15996,32 +16058,26 @@ function appendParticipant({ id, name, status, self = false, peer = null, userId
     makeParticipantMeter("컴퓨터", self ? "self-system" : "peer-system"),
   );
 
-  if (peer) card.dataset.peerId = peer.id;
+  card.append(header, meters);
+
   if (peer) {
+    const caret = document.createElement("button");
+    caret.className = "participant-caret";
+    caret.type = "button";
+    caret.dataset.participantCaret = "1";
+    caret.title = "이 참가자 볼륨 조절";
+    caret.setAttribute("aria-label", "볼륨 조절");
+    caret.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>';
+    header.append(caret);
+
     const volumes = document.createElement("div");
     volumes.className = "participant-volumes";
     volumes.append(
       makeParticipantVolumeControl(peer, "mic", "마이크"),
       makeParticipantVolumeControl(peer, "system", "컴퓨터"),
     );
-    card.append(header, meters, volumes);
-    if (peer.remote.screen?.track?.readyState === "live") {
-      const screenButton = document.createElement("button");
-      screenButton.className = "participant-screen-button";
-      screenButton.type = "button";
-      screenButton.dataset.screenPeerId = peer.id;
-      screenButton.textContent = state.selectedScreenPeerId === peer.id ? "보고 있음" : "화면 보기";
-      card.append(screenButton);
-    }
+    card.append(volumes);
     // 강제 음소거·공유끄기·내보내기는 카드 우클릭 메뉴로 제공한다(bindEvents 의 contextmenu 핸들러).
-  } else {
-    if (state.screenSharing) {
-      const badge = document.createElement("span");
-      badge.className = "participant-screen-button";
-      badge.textContent = "화면 공유 중";
-      header.append(badge);
-    }
-    card.append(header, meters);
   }
   dom.participantList.append(card);
 }
@@ -16276,9 +16332,13 @@ function updateControls() {
   dom.leaveButton.disabled = !inRoom;
   // 마이크는 통화방 밖에서도 켜고 끌 수 있다(다음 입장 때 적용될 선호로 저장됨). 권한으로 막힌 경우만 잠근다.
   dom.muteButton.disabled = denyVoice;
-  dom.muteButton.title = denyVoice ? "이 통화방에서 마이크·스피커 권한이 없습니다." : "";
+  dom.muteButton.title = denyVoice
+    ? "이 통화방에서 마이크·스피커 권한이 없습니다."
+    : state.muted ? "마이크 꺼짐 · 클릭해서 켜기" : "마이크 켜짐 · 클릭해서 끄기";
   dom.repairAudioButton.disabled = !inRoom || !state.rawMicTrack || state.applyingSettings;
-  dom.muteButton.textContent = state.muted ? "마이크 켜기" : "마이크 끄기";
+  // 라벨은 "마이크" 고정 — 켜짐/꺼짐은 색(빨강)과 슬래시 아이콘으로만 표시한다.
+  dom.muteButton.classList.toggle("is-off", state.muted);
+  dom.muteButton.setAttribute("aria-pressed", state.muted ? "true" : "false");
   dom.systemAudioAction.hidden = !canShareSystem || denySound;
   dom.systemAudioToggle.disabled = !canShareSystem || state.applyingSettings || denySound;
   dom.systemAudioToggle.checked = state.systemSharing || (!inRoom && dom.systemAudioToggle.checked);
@@ -16290,7 +16350,8 @@ function updateControls() {
   // 카메라 공유 중에는 화면 공유 버튼을 잠가(한 슬롯 공유), 반대도 마찬가지.
   dom.screenShareButton.disabled = !canSendScreen || !inRoom || state.applyingSettings || denyScreen || sharingCamera;
   if (dom.openScreenTestButton) dom.openScreenTestButton.disabled = !canSendScreen || typeof desktop.openScreenTestWindow !== "function";
-  dom.screenShareButton.textContent = sharingScreen ? "화면 공유 끄기" : "화면 공유";
+  dom.screenShareButton.classList.toggle("is-active", sharingScreen);
+  dom.screenShareButton.title = sharingScreen ? "화면 공유 중 · 클릭해서 중지" : "화면 공유 시작";
   if (dom.cameraShareButton) {
     dom.cameraShareButton.hidden = !canSendScreen || denyScreen;
     dom.cameraShareButton.disabled = !canSendScreen || !inRoom || state.applyingSettings || denyScreen || sharingScreen;

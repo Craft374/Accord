@@ -239,6 +239,13 @@ const checks = [
   [/if \(!app\.requestSingleInstanceLock\(\)\) \{\s*app\.exit\(0\);/.test(main), "second instance exits immediately instead of async quit"],
   // 설치형으로 돌아온 뒤 다시 portable 을 켜면 위의 재추출·잠금 문제가 그대로 되살아난다.
   [!pkg.build?.portable, "no leftover portable config (its unpack dir pin froze the app on an old build)"],
+  // '+방/+그룹' 바를 다시 .room-list 안에 넣거나 sticky 로 되돌리면, .room-list 가
+  // display:flex 스크롤 컨테이너라 Chromium 이 sticky 를 스크롤량만큼 어긋나게 그려
+  // 바가 목록 한가운데에 겹친다(Electron 31 실측). 스크롤러 밖 형제로 유지할 것.
+  [html.includes('id="roomList"></div>') && html.includes('id="roomListActions"'),
+    "room add buttons sit outside the room list scroller"],
+  [!/\.room-list-actions\s*\{[^}]*position:\s*sticky/.test(css),
+    "room add buttons are not sticky (flex scroller + sticky misplaces them)"],
 ];
 
 for (const [ok, label] of checks) {
