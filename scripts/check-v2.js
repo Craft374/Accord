@@ -398,6 +398,97 @@ const reviews = [
         && mixed.charsTyped === 4 && mixed.charsDeleted === 2 && mixed.linesTyped === 1;
     } catch { return false; }
   })(), "memoOpDelta counts inserted/deleted chars and inserted lines correctly (runtime)"],
+  [(() => {
+    // AI방: 저장 메시지 -> Gemini contents 변환. 최근 N개만, 화자 이름 접두, model 역할 유지, 빈/이상 항목 제외.
+    try {
+      const src = dataStore.match(/function toGeminiContents\(messages, limit = 20\) \{[\s\S]*?\n\}/);
+      if (!src) return false;
+      const fn = new Function(`${src[0]}\nreturn toGeminiContents;`)();
+      const out = fn([
+        { role: "user", text: "안녕", name: "철수" },
+        { role: "model", text: "네 안녕하세요" },
+        { role: "user", text: "", name: "영희" },
+        { role: "system", text: "무시" },
+        { role: "user", text: "", name: "민수", files: [{ name: "사진.png" }] },
+      ]);
+      const limited = fn([{ role: "user", text: "a" }, { role: "user", text: "b" }], 1);
+      return out.length === 3
+        && out[0].role === "user" && out[0].parts[0].text === "철수: 안녕"
+        && out[1].role === "model" && out[1].parts[0].text === "네 안녕하세요"
+        // 글자 없이 파일만 보낸 메시지도 살아남고(붙여넣기 이미지 전송), parts 는 절대 비지 않는다.
+        && out[2].role === "user" && out[2].parts[0].text === "민수: [첨부: 사진.png]"
+        && limited.length === 1 && limited[0].parts[0].text === "b";
+    } catch { return false; }
+  })(), "AI방 toGeminiContents maps stored messages to Gemini contents (runtime)"],
+  [(() => {
+    // AI방: systemInstruction 조립. 공통 지침 + 방 지침 + 방 메모리 + 활성 세션 제외한 다른 대화 "전문".
+    try {
+      const src = dataStore.match(/function buildAiSystemInstruction\(doc, globalPrompt\) \{[\s\S]*?\n\}/);
+      if (!src) return false;
+      const fn = new Function(`${src[0]}\nreturn buildAiSystemInstruction;`)();
+      const doc = {
+        activeSessionId: "cur",
+        memory: { prompt: "존댓말로", notes: "코드명 Orbit" },
+        sessions: [
+          { id: "old", title: "지난 회의", messages: [{ role: "user", text: "배포 언제?", name: "철수" }, { role: "model", text: "목요일이라고 했어요" }] },
+          { id: "cur", title: "지금", messages: [{ role: "user", text: "무시돼야 함" }] },
+        ],
+      };
+      const out = fn(doc, "한국어로 답할 것");
+      const withFiles = fn({
+        sessions: [], files: [
+          { name: "readme.md", mime: "text/markdown", text: "프로젝트 개요: Orbit" },
+          { name: "photo.png", mime: "image/png", text: "" },
+        ],
+      }, "");
+      return out.includes("한국어로 답할 것") && out.includes("존댓말로") && out.includes("코드명 Orbit")
+        && out.includes("지난 회의") && out.includes("철수: 배포 언제?") && out.includes("AI: 목요일이라고 했어요")
+        && !out.includes("무시돼야 함") && !out.includes("지금")
+        && fn({ sessions: [] }, "").indexOf("다른 대화 전체") === -1
+        && withFiles.includes("readme.md") && withFiles.includes("프로젝트 개요: Orbit")
+        && withFiles.includes("photo.png") && withFiles.includes("텍스트로 추출할 수 없는 파일");
+    } catch { return false; }
+  })(), "AI방 buildAiSystemInstruction inlines uploaded room files, notes non-text ones (runtime)"],
+  [(() => {
+    // AI방: 방 파일 중 텍스트로 추출할 파일을 mime/확장자로 판별.
+    try {
+      const src = dataStore.match(/function isAiTextyFile\(mime, name\) \{[\s\S]*?\n\}/);
+      if (!src) return false;
+      const fn = new Function(`${src[0]}\nreturn isAiTextyFile;`)();
+      return fn("text/plain", "a.bin") === true
+        && fn("application/json", "x") === true
+        && fn("", "notes.md") === true
+        && fn("image/png", "photo.png") === false
+        && fn("application/pdf", "doc.pdf") === false;
+    } catch { return false; }
+  })(), "AI방 isAiTextyFile detects text-extractable files by mime/extension (runtime)"],
+  [(() => {
+    // AI방: 그림 생성 요청 자동 감지(자동 모델 선택). 동사가 있어야 하고, "그림판"·"그림 설명"은 안 걸린다.
+    try {
+      const src = dataStore.match(/function aiWantsImage\(text\) \{[\s\S]*?\n\}/);
+      if (!src) return false;
+      const fn = new Function(`${src[0]}\nreturn aiWantsImage;`)();
+      return fn("고양이 그려줘") === true
+        && fn("로고 이미지 만들어줘") === true
+        && fn("draw a sunset") === true
+        && fn("generate an image of a car") === true
+        && fn("그림판 방 열어줘") === false
+        && fn("이 그림 설명해줘") === false
+        && fn("") === false;
+    } catch { return false; }
+  })(), "AI방 aiWantsImage detects image-generation intent, ignores paint room / describe (runtime)"],
+  [(() => {
+    // AI방: #방 참조 블록. 내용 주입 + 수정용 코드블록 안내. refs 없으면 빈 문자열.
+    try {
+      const src = dataStore.match(/function buildAiReferenceBlock\(refs\) \{[\s\S]*?\n\}/);
+      if (!src) return false;
+      const fn = new Function(`${src[0]}\nreturn buildAiReferenceBlock;`)();
+      const out = fn([{ name: "회의록", type: "memo", content: "다음 스프린트 목표: 로그인" }]);
+      return fn([]) === "" && fn(null) === ""
+        && out.includes("[참조된 메모장 #회의록]") && out.includes("다음 스프린트 목표: 로그인")
+        && out.includes("```accord:memo #방이름") && out.includes("```accord:chat #방이름");
+    } catch { return false; }
+  })(), "AI방 buildAiReferenceBlock injects referenced room content + edit-directive help (runtime)"],
 ];
 
 for (const [ok, label] of reviews) {

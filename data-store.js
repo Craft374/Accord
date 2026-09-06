@@ -12,6 +12,9 @@ const CHANNELS_FILE = path.join(DATA_DIR, "channels.json");
 const MESSAGES_DIR = path.join(DATA_DIR, "messages");
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const MEMO_DIR = path.join(DATA_DIR, "memo");
+const AI_DIR = path.join(DATA_DIR, "ai");
+const AI_KEYS_FILE = path.join(DATA_DIR, "ai-keys.json"); // { [channelId]: { key, model } } — 클라이언트로 절대 나가지 않음
+const AI_GLOBAL_FILE = path.join(DATA_DIR, "ai-global.json"); // { prompt } — 모든 AI방 공통 프롬프트(서버 관리자)
 const DRAW_DIR = path.join(DATA_DIR, "draw");
 const LOG_DIR = path.join(DATA_DIR, "log");
 const DM_DIR = path.join(DATA_DIR, "dm");
@@ -31,7 +34,8 @@ const INVITE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 혼동 문자 제
 const MAX_CONN_LOG = 40; // 유저별 접속 로그 보관 개수
 const AVATAR_MAX_LEN = 400000; // 프로필 이미지 data URL 최대 길이(약 300KB)
 const BANNER_MAX_LEN = 900000; // 프로필 배경 이미지 data URL 최대 길이(약 670KB)
-const ROOM_TYPES = ["voice", "chat", "memo", "draw", "log"];
+const ROOM_TYPES = ["voice", "chat", "memo", "draw", "log", "ai"];
+const DEFAULT_AI_MODEL = "gemini-2.5-flash";
 const DEFAULT_ROOM_LIMIT = 8; // 통화방 기본 정원
 const ROOM_LIMIT_MAX = 99;
 const ROOM_LAYOUT_MAX_DEPTH = 32;
@@ -380,7 +384,7 @@ function cleanChannelName(value) {
 }
 
 function cleanRoomTypeName(value, type) {
-  const fallback = { voice: "통화방", chat: "채팅방", memo: "메모장", draw: "그림판", log: "전역 로그" }[type] || "새 방";
+  const fallback = { voice: "통화방", chat: "채팅방", memo: "메모장", draw: "그림판", log: "전역 로그", ai: "AI방" }[type] || "새 방";
   return String(value || "").trim().slice(0, 32) || fallback;
 }
 
@@ -757,6 +761,7 @@ function removeRoom(channelId, roomId) {
   deleteRoomMessages(roomId); // 방 삭제 시 저장된 채팅도 정리
   deleteRoomMemo(roomId);
   deleteRoomDraw(roomId);
+  deleteRoomAi(roomId);
   deleteRoomStats(roomId);
   return { channel };
 }
@@ -1263,6 +1268,7 @@ function channelSummary(channel) {
     })),
     emojiUseRestricted: Boolean(channel.emojiUseRestricted),
     attachRestricted: Boolean(channel.attachRestricted),
+    aiConfig: getAiConfig(channel.id), // { hasKey, model } — 키 자체는 포함하지 않음
     userPerms: Object.fromEntries(Object.entries(channel.userPerms || {}).map(([k, v]) => [k, { ...v }])),
     emojis: emojisOf(channel).map((e) => ({ id: e.id, name: e.name, url: e.url })),
     fonts: fontsOf(channel).map((f) => ({ id: f.id, name: f.name, url: f.url, family: f.family || "", weightText: f.weightText || "" })),
@@ -1353,6 +1359,263 @@ function deleteMessage(roomId, msgId) {
   writeJsonAtomic(messagesFile(roomId), list);
   deleteUploadsFromFiles(removed.files); // 첨부 파일도 서버 저장소에서 정리
   return removed;
+}
+
+// ===== AI방 =====
+// 방마다 server-data/ai/<roomId>.json 에 세션 목록 + 방 메모리를 저장한다.
+// 문서: {
+//   sessions: [{ id, title, createdAt, messages: [{ role:'user'|'model', text, at, userId, name, images?, files? }] }],
+//   activeSessionId,
+//   memory: { prompt, notes }   // 이 AI방 전용 시스템 지침 + 자유 메모(모든 대화에 함께 전달)
+// }
+function aiFile(roomId) {
+  return path.join(AI_DIR, `${roomId}.json`);
+}
+
+const AI_THINKING_LEVELS = ["auto", "off", "high"];
+// 방 지식 파일(GPT 프로젝트 파일과 비슷): 텍스트로 추출 가능한 파일만 내용을 읽어 systemInstruction 에 포함한다.
+const AI_FILES_MAX = 12;
+const AI_FILE_TEXT_MAX = 20000;
+// 순수 함수(정규식도 내부에 둬 check-v2 가 단독 추출·실행 가능).
+function isAiTextyFile(mime, name) {
+  const mimeRe = /^text\/|^application\/(json|xml|x-yaml|yaml)$/i;
+  const extRe = /\.(txt|md|markdown|csv|tsv|json|jsonl|ya?ml|xml|html?|css|jsx?|tsx?|py|java|c|cc|cpp|h|hpp|go|rs|rb|php|sh|sql|log)$/i;
+  return mimeRe.test(String(mime || "")) || extRe.test(String(name || ""));
+}
+
+// 사용자 메시지가 그림/이미지 생성 요청처럼 보이면 true. AI방에서 이번 턴만 이미지 모델로
+// 자동 전환하는 데 쓴다("그려줘" 등). "그림 설명"·"그림판" 같은 표현은 걸리지 않게 동사를 요구한다.
+function aiWantsImage(text) {
+  return /그려|그림\s*그리|이미지\s*(를|좀)?\s*(생성|만들|제작|그려)|삽화|일러스트|\b(draw|sketch)\b|generate[\s\w]*\bimage\b|create[\s\w]*\bimage\b|make[\s\w]*\b(image|picture|drawing)\b/i.test(String(text || ""));
+}
+// 그림 요청으로 자동 전환할 때 쓰는 모델. 접미사 없이 동작하는 안정 이미지 모델.
+const AI_AUTO_IMAGE_MODEL = "gemini-2.5-flash-image";
+
+function emptyAiDoc() {
+  return { sessions: [], activeSessionId: "", memory: { prompt: "", notes: "" }, settings: { model: "", thinking: "auto" }, files: [] };
+}
+
+function getAiDoc(roomId) {
+  if (!isSafeRoomId(roomId)) return emptyAiDoc();
+  const doc = readJson(aiFile(roomId), emptyAiDoc());
+  if (!doc || !Array.isArray(doc.sessions)) return emptyAiDoc();
+  const m = doc.memory && typeof doc.memory === "object" ? doc.memory : {};
+  doc.memory = { prompt: String(m.prompt || ""), notes: String(m.notes || "") };
+  const st = doc.settings && typeof doc.settings === "object" ? doc.settings : {};
+  doc.settings = {
+    model: String(st.model || "").slice(0, 80),
+    thinking: AI_THINKING_LEVELS.includes(st.thinking) ? st.thinking : "auto",
+  };
+  if (typeof doc.activeSessionId !== "string") doc.activeSessionId = "";
+  doc.files = (Array.isArray(doc.files) ? doc.files : []).slice(0, AI_FILES_MAX).map((f) => ({
+    id: String(f?.id || ""),
+    url: String(f?.url || ""),
+    name: String(f?.name || "file").slice(0, 200),
+    mime: String(f?.mime || "").slice(0, 100),
+    size: Number(f?.size) || 0,
+    text: String(f?.text || "").slice(0, AI_FILE_TEXT_MAX),
+    addedAt: Number(f?.addedAt) || 0,
+    addedBy: String(f?.addedBy || ""),
+  })).filter((f) => f.id && f.url);
+  return doc;
+}
+
+// 파일을 방 지식으로 추가한다. 텍스트류 파일만 내용을 읽어 둔다(이미지 등은 메타데이터만).
+// 꽉 찼으면 null 을 돌려주고, 호출자(server.js)가 그 전에 개수를 확인해 에러로 안내한다.
+function addAiFile(roomId, { url, name, mime, size, addedBy } = {}) {
+  const doc = getAiDoc(roomId);
+  if (doc.files.length >= AI_FILES_MAX) return null;
+  let text = "";
+  if (isAiTextyFile(mime, name)) {
+    const raw = String(url || "");
+    const filePath = raw.startsWith("/uploads/") ? getUploadPath(raw.slice("/uploads/".length)) : null;
+    if (filePath) {
+      try { text = fs.readFileSync(filePath, "utf8").slice(0, AI_FILE_TEXT_MAX); } catch { text = ""; }
+    }
+  }
+  doc.files.push({
+    id: crypto.randomBytes(6).toString("hex"),
+    url: String(url || ""),
+    name: String(name || "file").slice(0, 200),
+    mime: String(mime || "").slice(0, 100),
+    size: Number(size) || 0,
+    text,
+    addedAt: Date.now(),
+    addedBy: String(addedBy || ""),
+  });
+  saveAiDoc(roomId, doc);
+  return doc.files;
+}
+
+function removeAiFile(roomId, fileId) {
+  const doc = getAiDoc(roomId);
+  const idx = doc.files.findIndex((f) => f.id === String(fileId || ""));
+  if (idx < 0) return null;
+  const [removed] = doc.files.splice(idx, 1);
+  saveAiDoc(roomId, doc);
+  deleteUpload(removed.url);
+  return doc.files;
+}
+
+const AI_MEMORY_FIELD_MAX = 4000;
+function setAiMemory(roomId, { prompt, notes } = {}) {
+  const doc = getAiDoc(roomId);
+  if (typeof prompt === "string") doc.memory.prompt = prompt.slice(0, AI_MEMORY_FIELD_MAX);
+  if (typeof notes === "string") doc.memory.notes = notes.slice(0, AI_MEMORY_FIELD_MAX);
+  saveAiDoc(roomId, doc);
+  return doc.memory;
+}
+
+// 방별 모델/생각수준 오버라이드. model "" = 채널 기본 사용.
+function setAiSettings(roomId, { model, thinking } = {}) {
+  const doc = getAiDoc(roomId);
+  if (typeof model === "string") doc.settings.model = model.trim().slice(0, 80);
+  if (typeof thinking === "string" && AI_THINKING_LEVELS.includes(thinking)) doc.settings.thinking = thinking;
+  saveAiDoc(roomId, doc);
+  return doc.settings;
+}
+
+// ----- AI방 공통 프롬프트 (서버 관리자, 모든 AI방에 공통 적용) -----
+let aiGlobal = null;
+function loadAiGlobal() {
+  if (!aiGlobal) aiGlobal = readJson(AI_GLOBAL_FILE, { prompt: "" }) || { prompt: "" };
+  return aiGlobal;
+}
+function getAiGlobalPrompt() {
+  return String(loadAiGlobal().prompt || "");
+}
+function setAiGlobalPrompt(text) {
+  aiGlobal = { prompt: String(text || "").slice(0, 8000) };
+  writeJsonAtomic(AI_GLOBAL_FILE, aiGlobal);
+  return aiGlobal.prompt;
+}
+
+// AI방에 보낼 systemInstruction 텍스트를 만든다. 순수 함수(네트워크·파일 무관, 외부 참조 없음 — check-v2 가 단독 실행).
+// 서버 공통 지침 + 이 방 지침 + 이 방 메모리 + "이 방의 다른 대화 전체"(GPT 프로젝트처럼)를 이어붙인다.
+// ponytail: 다른 대화는 전문을 그대로 이어붙임. 총 40000자 상한, 넘으면 오래된 대화부터 버림.
+//           길어져서 비용/컨텍스트가 문제되면 요약·임베딩 검색으로 승급.
+function buildAiSystemInstruction(doc, globalPrompt) {
+  const PROJECT_CHARS = 40000;
+  const SESSION_CHARS = 12000;
+  const base = "당신은 Accord 안의 'AI방'에서 여러 사용자가 함께 쓰는 어시스턴트입니다. 각 사용자 발화 앞의 '이름:' 은 말한 사람 표시입니다. 한국어로 간결하고 정확하게 답하세요.";
+  const parts = [base];
+  const mem = (doc && doc.memory) || {};
+  const g = String(globalPrompt || "").trim();
+  if (g) parts.push(`[서버 공통 지침]\n${g}`);
+  const rp = String(mem.prompt || "").trim();
+  if (rp) parts.push(`[이 AI방 지침]\n${rp}`);
+  const rn = String(mem.notes || "").trim();
+  if (rn) parts.push(`[이 AI방 메모리]\n${rn}`);
+  const files = Array.isArray(doc && doc.files) ? doc.files : [];
+  if (files.length) {
+    const FILES_TOTAL_CHARS = 80000;
+    let usedChars = 0;
+    const lines = files.map((f) => {
+      const label = `${f.name}${f.mime ? ` (${f.mime})` : ""}`;
+      if (!f.text) return `- ${label}: (텍스트로 추출할 수 없는 파일 — 이름만 참고 가능)`;
+      const remain = FILES_TOTAL_CHARS - usedChars;
+      if (remain <= 0) return `- ${label}: (분량 제한으로 생략됨)`;
+      const body = f.text.slice(0, remain);
+      usedChars += body.length;
+      return `- ${label}:\n${body}`;
+    });
+    parts.push(`[이 AI방에 업로드된 파일 — GPT 프로젝트 파일처럼 모든 대화에서 참고]\n${lines.join("\n\n")}`);
+  }
+  const sessions = Array.isArray(doc && doc.sessions) ? doc.sessions : [];
+  const activeId = doc && doc.activeSessionId;
+  const others = sessions.filter((s) => s && s.id !== activeId);
+  const blocks = [];
+  let used = 0;
+  let omitted = 0;
+  for (let i = others.length - 1; i >= 0; i--) { // 최신 대화부터
+    const s = others[i];
+    const lines = [];
+    for (const m of Array.isArray(s.messages) ? s.messages : []) {
+      if (m && m.text) lines.push(`${m.role === "user" ? (m.name || "사용자") : "AI"}: ${String(m.text)}`);
+    }
+    const body = lines.join("\n").slice(0, SESSION_CHARS);
+    if (!body) continue;
+    const block = `── 대화 "${String(s.title || "무제").slice(0, 60)}" ──\n${body}`;
+    if (used + block.length <= PROJECT_CHARS) { blocks.unshift(block); used += block.length; }
+    else omitted++;
+  }
+  if (blocks.length || omitted) {
+    let head = "[이 AI방의 다른 대화 전체 — 이 방의 지식으로 활용]";
+    if (omitted) head += `\n(오래된 대화 ${omitted}개는 분량 제한으로 생략됨)`;
+    parts.push(`${head}\n\n${blocks.join("\n\n")}`.trim());
+  }
+  return parts.join("\n\n");
+}
+
+// 사용자가 #방이름 으로 참조한 메모장/채팅방 내용 + 수정 방법 안내. 순수.
+// refs: [{ name, type:'memo'|'chat', content }]
+function buildAiReferenceBlock(refs) {
+  const out = [];
+  for (const r of Array.isArray(refs) ? refs : []) {
+    if (!r || !r.name) continue;
+    const kind = r.type === "memo" ? "메모장" : "채팅방";
+    out.push(`[참조된 ${kind} #${r.name}]\n${String(r.content || "").slice(0, 8000) || "(비어 있음)"}`);
+  }
+  if (!out.length) return "";
+  return `${out.join("\n\n")}\n\n[참조된 방 수정하기] 사용자가 이번 메시지에서 #으로 지정한 방만 고칠 수 있습니다. 필요하면 응답에 아래 코드블록을 그대로 포함하세요(사용자에게는 결과 요약만 보입니다):\n\`\`\`accord:memo #방이름\n<메모장 전체를 대체할 새 내용>\n\`\`\`\n\`\`\`accord:memo-append #방이름\n<메모장 끝에 덧붙일 내용>\n\`\`\`\n\`\`\`accord:chat #방이름\n<채팅방에 보낼 한 줄 메시지>\n\`\`\``;
+}
+
+function saveAiDoc(roomId, doc) {
+  if (!isSafeRoomId(roomId)) return;
+  fs.mkdirSync(AI_DIR, { recursive: true });
+  writeJsonAtomic(aiFile(roomId), doc);
+}
+
+function deleteRoomAi(roomId) {
+  if (!isSafeRoomId(roomId)) return;
+  try { fs.unlinkSync(aiFile(roomId)); } catch { /* 없으면 무시 */ }
+}
+
+// ----- AI API 키 (채널별, 서버 전용) -----
+let aiKeys = null;
+function loadAiKeys() {
+  if (!aiKeys) aiKeys = readJson(AI_KEYS_FILE, {}) || {};
+  return aiKeys;
+}
+// 서버에서만 사용: 실제 키 포함
+function getAiSecret(channelId) {
+  return loadAiKeys()[channelId] || null;
+}
+// 클라이언트로 나가도 안전한 형태(키 없음)
+function getAiConfig(channelId) {
+  const c = loadAiKeys()[channelId];
+  return { hasKey: Boolean(c && c.key), model: (c && c.model) || DEFAULT_AI_MODEL };
+}
+// 저장된 AI 세션 메시지 목록 -> Gemini generateContent 의 contents 배열.
+// 순수 함수(네트워크 무관). 사용자 발화에는 화자 이름을 접두어로 붙여 모델이 누가 말했는지 알게 한다.
+function toGeminiContents(messages, limit = 20) {
+  const recent = (Array.isArray(messages) ? messages : []).slice(-limit);
+  const out = [];
+  for (const m of recent) {
+    if (!m || (m.role !== "user" && m.role !== "model")) continue;
+    // 이미지만 첨부하고 글자는 안 쓴 사용자 메시지도 살린다. 실제 이미지 데이터는 server.js 가 최신 메시지의
+    // parts 에만 덧붙이므로(디스크 I/O), 지난 대화 기록에서는 파일명만 문구로 남겨 parts 가 비지 않게 한다.
+    const files = m.role === "user" && Array.isArray(m.files) ? m.files : [];
+    if (!m.text && !files.length) continue;
+    const body = m.text || `[첨부: ${files.map((f) => f?.name || "파일").join(", ")}]`;
+    const text = (m.role === "user" && m.name ? `${m.name}: ${body}` : String(body)).trim();
+    out.push({ role: m.role, parts: text ? [{ text }] : [] });
+  }
+  return out;
+}
+
+function setAiConfig(channelId, { key, model } = {}) {
+  const all = loadAiKeys();
+  const cur = { ...(all[channelId] || {}) };
+  if (typeof key === "string") {
+    const k = key.trim();
+    if (k) cur.key = k;
+    else delete cur.key; // 빈 문자열이면 키 삭제
+  }
+  if (typeof model === "string" && model.trim()) cur.model = model.trim().slice(0, 80);
+  all[channelId] = cur;
+  writeJsonAtomic(AI_KEYS_FILE, all);
+  return getAiConfig(channelId);
 }
 
 // ===== 파일 업로드 =====
@@ -1703,6 +1966,26 @@ module.exports = {
   reorderRoomLayout,
   setRoomLimit,
   setRoomReadOnly,
+  // AI방
+  getAiDoc,
+  saveAiDoc,
+  setAiMemory,
+  setAiSettings,
+  getAiSecret,
+  getAiConfig,
+  setAiConfig,
+  getAiGlobalPrompt,
+  setAiGlobalPrompt,
+  toGeminiContents,
+  buildAiSystemInstruction,
+  buildAiReferenceBlock,
+  addAiFile,
+  removeAiFile,
+  isAiTextyFile,
+  aiWantsImage,
+  AI_FILES_MAX,
+  DEFAULT_AI_MODEL,
+  AI_AUTO_IMAGE_MODEL,
   // 권한 역할
   createRole,
   updateRole,

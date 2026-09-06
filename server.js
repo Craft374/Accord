@@ -15,7 +15,7 @@ seedAdminAccount();
 // 서버 버전. 클라이언트(앱) 버전은 package.json 의 version 이며 따로 관리한다.
 // 규칙: 클라 코드가 바뀌면 서버가 그 코드를 배포하므로 서버·클라 둘 다 올리고,
 //       서버만 바뀌면 서버 버전만 올린다.
-const VERSION = "3.0.1";
+const VERSION = "3.1.0";
 const PORT = Number(process.env.PORT || 25565);
 const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_HOST = cleanHost(process.env.PUBLIC_HOST || "");
@@ -459,6 +459,7 @@ function handleUpgrade(req, socket) {
     userId: "",
     isAdmin: false,
     chatRoomId: "", // 현재 보고 있는 채팅방(입력중 표시 대상 판별용)
+    aiRoomId: "", // 현재 보고 있는 AI방(브로드캐스트 대상 판별용)
     memoRoomId: "", // 현재 보고 있는 메모장(실시간 동기화 대상 판별용)
     drawRoomId: "", // 현재 보고 있는 그림판(실시간 동기화 대상 판별용)
     logRoomId: "", // 현재 보고 있는 로그방(실시간 로그 대상 판별용)
@@ -625,6 +626,7 @@ function handleMessage(client, message) {
   if (handleAdminMessage(client, message)) return;
   if (handleChannelMessage(client, message)) return;
   if (handleChatMessage(client, message)) return;
+  if (handleAiMessage(client, message)) return;
   if (handleMemoMessage(client, message)) return;
   if (handleDrawMessage(client, message)) return;
   if (handleLogMessage(client, message)) return;
@@ -844,6 +846,14 @@ function handleAdminMessage(client, message) {
       sendAdminUsers(client);
       return true;
     }
+    case "admin:get-ai-prompt":
+      send(client, { type: "admin-ai-prompt", prompt: store.getAiGlobalPrompt() });
+      return true;
+    case "admin:set-ai-prompt": {
+      const prompt = store.setAiGlobalPrompt(message.prompt);
+      send(client, { type: "admin-ai-prompt", prompt, saved: true });
+      return true;
+    }
     default:
       return false;
   }
@@ -1047,6 +1057,7 @@ function removeClient(client) {
   leaveMemo(client);
   leaveDraw(client);
   leaveChatView(client);
+  leaveAiView(client);
   client.logRoomId = "";
   client.logChannelId = "";
   client.dmUserId = "";
@@ -1142,7 +1153,7 @@ function broadcastPresence() {
   // 다른 사람이 어느 방에 있는지 방 옆에 표시할 수 있게 한다. (방 id는 전역 고유라 통화방과 겹치지 않음)
   for (const client of clients.values()) {
     if (!client.userId) continue;
-    for (const rid of [client.chatRoomId, client.memoRoomId, client.drawRoomId, client.logRoomId]) {
+    for (const rid of [client.chatRoomId, client.aiRoomId, client.memoRoomId, client.drawRoomId, client.logRoomId]) {
       if (!rid) continue;
       if (!presence[rid]) presence[rid] = [];
       presence[rid].push({ clientId: client.id, userId: client.userId, name: client.name || "Guest" });
@@ -1341,6 +1352,20 @@ function handleChannelMessage(client, message) {
         const r = store.setChannelIcon(message.channelId, message.icon);
         if (r.error) return channelError(client, r.error);
         notifyChannelMembers(message.channelId);
+        return true;
+      });
+    case "channel:set-ai":
+      return ownerAction(client, message.channelId, () => {
+        const patch = {};
+        if (typeof message.key === "string") patch.key = message.key.slice(0, 400);
+        if (typeof message.model === "string") patch.model = message.model;
+        store.setAiConfig(message.channelId, patch);
+        notifyChannelMembers(message.channelId); // aiConfig 가 channelSummary 로 다시 나감
+        // 이 채널 AI방을 보고 있는 사람에게 갱신된 설정을 즉시 반영
+        const channel = store.getChannel(message.channelId);
+        for (const room of channel?.rooms || []) {
+          if (room.type === "ai") broadcastAi(room.id, { type: "ai:config", roomId: room.id, config: store.getAiConfig(message.channelId) });
+        }
         return true;
       });
     case "channel:create-role":
@@ -1872,6 +1897,514 @@ function broadcastChat(channel, payload) {
   for (const c of clients.values()) {
     if (!c.userId) continue;
     if (store.isChannelMember(channel.id, c.userId, c.isAdmin)) send(c, payload);
+  }
+}
+
+// ===== AI방 (다같이 쓰는 AI 대화방) =====
+// 각 사용자는 자기 입력창을 쓰고, 입력 중인 내용은 방의 다른 사람에게 미리보기로만 보인다(입력창을 공유하지 않음).
+// 보낸 프롬프트와 AI 응답은 방 전원이 함께 본다.
+// 세션(대화 스레드) + 방 메모리는 server-data/ai/<roomId>.json 에 저장되고, 입력 미리보기(draft)는 메모리에만 둔다.
+const AI_TEXT_MAX = 4000;
+const AI_CONTEXT_TURNS = 20; // Gemini 에 함께 보내는 최근 메시지 수(활성 세션)
+const AI_TIMEOUT_MS = 60000;
+const AI_IMG_MIME = { "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp" };
+const AI_REF_MAX = 5; // 한 메시지에서 처리하는 #방 참조 최대 개수
+const AI_ATTACH_MAX = 3; // 메시지 하나에 첨부 가능한 파일 수(클라 상한과 동일)
+const AI_ATTACH_IMG_MAX = 4 * 1024 * 1024; // 이미지 첨부 원본 용량 상한 — base64 인플레이션(~33%) 감안해 요청이 안 커지게
+const AI_ATTACH_TEXT_MAX = 8000; // 첨부 텍스트 파일에서 프롬프트에 끼워 넣는 글자 수 상한
+// 모델이 참조된 방을 고칠 때 쓰는 지시 블록: ```accord:<memo|memo-append|chat> #방이름 \n 내용 ```
+const AI_ACTION_RE = /```accord:(memo|memo-append|chat)[ \t]+#([^\s#`]{1,40})[^\n]*\n([\s\S]*?)```/g;
+
+const aiDrafts = new Map(); // roomId -> Map(userId -> { text, name, at })
+const aiBusy = new Set();   // 응답 생성 중인 roomId (동시 요청/비용 방어)
+
+// 이 방에서 나(byId 제외) 말고 입력 중인 사람들의 미리보기 목록.
+function aiDraftList(roomId, exceptId) {
+  const m = aiDrafts.get(roomId);
+  if (!m) return [];
+  const out = [];
+  for (const [uid, d] of m) {
+    if (uid === exceptId || !d.text) continue;
+    out.push({ byId: uid, byName: d.name || "", text: d.text });
+  }
+  return out;
+}
+
+function leaveAiView(client) {
+  const roomId = client.aiRoomId;
+  if (!roomId) return;
+  client.aiRoomId = "";
+  const m = aiDrafts.get(roomId);
+  if (m && m.delete(client.userId)) {
+    if (!m.size) aiDrafts.delete(roomId);
+    // 자리를 뜬 사람의 "입력 중" 잔상을 즉시 지운다.
+    broadcastAi(roomId, { type: "ai:draft", roomId, byId: client.userId, byName: client.name || "", text: "" });
+  }
+}
+
+function resolveAiRoom(client, roomId) {
+  const found = store.findRoom(String(roomId || ""));
+  if (!found || found.room.type !== "ai") {
+    send(client, { type: "ai:error", message: "AI방을 찾지 못했습니다." });
+    return null;
+  }
+  if (!store.isChannelMember(found.channel.id, client.userId, client.isAdmin)) {
+    send(client, { type: "ai:error", message: "채널 멤버만 이용할 수 있습니다." });
+    return null;
+  }
+  if (!store.canAccessRoom(found.channel.id, found.room.id, client.userId, client.isAdmin)) {
+    send(client, { type: "ai:error", message: "이 방에 접근할 권한이 없습니다." });
+    return null;
+  }
+  return found;
+}
+
+function broadcastAi(roomId, payload) {
+  for (const c of clients.values()) {
+    if (c.userId && c.aiRoomId === roomId) send(c, payload);
+  }
+}
+
+// ai:state 를 방 전원에게, 각자 관점(writable·본인 제외 draft 목록)으로 보낸다.
+function broadcastAiState(ctx, doc, messages) {
+  for (const c of clients.values()) {
+    if (c.userId && c.aiRoomId === ctx.room.id) send(c, aiStatePayload(ctx, c, doc, messages));
+  }
+}
+
+function aiSessionMetas(doc) {
+  return doc.sessions.map((s) => ({ id: s.id, title: s.title || "새 대화", createdAt: s.createdAt || 0, count: (s.messages || []).length }));
+}
+
+function aiActiveSession(doc) {
+  return doc.sessions.find((s) => s.id === doc.activeSessionId) || null;
+}
+
+// ai:state 공통 페이로드. messages 를 주면 그 목록을, 아니면 활성 세션 메시지를 담는다.
+function aiStatePayload(ctx, client, doc, messages) {
+  return {
+    type: "ai:state",
+    roomId: ctx.room.id,
+    config: store.getAiConfig(ctx.channel.id),
+    memory: doc.memory,
+    settings: doc.settings,
+    sessions: aiSessionMetas(doc),
+    activeSessionId: doc.activeSessionId || "",
+    messages: messages || (aiActiveSession(doc)?.messages ?? []),
+    thinking: aiBusy.has(ctx.room.id),
+    writable: isRoomWritable(ctx, client),
+    drafts: aiDraftList(ctx.room.id, client.userId),
+    files: aiFilesForClient(doc.files),
+  };
+}
+
+// 추출된 본문(text)은 클라에 보내지 않는다(용량·정보 노출 방지) — 목록 표시에 필요한 메타데이터만.
+function aiFilesForClient(files) {
+  return (Array.isArray(files) ? files : []).map((f) => ({ id: f.id, name: f.name, mime: f.mime, size: f.size, url: f.url, addedAt: f.addedAt }));
+}
+
+function aiEnsureSession(doc) {
+  let s = aiActiveSession(doc);
+  if (!s) {
+    s = { id: crypto.randomBytes(8).toString("hex"), title: "새 대화", createdAt: Date.now(), messages: [] };
+    doc.sessions.push(s);
+    doc.activeSessionId = s.id;
+  }
+  return s;
+}
+
+// Gemini generateContent 호출. { text, images:[{mime,dataB64}] } 반환.
+// ponytail: 이미지 생성은 모델 ID 에 "image" 가 들어가면 responseModalities 로 IMAGE 를 요청하는 휴리스틱.
+//           전용 토글이 필요해지면 그때 만든다.
+async function callGemini({ apiKey, model, contents, system, thinking }) {
+  if (typeof fetch !== "function") throw new Error("이 서버의 Node 버전이 낮습니다. Node 18 이상이 필요합니다.");
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const body = { contents };
+  if (system) body.systemInstruction = { parts: [{ text: system }] };
+  const gen = {};
+  const isImageModel = /image/i.test(model);
+  if (isImageModel) gen.responseModalities = ["TEXT", "IMAGE"];
+  // 생각 수준: Gemini 2.5 계열(이미지 모델 제외)만 thinkingConfig 지원. auto = 모델 자동(미지정).
+  if (/2\.5/.test(model) && !isImageModel && thinking && thinking !== "auto") {
+    gen.thinkingConfig = { thinkingBudget: thinking === "off" ? 0 : 24576 };
+  }
+  if (Object.keys(gen).length) body.generationConfig = gen;
+  // 이미지 생성처럼 오래 걸리는 요청에서 Gemini 가 DEADLINE_EXCEEDED(504)·5xx·429 를 간헐적으로 뱉는다 — 1회 재시도.
+  // ponytail: 재시도 1번 고정. 최악의 경우 대기 시간이 AI_TIMEOUT_MS 의 2배(+백오프)까지 늘고 그동안 방이 aiBusy 로 잠긴다.
+  const payload = JSON.stringify(body);
+  let data;
+  for (let attempt = 1; ; attempt++) {
+    if (attempt > 1) await new Promise((r) => setTimeout(r, 1500));
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), AI_TIMEOUT_MS);
+    let res;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: payload,
+        signal: ctrl.signal,
+      });
+    } catch (err) {
+      clearTimeout(timer);
+      if (err.name === "AbortError") throw new Error("AI 응답이 시간 내에 오지 않았습니다.");
+      const detail = err?.cause?.code || err?.cause?.message || err?.code || err?.message || "unknown";
+      console.error("[ai] fetch 실패:", detail, err?.cause || err);
+      throw new Error(`AI 서버에 연결하지 못했습니다 (${detail})`);
+    }
+    clearTimeout(timer);
+    data = await res.json().catch(() => ({}));
+    if (res.ok) break;
+    const msg = data?.error?.message ? `Gemini 오류: ${data.error.message}` : `Gemini 오류 (HTTP ${res.status})`;
+    if ((res.status >= 500 || res.status === 429) && attempt < 2) {
+      console.warn(`[ai] ${msg} — 재시도`);
+      continue;
+    }
+    throw new Error(msg);
+  }
+  const cand = data?.candidates?.[0];
+  const parts = cand?.content?.parts || [];
+  const text = parts.map((p) => p.text || "").join("").trim();
+  const images = [];
+  for (const p of parts) {
+    const d = p.inlineData || p.inline_data;
+    // mime 화이트리스트(png/jpeg/webp)로 좁히면 모델이 다른 mime(예: 파라미터 붙은 image/png;...)을 돌려줄 때
+    // 조용히 걸러져 "이미지가 아예 안 왔다"처럼 보인다 — image/* 전체를 받고 저장 시 확장자만 기본값(.png)으로.
+    if (d && d.data && /^image\//i.test(d.mimeType || d.mime_type || "")) {
+      images.push({ mime: d.mimeType || d.mime_type, dataB64: d.data });
+    }
+  }
+  const reason = data?.promptFeedback?.blockReason || cand?.finishReason;
+  if (!text && !images.length) {
+    throw new Error(reason ? `응답이 비어 있습니다 (${reason}).` : "빈 응답을 받았습니다.");
+  }
+  const imageMissing = isImageModel && !images.length;
+  if (imageMissing) {
+    // 이미지 모델인데 이미지가 안 왔을 때 원인 진단(실 키로만 재현 가능 — 사용자 테스트 시 로그 확인용).
+    console.error("[ai] 이미지 모델 응답에 이미지 없음:", { reason, parts: parts.map((p) => Object.keys(p)) });
+  }
+  return { text, images, imageBlockReason: imageMissing ? reason : "" };
+}
+
+// 메시지에 첨부된 파일을 Gemini 콘텐츠에 태울 형태로 바꾼다. toGeminiContents(순수함수)는 안 건드리고
+// 여기서 디스크를 읽어(이미지 base64 inlineData / 텍스트류는 프롬프트에 인용) contents 마지막 파트에 덧붙인다.
+function buildAiAttachmentParts(files) {
+  const imageParts = [];
+  let extraText = "";
+  for (const f of Array.isArray(files) ? files : []) {
+    const filePath = store.getUploadPath(String(f.url || "").slice("/uploads/".length));
+    if (!filePath) continue;
+    if (/^image\//i.test(f.mime || "")) {
+      try {
+        const buf = fs.readFileSync(filePath);
+        if (buf.length <= AI_ATTACH_IMG_MAX) imageParts.push({ inlineData: { mimeType: f.mime, data: buf.toString("base64") } });
+        else extraText += `\n[첨부 이미지 "${f.name}"는 용량이 커서 전달하지 못했습니다]`;
+      } catch { /* 무시 */ }
+    } else if (store.isAiTextyFile(f.mime, f.name)) {
+      try {
+        const text = fs.readFileSync(filePath, "utf8").slice(0, AI_ATTACH_TEXT_MAX);
+        extraText += `\n\n[첨부 파일 "${f.name}"]\n${text}`;
+      } catch { /* 무시 */ }
+    } else {
+      extraText += `\n[첨부 파일 "${f.name}"은 이 형식은 읽을 수 없어 이름만 전달합니다]`;
+    }
+  }
+  return { imageParts, extraText };
+}
+
+// 사용자가 이번 메시지에서 #으로 지정한 memo/chat 방만 해석한다(모델이 지어낸 #는 못 건드림).
+// ponytail: 방 이름에 공백 있으면 #참조 불가(토큰이 공백에서 끊김). 필요해지면 따옴표 문법 추가.
+function resolveAiRefs(text, ctx, client) {
+  const tokens = [...new Set((String(text).match(/#[^\s#]{1,40}/g) || []).map((t) => t.slice(1)))].slice(0, AI_REF_MAX);
+  const map = new Map(); // 소문자 방이름 -> { room, type }
+  const refs = [];
+  for (const tok of tokens) {
+    const key = tok.toLowerCase();
+    if (map.has(key)) continue;
+    const room = (ctx.channel.rooms || []).find((r) => (r.type === "memo" || r.type === "chat") && r.name.toLowerCase() === key);
+    if (!room) continue;
+    if (!store.canAccessRoom(ctx.channel.id, room.id, client.userId, client.isAdmin)) continue;
+    const content = room.type === "memo"
+      ? (store.getMemo(room.id).text || "")
+      : store.getMessages(room.id, 60).map((m) => `${m.name || "?"}: ${m.text || ""}`).join("\n");
+    map.set(key, { room, type: room.type });
+    refs.push({ name: room.name, type: room.type, content });
+  }
+  return { map, refs };
+}
+
+// 라이브 메모(편집자 있음)면 OT op 로 반영, 아니면 파일에 직접 저장.
+function applyAiMemoWrite(roomId, mode, body, client) {
+  const live = memoDocs.get(roomId);
+  const cur = live ? live.text : (store.getMemo(roomId).text || "");
+  const addition = mode === "append" ? ((cur ? "\n" : "") + body) : body;
+  const next = mode === "append" ? cur + addition : body;
+  if (live) {
+    const op = mode === "append"
+      ? (cur.length ? [cur.length, addition] : [addition])
+      : (cur.length ? [-cur.length, body] : [body]);
+    live.history.push(op);
+    live.text = next;
+    const rev = live.history.length;
+    for (const c of clients.values()) if (c.memoRoomId === roomId) send(c, { type: "memo:op", roomId, rev, ops: op, by: "" });
+    scheduleMemoPersist(roomId, client.userId);
+  } else {
+    store.saveMemo(roomId, next, client.userId); // font 인자 생략 = 기존 글꼴 유지
+  }
+}
+
+// 모델 응답의 accord: 지시 블록을 실행하고, 블록을 뺀 표시용 텍스트 + 결과 메모를 돌려준다.
+function applyAiActions(replyText, refMap, ctx, client) {
+  const notes = [];
+  const display = String(replyText || "").replace(AI_ACTION_RE, (_m, kind, name, payload) => {
+    const body = String(payload).replace(/\s+$/, "");
+    const target = refMap.get(name.toLowerCase());
+    if (!target) { notes.push(`⚠️ #${name}: 이번 메시지에서 #로 지정한 방이 아니어서 건드리지 않았습니다.`); return ""; }
+    const tctx = { channel: ctx.channel, room: target.room };
+    if (!isRoomWritable(tctx, client)) { notes.push(`⚠️ #${target.room.name}: 쓰기 권한이 없어 건너뜀`); return ""; }
+    try {
+      if (kind === "chat") {
+        if (target.type !== "chat") { notes.push(`⚠️ #${target.room.name}: 채팅방이 아님`); return ""; }
+        const cu = store.findById(client.userId);
+        const cmsg = {
+          id: crypto.randomBytes(8).toString("hex"), roomId: target.room.id,
+          userId: client.userId, name: cu ? cu.displayName : client.name, code: cu ? cu.code : "",
+          text: `🤖 (AI방 요청) ${body}`.slice(0, 4000), mentions: [], files: [], at: Date.now(),
+        };
+        store.addMessage(target.room.id, cmsg);
+        broadcastChat(ctx.channel, { type: "chat:message", message: cmsg });
+        notes.push(`✅ #${target.room.name} 채팅에 메시지를 보냈습니다.`);
+      } else {
+        if (target.type !== "memo") { notes.push(`⚠️ #${target.room.name}: 메모장이 아님`); return ""; }
+        applyAiMemoWrite(target.room.id, kind === "memo-append" ? "append" : "replace", body, client);
+        notes.push(`✅ #${target.room.name} 메모장을 ${kind === "memo-append" ? "이어썼" : "수정했"}습니다.`);
+      }
+    } catch (e) {
+      notes.push(`⚠️ #${target.room.name}: 적용 실패 (${(e && e.message) || e})`);
+    }
+    return "";
+  }).trim();
+  return { display, notes };
+}
+
+function handleAiMessage(client, message) {
+  if (typeof message.type !== "string" || !message.type.startsWith("ai:")) return false;
+  switch (message.type) {
+    case "ai:open": {
+      const ctx = resolveAiRoom(client, message.roomId);
+      if (!ctx) return true;
+      if (client.aiRoomId && client.aiRoomId !== ctx.room.id) leaveAiView(client);
+      client.aiRoomId = ctx.room.id;
+      const doc = store.getAiDoc(ctx.room.id);
+      send(client, aiStatePayload(ctx, client, doc));
+      broadcastPresence();
+      return true;
+    }
+    case "ai:close": {
+      leaveAiView(client);
+      broadcastPresence();
+      return true;
+    }
+    case "ai:draft": {
+      const ctx = resolveAiRoom(client, message.roomId);
+      if (!ctx) return true;
+      const text = String(message.text || "").slice(0, AI_TEXT_MAX);
+      let m = aiDrafts.get(ctx.room.id);
+      if (text) {
+        if (!m) { m = new Map(); aiDrafts.set(ctx.room.id, m); }
+        m.set(client.userId, { text, name: client.name || "", at: Date.now() });
+      } else if (m) {
+        m.delete(client.userId);
+        if (!m.size) aiDrafts.delete(ctx.room.id);
+      }
+      // 다른 사람에게만 내 입력 미리보기를 보낸다(입력창은 공유하지 않음).
+      for (const c of clients.values()) {
+        if (c.userId && c.userId !== client.userId && c.aiRoomId === ctx.room.id) {
+          send(c, { type: "ai:draft", roomId: ctx.room.id, byId: client.userId, byName: client.name || "", text });
+        }
+      }
+      return true;
+    }
+    case "ai:set-memory": {
+      const ctx = resolveAiRoom(client, message.roomId);
+      if (!ctx) return true;
+      if (!isRoomWritable(ctx, client)) { send(client, { type: "ai:error", message: "읽기 전용 방입니다." }); return true; }
+      const memory = store.setAiMemory(ctx.room.id, { prompt: message.prompt, notes: message.notes });
+      broadcastAi(ctx.room.id, { type: "ai:memory", roomId: ctx.room.id, memory });
+      return true;
+    }
+    case "ai:set-settings": {
+      const ctx = resolveAiRoom(client, message.roomId);
+      if (!ctx) return true;
+      if (!isRoomWritable(ctx, client)) { send(client, { type: "ai:error", message: "읽기 전용 방입니다." }); return true; }
+      const settings = store.setAiSettings(ctx.room.id, { model: message.model, thinking: message.thinking });
+      broadcastAi(ctx.room.id, { type: "ai:settings", roomId: ctx.room.id, settings });
+      return true;
+    }
+    case "ai:delete": {
+      const ctx = resolveAiRoom(client, message.roomId);
+      if (!ctx) return true;
+      if (!isRoomWritable(ctx, client)) { send(client, { type: "ai:error", message: "읽기 전용 방입니다." }); return true; }
+      if (aiBusy.has(ctx.room.id)) { send(client, { type: "ai:error", message: "AI 응답 중에는 대화를 삭제할 수 없습니다." }); return true; }
+      const doc = store.getAiDoc(ctx.room.id);
+      const idx = doc.sessions.findIndex((s) => s.id === String(message.sessionId || ""));
+      if (idx < 0) { send(client, { type: "ai:error", message: "대화를 찾지 못했습니다." }); return true; }
+      const [removed] = doc.sessions.splice(idx, 1);
+      if (doc.activeSessionId === removed.id) {
+        doc.activeSessionId = doc.sessions.length ? doc.sessions[doc.sessions.length - 1].id : "";
+      }
+      store.saveAiDoc(ctx.room.id, doc);
+      broadcastAiState(ctx, doc);
+      return true;
+    }
+    case "ai:new": {
+      const ctx = resolveAiRoom(client, message.roomId);
+      if (!ctx) return true;
+      if (!isRoomWritable(ctx, client)) { send(client, { type: "ai:error", message: "읽기 전용 방입니다." }); return true; }
+      const doc = store.getAiDoc(ctx.room.id);
+      const s = { id: crypto.randomBytes(8).toString("hex"), title: "새 대화", createdAt: Date.now(), messages: [] };
+      doc.sessions.push(s);
+      doc.activeSessionId = s.id;
+      store.saveAiDoc(ctx.room.id, doc);
+      broadcastAiState(ctx, doc, []);
+      return true;
+    }
+    case "ai:switch": {
+      const ctx = resolveAiRoom(client, message.roomId);
+      if (!ctx) return true;
+      const doc = store.getAiDoc(ctx.room.id);
+      const target = doc.sessions.find((s) => s.id === String(message.sessionId || ""));
+      if (!target) { send(client, { type: "ai:error", message: "대화를 찾지 못했습니다." }); return true; }
+      doc.activeSessionId = target.id;
+      store.saveAiDoc(ctx.room.id, doc);
+      broadcastAiState(ctx, doc, target.messages);
+      return true;
+    }
+    case "ai:add-file": {
+      const ctx = resolveAiRoom(client, message.roomId);
+      if (!ctx) return true;
+      if (!isRoomWritable(ctx, client)) { send(client, { type: "ai:error", message: "읽기 전용 방입니다." }); return true; }
+      const url = String(message.url || "");
+      if (!/^\/uploads\/[a-f0-9]{24}_[A-Za-z0-9._-]+$/.test(url)) {
+        send(client, { type: "ai:error", message: "잘못된 파일입니다." });
+        return true;
+      }
+      const files = store.addAiFile(ctx.room.id, {
+        url,
+        name: String(message.name || "file").slice(0, 200),
+        mime: String(message.mime || "").slice(0, 100),
+        size: Number(message.size) || 0,
+        addedBy: client.userId,
+      });
+      if (!files) {
+        send(client, { type: "ai:error", message: `파일은 최대 ${store.AI_FILES_MAX}개까지 추가할 수 있습니다. 먼저 하나를 지워주세요.` });
+        return true;
+      }
+      broadcastAi(ctx.room.id, { type: "ai:files", roomId: ctx.room.id, files: aiFilesForClient(files) });
+      return true;
+    }
+    case "ai:remove-file": {
+      const ctx = resolveAiRoom(client, message.roomId);
+      if (!ctx) return true;
+      if (!isRoomWritable(ctx, client)) { send(client, { type: "ai:error", message: "읽기 전용 방입니다." }); return true; }
+      const files = store.removeAiFile(ctx.room.id, message.fileId);
+      if (!files) { send(client, { type: "ai:error", message: "파일을 찾지 못했습니다." }); return true; }
+      broadcastAi(ctx.room.id, { type: "ai:files", roomId: ctx.room.id, files: aiFilesForClient(files) });
+      return true;
+    }
+    case "ai:send": {
+      const ctx = resolveAiRoom(client, message.roomId);
+      if (!ctx) return true;
+      if (!isRoomWritable(ctx, client)) { send(client, { type: "ai:error", message: "읽기 전용 방입니다." }); return true; }
+      const text = String(message.text || "").replace(/\s+$/, "").slice(0, AI_TEXT_MAX);
+      const files = cleanChatFiles(message.files).slice(0, AI_ATTACH_MAX);
+      if (!text && !files.length) { send(client, { type: "ai:error", message: "빈 메시지는 보낼 수 없습니다." }); return true; }
+      const secret = store.getAiSecret(ctx.channel.id);
+      if (!secret || !secret.key) {
+        send(client, { type: "ai:error", message: "AI API 키가 없습니다. 채널 관리 → AI방 설정에서 Gemini 키를 등록하세요." });
+        return true;
+      }
+      if (files.length && !store.canAttach(ctx.channel.id, client.userId, client.isAdmin)) {
+        send(client, { type: "ai:error", message: "파일을 첨부할 권한이 없습니다." });
+        return true;
+      }
+      if (aiBusy.has(ctx.room.id)) { send(client, { type: "ai:error", message: "AI가 이미 응답 중입니다. 잠시 후 다시 시도하세요." }); return true; }
+
+      const doc = store.getAiDoc(ctx.room.id);
+      const session = aiEnsureSession(doc);
+      const user = store.findById(client.userId);
+      const userMsg = { role: "user", text, at: Date.now(), userId: client.userId, name: user ? user.displayName : client.name };
+      if (files.length) userMsg.files = files;
+      session.messages.push(userMsg);
+      if (session.title === "새 대화") session.title = (text || files[0]?.name || "새 대화").slice(0, 40);
+      store.saveAiDoc(ctx.room.id, doc);
+      // 보낸 사람 본인의 입력 미리보기만 지운다.
+      const dm = aiDrafts.get(ctx.room.id);
+      if (dm) { dm.delete(client.userId); if (!dm.size) aiDrafts.delete(ctx.room.id); }
+      broadcastAi(ctx.room.id, { type: "ai:message", roomId: ctx.room.id, sessionId: session.id, message: userMsg });
+      broadcastAi(ctx.room.id, { type: "ai:draft", roomId: ctx.room.id, byId: client.userId, byName: client.name || "", text: "" });
+
+      // 사용자가 #으로 지정한 방(메모장/채팅) 읽어서 문맥에 넣고, 나중에 수정 대상으로도 쓴다.
+      const { map: refMap, refs } = resolveAiRefs(text, ctx, client);
+
+      aiBusy.add(ctx.room.id);
+      broadcastAi(ctx.room.id, { type: "ai:thinking", roomId: ctx.room.id, on: true });
+      let model = doc.settings.model || secret.model || store.DEFAULT_AI_MODEL;
+      // 자동 모델 선택: 그림 요청 같으면 이번 턴만 이미지 모델로. 방 설정(doc.settings.model)은 그대로 둔다.
+      let autoNote = "";
+      if (text && !/image/i.test(model) && store.aiWantsImage(text)) {
+        model = store.AI_AUTO_IMAGE_MODEL;
+        autoNote = `🎨 그림 요청으로 보고 ${model} 모델로 답합니다`;
+      }
+      let system = store.buildAiSystemInstruction(doc, store.getAiGlobalPrompt());
+      if (refs.length) system += `\n\n${store.buildAiReferenceBlock(refs)}`;
+      const contents = store.toGeminiContents(session.messages, AI_CONTEXT_TURNS);
+      if (files.length) {
+        // 방금 보낸 메시지(마지막 항목)에만 실제 파일 내용을 실어 보낸다(디스크 I/O라 순수함수 밖에서 처리).
+        const { imageParts, extraText } = buildAiAttachmentParts(files);
+        const last = contents[contents.length - 1];
+        if (last) {
+          if (extraText) last.parts.push({ text: extraText.trim() });
+          last.parts.push(...imageParts);
+        }
+      }
+      callGemini({ apiKey: secret.key, model, system, thinking: doc.settings.thinking, contents })
+        .then((reply) => {
+          const fresh = store.getAiDoc(ctx.room.id);
+          const s = fresh.sessions.find((x) => x.id === session.id);
+          if (!s) return;
+          // 생성된 이미지는 세션 JSON 이 아니라 업로드 저장소에 두고, 메시지에는 URL 만 남긴다.
+          const urls = [];
+          for (const img of reply.images || []) {
+            try {
+              const saved = store.saveUpload({ buffer: Buffer.from(img.dataB64, "base64"), name: `ai${AI_IMG_MIME[img.mime] || ".png"}`, mime: img.mime });
+              urls.push(`/uploads/${saved.fileName}`);
+            } catch (e) { console.error("[ai] 이미지 저장 실패:", e?.message || e); }
+          }
+          // accord: 지시 블록 실행(#으로 지정한 방만) 후, 블록을 뺀 텍스트 + 결과 요약을 남긴다.
+          const { display, notes } = applyAiActions(reply.text, refMap, ctx, client);
+          let outText = display;
+          if (autoNote) notes.unshift(autoNote);
+          if (reply.imageBlockReason) notes.push(`⚠️ 이미지가 생성되지 않았습니다 (사유: ${reply.imageBlockReason})`);
+          if (notes.length) outText += `${outText ? "\n\n" : ""}> ${notes.join("\n> ")}`;
+          const aiMsg = { role: "model", text: outText, at: Date.now(), model };
+          if (urls.length) aiMsg.images = urls;
+          s.messages.push(aiMsg);
+          store.saveAiDoc(ctx.room.id, fresh);
+          broadcastAi(ctx.room.id, { type: "ai:message", roomId: ctx.room.id, sessionId: s.id, message: aiMsg });
+          broadcastAi(ctx.room.id, { type: "ai:sessions", roomId: ctx.room.id, sessions: aiSessionMetas(fresh), activeSessionId: fresh.activeSessionId });
+        })
+        .catch((err) => {
+          broadcastAi(ctx.room.id, { type: "ai:error", roomId: ctx.room.id, message: String(err && err.message || err || "AI 응답 실패") });
+        })
+        .finally(() => {
+          aiBusy.delete(ctx.room.id);
+          broadcastAi(ctx.room.id, { type: "ai:thinking", roomId: ctx.room.id, on: false });
+        });
+      return true;
+    }
+    default:
+      return false;
   }
 }
 
