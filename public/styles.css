@@ -361,6 +361,10 @@ body.in-call .app {
   flex: 1;
   display: grid;
   grid-template-columns: 56px var(--rooms-w, 232px) minmax(0, 1fr) var(--members-w, 208px);
+  /* 행을 컨테이너 높이에 딱 맞춰 각 열 패널이 늘어나지 않고 내부에서 스크롤되게 한다.
+     (통화방에선 main-panel 이 보이면서 auto 행이 화면을 넘겨 방 목록 높이가 안 잡히고
+     sticky '+방/+그룹' 바가 목록 중간에 겹쳐 보였다.) */
+  grid-template-rows: minmax(0, 1fr);
   gap: 6px;
   align-items: stretch;
   min-height: 0;
@@ -530,6 +534,7 @@ body.focus-mode .layout {
   flex-direction: column;
   gap: 12px;
   min-width: 0;
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -3266,6 +3271,10 @@ body.dm-open .dm-panel {
 /* 캐럿이 붙는 버튼은 오른쪽 모서리를 각지게 해 한 덩어리로 보이게 한다 */
 .call-dock-btn:has(~ .call-dock-caret),
 .call-dock-switch .call-dock-btn { border-radius: 9px 0 0 9px; }
+/* 단, 캐럿이 숨겨지는 환경(맥=프로그램 오디오 선택 없음 / 화면공유 설정 없음)에서는
+   버튼만 남으므로 오른쪽 모서리를 다시 둥글게 해 잘려 보이지 않게 한다. */
+.call-dock:has(#programAudioPanel[hidden]) .call-dock-switch .call-dock-btn,
+.call-dock:has(#screenSharePanel[hidden]) .call-dock-screen .call-dock-btn { border-radius: 9px; }
 
 /* 컴퓨터 사운드 토글: 체크박스는 숨기고 라벨을 버튼처럼 보이게 한다(JS는 계속 checked 사용). */
 .call-dock-switch { position: relative; display: inline-flex; align-items: stretch; margin: 0; cursor: pointer; }
@@ -4956,6 +4965,7 @@ audio,
   display: flex;
   flex-direction: column;
   gap: 2px;
+  flex: 1;
   overflow-y: auto;
   min-height: 0;
 }

@@ -485,6 +485,7 @@ const dom = {
   drawLayerNamesToggle: document.querySelector("#drawLayerNamesToggle"),
   drawHintToggle: document.querySelector("#drawHintToggle"),
   resetLayoutButton: document.querySelector("#resetLayoutButton"),
+  uiScaleSelect: document.querySelector("#uiScaleSelect"),
   memoAutocompleteToggle: document.querySelector("#memoAutocompleteToggle"),
   memoColorEm: document.querySelector("#memoColorEm"),
   memoColorStrong: document.querySelector("#memoColorStrong"),
@@ -4968,6 +4969,14 @@ function setLayoutCollapsed(kind, collapsed) {
   applyLayoutSizing();
 }
 
+// UI 배율: <html> 에 zoom 을 걸어 앱 전체 크기를 키우고 줄인다(맥/윈도우 기본 크기 차이 보정용).
+function applyUiScale() {
+  let v = Number(localStorage.getItem("accordUiScale"));
+  if (!Number.isFinite(v) || v < 0.9 || v > 1.25) v = 1;
+  document.documentElement.style.zoom = v === 1 ? "" : String(v);
+  if (dom.uiScaleSelect) dom.uiScaleSelect.value = String(v);
+}
+
 function isNarrowLayout() {
   return window.matchMedia("(max-width: 920px)").matches;
 }
@@ -4990,7 +4999,9 @@ function resetLayoutSizing() {
   localStorage.removeItem(cfg.members.key);
   localStorage.setItem("accordRoomsCollapsed", "0");
   localStorage.setItem("accordMembersCollapsed", "0");
+  localStorage.removeItem("accordUiScale");
   applyLayoutSizing();
+  applyUiScale();
 }
 
 // target: 폭 CSS 변수를 적용할 요소(기본 dom.layout — 사이드바). growsLeft: 핸들을 왼쪽으로 끌 때
@@ -5043,6 +5054,11 @@ function bindLayoutResizeHandle(handle, kind, { target = dom.layout, growsLeft =
 
 function initLayoutControls() {
   applyLayoutSizing();
+  applyUiScale();
+  dom.uiScaleSelect?.addEventListener("change", () => {
+    localStorage.setItem("accordUiScale", dom.uiScaleSelect.value);
+    applyUiScale();
+  });
   bindLayoutResizeHandle(dom.roomsResizeHandle, "rooms", { onReset: applyLayoutSizing });
   bindLayoutResizeHandle(dom.membersResizeHandle, "members", { onReset: applyLayoutSizing });
   dom.toggleRoomsButton?.addEventListener("click", () => {

@@ -617,7 +617,17 @@
                 <span>방·그룹 목록 옵시디언 스타일 (실험적)</span>
               </label>
             </div>
-            <p class="modal-hint">방 목록 · 멤버 목록의 경계선을 드래그하면 폭을 조절할 수 있습니다. 상단 막대의 접기 버튼으로도 각 목록을 여닫을 수 있습니다.</p>
+            <label class="field">
+              <span>화면 크기 (UI 배율)</span>
+              <select id="uiScaleSelect">
+                <option value="0.9">90%</option>
+                <option value="0.95">95%</option>
+                <option value="1">100%</option>
+                <option value="1.1">110%</option>
+                <option value="1.25">125%</option>
+              </select>
+            </label>
+            <p class="modal-hint">방 목록 · 멤버 목록의 경계선을 드래그하면 폭을 조절할 수 있습니다. 상단 막대의 접기 버튼으로도 각 목록을 여닫을 수 있습니다. 배율을 크게 하면 좁은 창에서는 일부 UI가 모바일 모드로 전환될 수 있습니다.</p>
             <div class="modal-actions">
               <button class="secondary" id="resetLayoutButton" type="button">기본 폭으로 초기화</button>
             </div>
