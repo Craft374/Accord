@@ -2047,10 +2047,7 @@ async function callGemini({ apiKey, model, contents, system, thinking }) {
       });
     } catch (err) {
       clearTimeout(timer);
-      if (err.name === "AbortError") {
-        if (attempt < 2) { console.warn("[ai] 응답 지연, 재시도"); continue; }
-        throw new Error("AI 응답이 시간 내에 오지 않았습니다.");
-      }
+      if (err.name === "AbortError") throw new Error("AI 응답이 시간 내에 오지 않았습니다.");
       const detail = err?.cause?.code || err?.cause?.message || err?.code || err?.message || "unknown";
       console.error("[ai] fetch 실패:", detail, err?.cause || err);
       throw new Error(`AI 서버에 연결하지 못했습니다 (${detail})`);
