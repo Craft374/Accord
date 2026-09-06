@@ -486,6 +486,7 @@ const dom = {
   drawHintToggle: document.querySelector("#drawHintToggle"),
   resetLayoutButton: document.querySelector("#resetLayoutButton"),
   uiScaleSelect: document.querySelector("#uiScaleSelect"),
+  roomListActions: document.querySelector("#roomListActions"),
   memoAutocompleteToggle: document.querySelector("#memoAutocompleteToggle"),
   memoColorEm: document.querySelector("#memoColorEm"),
   memoColorStrong: document.querySelector("#memoColorStrong"),
@@ -4969,11 +4970,12 @@ function setLayoutCollapsed(kind, collapsed) {
   applyLayoutSizing();
 }
 
-// UI 배율: <html> 에 zoom 을 걸어 앱 전체 크기를 키우고 줄인다(맥/윈도우 기본 크기 차이 보정용).
+// UI 배율: --ui-scale 만 세팅하고 실제 확대(.app 의 zoom)와 높이 보정은 CSS 가 한다.
+// (Electron 은 Menu.setApplicationMenu(null) 이라 기본 Ctrl+± 확대가 없어 설정으로 제공한다.)
 function applyUiScale() {
   let v = Number(localStorage.getItem("accordUiScale"));
   if (!Number.isFinite(v) || v < 0.9 || v > 1.25) v = 1;
-  document.documentElement.style.zoom = v === 1 ? "" : String(v);
+  document.documentElement.style.setProperty("--ui-scale", String(v));
   if (dom.uiScaleSelect) dom.uiScaleSelect.value = String(v);
 }
 
@@ -7177,30 +7179,17 @@ function renderRooms() {
   if (!dom.roomList) return;
   dom.roomList.innerHTML = "";
   const channel = currentChannel();
-  if (!channel) return;
   // 미리보기 중에는 대표 전용 버튼(방 추가/삭제)도 숨겨 실제 유저 화면처럼 보여준다.
-  const owner = isChannelOwner(channel) && !rolePreview.active;
+  const owner = Boolean(channel) && isChannelOwner(channel) && !rolePreview.active;
+  // '+ 방 / + 그룹' 은 스크롤러 밖(.channel-panel 바닥)에 고정된 정적 요소라 보이기만 토글한다.
+  if (dom.roomListActions) dom.roomListActions.hidden = !owner;
+  if (!channel) return;
 
   // 미리보기 배너(대표가 특정 역할/유저 관점을 확인 중)
   if (rolePreview.active) dom.roomList.append(buildPreviewBanner(channel));
 
   const layout = visibleRoomLayout(channel, normalizedRoomLayout(channel), owner);
   dom.roomList.append(buildRoomTree(channel, layout, owner, "", true));
-
-  if (owner) {
-    const actions = document.createElement("div");
-    actions.className = "room-list-actions";
-    const addRoom = document.createElement("button");
-    addRoom.className = "room-add-button";
-    addRoom.dataset.roomAdd = "1";
-    addRoom.textContent = "+ 방";
-    const addGroup = document.createElement("button");
-    addGroup.className = "room-add-button";
-    addGroup.dataset.roomGroupAdd = "1";
-    addGroup.textContent = "+ 그룹";
-    actions.append(addRoom, addGroup);
-    dom.roomList.append(actions);
-  }
 }
 
 function legacyRoomLayout(channel) {
@@ -8761,8 +8750,6 @@ function bindChannelEvents() {
       toggleRoomGroup(groupToggle.dataset.channelId, groupToggle.dataset.roomGroupToggle);
       return;
     }
-    const groupAdd = event.target?.closest?.("[data-room-group-add]");
-    if (groupAdd) { openRoomGroupModal(); return; }
     const groupRename = event.target?.closest?.("[data-room-group-rename]");
     if (groupRename) { openRoomGroupModal(groupRename.dataset.roomGroupRename); return; }
     const groupDelete = event.target?.closest?.("[data-room-group-delete]");
@@ -8773,10 +8760,14 @@ function bindChannelEvents() {
       }
       return;
     }
-    const add = event.target?.closest?.("[data-room-add]");
-    if (add) { openRoomModal(); return; }
     const head = event.target?.closest?.(".room-item-head");
     if (head) openRoom(head.dataset.roomId, head.dataset.roomType);
+  });
+
+  // '+ 방 / + 그룹' 은 이제 목록 스크롤러 밖의 고정 버튼이라 직접 바인딩한다.
+  dom.roomListActions?.addEventListener("click", (event) => {
+    if (event.target?.closest?.("[data-room-group-add]")) { openRoomGroupModal(); return; }
+    if (event.target?.closest?.("[data-room-add]")) openRoomModal();
   });
 
   // 메모방 휠클릭(가운데 버튼) = 브라우저처럼 전환 없이 배경 탭으로만 열기.
