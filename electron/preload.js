@@ -60,6 +60,12 @@ contextBridge.exposeInMainWorld("voiceDesktop", {
     if (!result?.ok) throw new Error(result?.error || "프로그램별 오디오 캡처를 시작하지 못했습니다.");
     return result;
   },
+  // 전체 컴퓨터 소리 공유: Accord 자신만 뺀 나머지 소리를 프로그램별 공유와 같은 프로세스 루프백으로 캡처한다.
+  startSystemAudioCapture: async () => {
+    const result = await ipcRenderer.invoke("start-program-audio-capture", [], { excludeSelf: true });
+    if (!result?.ok) throw new Error(result?.error || "컴퓨터 사운드 캡처를 시작하지 못했습니다.");
+    return result;
+  },
   stopProgramAudioCapture: () => ipcRenderer.invoke("stop-program-audio-capture"),
   onProgramAudioData: (callback) => {
     const handler = (event, payload) => callback(payload);

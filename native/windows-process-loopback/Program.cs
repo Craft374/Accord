@@ -50,7 +50,8 @@ internal static class Program
                 int channels = GetIntArg(args, "--channels", DefaultChannels);
                 if (pid <= 0) throw new ArgumentException("capture requires --pid.");
                 if (channels < 1 || channels > 2) throw new ArgumentException("--channels must be 1 or 2.");
-                CaptureProcessLoopback(pid, sampleRate, channels);
+                // --exclude: pid 트리만 빼고 나머지 전부를 캡처한다(전체 컴퓨터 소리 공유에서 Accord 자신을 뺄 때).
+                CaptureProcessLoopback(pid, sampleRate, channels, HasArg(args, "--exclude"));
                 return 0;
             }
 
@@ -76,7 +77,7 @@ internal static class Program
     private static void WriteUsage()
     {
         Console.WriteLine("AccordProcessLoopback list [--exclude-pid PID]");
-        Console.WriteLine("AccordProcessLoopback capture --pid PID [--sample-rate 48000] [--channels 2]");
+        Console.WriteLine("AccordProcessLoopback capture --pid PID [--exclude] [--sample-rate 48000] [--channels 2]");
     }
 
     private static bool HasArg(string[] args, string name)
@@ -765,7 +766,7 @@ internal static class Program
         return "";
     }
 
-    private static void CaptureProcessLoopback(int pid, int sampleRate, int channels)
+    private static void CaptureProcessLoopback(int pid, int sampleRate, int channels, bool exclude)
     {
         Console.CancelKeyPress += delegate(object sender, ConsoleCancelEventArgs eventArgs)
         {
@@ -779,7 +780,7 @@ internal static class Program
 
         try
         {
-            audioClient = ActivateProcessLoopbackClient(pid);
+            audioClient = ActivateProcessLoopbackClient(pid, exclude);
             WaveFormatEx format = WaveFormatEx.CreateFloatPcm(sampleRate, channels);
             formatPtr = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(WaveFormatEx)));
             Marshal.StructureToPtr(format, formatPtr, false);
@@ -845,13 +846,13 @@ internal static class Program
         }
     }
 
-    private static IAudioClient ActivateProcessLoopbackClient(int pid)
+    private static IAudioClient ActivateProcessLoopbackClient(int pid, bool exclude)
     {
         Guid audioClientGuid = typeof(IAudioClient).GUID;
         AudioClientActivationParams activationParams = new AudioClientActivationParams();
         activationParams.ActivationType = AudioClientActivationType.ProcessLoopback;
         activationParams.ProcessLoopbackParams.TargetProcessId = (uint)pid;
-        activationParams.ProcessLoopbackParams.ProcessLoopbackMode = ProcessLoopbackMode.IncludeTargetProcessTree;
+        activationParams.ProcessLoopbackParams.ProcessLoopbackMode = exclude ? ProcessLoopbackMode.ExcludeTargetProcessTree : ProcessLoopbackMode.IncludeTargetProcessTree;
 
         IntPtr activationParamsPtr = IntPtr.Zero;
         IntPtr propVariantPtr = IntPtr.Zero;

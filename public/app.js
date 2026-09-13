@@ -2478,14 +2478,18 @@ async function startProgramSystemAudioShare(options = {}) {
   }
 }
 
-async function getProgramSystemAudioStream() {
-  if (!state.programAudioSourcesLoaded) {
-    await refreshProgramAudioSources({ silent: true });
-  }
+// excludeSelf = 전체 컴퓨터 소리 공유: 선택한 프로그램 대신 Accord 자신만 뺀 나머지 전부를 같은 경로로 캡처한다.
+async function getProgramSystemAudioStream({ excludeSelf = false } = {}) {
+  let pids = [];
+  if (!excludeSelf) {
+    if (!state.programAudioSourcesLoaded) {
+      await refreshProgramAudioSources({ silent: true });
+    }
 
-  const pids = getSelectedProgramAudioCapturePids();
-  if (!pids.length) throw new Error("공유할 프로그램을 선택하세요.");
-  if (!isProgramSystemAudioSupported()) throw new Error("Windows 프로그램별 캡처를 사용할 수 없습니다.");
+    pids = getSelectedProgramAudioCapturePids();
+    if (!pids.length) throw new Error("공유할 프로그램을 선택하세요.");
+    if (!isProgramSystemAudioSupported()) throw new Error("Windows 프로그램별 캡처를 사용할 수 없습니다.");
+  }
 
   const AudioContext = window.AudioContext || window.webkitAudioContext;
   if (!AudioContext || !window.AudioWorkletNode) throw new Error("AudioWorklet을 사용할 수 없습니다.");
@@ -2533,11 +2537,12 @@ async function getProgramSystemAudioStream() {
       if (state.programAudioProcess.stopping) return;
       const error = payload?.error || `PID ${pid} 캡처가 종료되었습니다.`;
       recordClientError("program-audio-helper-stopped", error);
-      setMessage(`프로그램별 캡처 실패: ${error}`);
+      setMessage(`${excludeSelf ? "컴퓨터 사운드" : "프로그램별"} 캡처 실패: ${error}`);
       stopSystemAudio();
     });
 
-    await desktop.startProgramAudioCapture(pids);
+    if (excludeSelf) pids = (await desktop.startSystemAudioCapture()).pids || [];
+    else await desktop.startProgramAudioCapture(pids);
     await context.resume().catch(() => {});
 
     state.programAudioProcess = { context, destination, node, portListener, unsubscribeData, unsubscribeStopped, pids, stopping: false };
@@ -2587,6 +2592,13 @@ async function startDisplaySystemAudioShare(options = {}) {
 
 async function getSystemAudioDisplayStream() {
   const failures = [];
+
+  // 출력 장치 루프백은 스피커 음향효과(APO)까지 입힌 소리라 스피커로 두면 통화음질이 됐다. Accord만 뺀 프로세스
+  // 루프백은 효과 전 소리이고 통화 소리도 안 섞인다. 구버전 클라이언트거나 실패하면 기존 루프백으로 내려간다.
+  if (typeof desktop.startSystemAudioCapture === "function") {
+    const processStream = await getSystemAudioStreamOrNull("Windows process loopback", () => getProgramSystemAudioStream({ excludeSelf: true }), failures);
+    if (processStream) return processStream;
+  }
 
   if (isElectronLoopbackSystemAudioSupported()) {
     const displayStream = await getSystemAudioStreamOrNull("Windows display loopback", getElectronDisplayLoopbackSystemAudioStream, failures);
@@ -16857,7 +16869,8 @@ function isWindowsSystemShareSafeOutputOption(option) {
 
 function shouldUseWindowsLoopbackEchoReducer() {
   if (!desktop.isDesktop || desktop.platform !== "win32") return false;
-  if (isProgramSystemAudioMode()) return false;
+  // 프로세스 루프백(프로그램별·전체 공유)은 Accord 자신의 소리를 애초에 빼고 잡아 보정할 반향이 없다.
+  if (state.programAudioProcess) return false;
   if (!dom.loopbackEchoReductionToggle.checked) return false;
   const selected = dom.outputDeviceSelect.selectedOptions[0];
   return !isWindowsSystemShareSafeOutputOption(selected);

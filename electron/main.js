@@ -394,12 +394,14 @@ function setupNavigation() {
     });
   });
 
-  ipcMain.handle("start-program-audio-capture", async (event, rawPids) => {
+  ipcMain.handle("start-program-audio-capture", async (event, rawPids, options) => {
     if (process.platform !== "win32") return { ok: false, error: "Windows에서만 사용할 수 있습니다." };
     const helperInfo = getProgramLoopbackHelperInfo();
     if (!helperInfo.exists) return { ok: false, error: makeHelperError("프로그램별 오디오 캡처 helper가 없습니다.", helperInfo) };
 
-    const rawList = normalizePidList(rawPids);
+    // excludeSelf = 전체 컴퓨터 소리 공유: 이 앱(통화 소리·알림음) 프로세스 트리만 빼고 나머지 전부를 캡처한다.
+    const exclude = options?.excludeSelf === true;
+    const rawList = exclude ? [process.pid] : normalizePidList(rawPids);
     if (!rawList.length) return { ok: false, error: "공유할 프로그램을 선택하세요." };
 
     // 캡처는 프로세스 트리 포함 모드라, 다른 선택 pid의 자손을 또 캡처하면
@@ -420,7 +422,7 @@ function setupNavigation() {
     }
     try {
       for (const pid of pids) {
-        startProgramAudioCaptureProcess(event.sender, helperInfo, pid);
+        startProgramAudioCaptureProcess(event.sender, helperInfo, pid, exclude);
       }
     } catch (error) {
       stopProgramAudioCapture();
@@ -428,7 +430,7 @@ function setupNavigation() {
       return { ok: false, error: makeHelperError(error.message, helperInfo, error, ["capture", "--pid", pids.join(","), "--sample-rate", "48000", "--channels", "2"]) };
     }
 
-    return { ok: true };
+    return { ok: true, pids };
   });
 
   ipcMain.handle("stop-program-audio-capture", () => {
@@ -692,7 +694,7 @@ function normalizePidList(rawPids) {
   return pids.slice(0, 12);
 }
 
-function startProgramAudioCaptureProcess(webContents, helperInfo, pid) {
+function startProgramAudioCaptureProcess(webContents, helperInfo, pid, exclude = false) {
   const args = [
     "capture",
     "--pid",
@@ -702,6 +704,7 @@ function startProgramAudioCaptureProcess(webContents, helperInfo, pid) {
     "--channels",
     "2",
   ];
+  if (exclude) args.push("--exclude");
   const child = spawn(helperInfo.path, args, {
     cwd: helperInfo.cwd,
     windowsHide: true,
@@ -739,6 +742,9 @@ function startProgramAudioCaptureProcess(webContents, helperInfo, pid) {
   });
 
   child.on("close", (code) => {
+    // 우리가 끈(stopProgramAudioCapture) 옛 프로세스의 늦은 close가, 같은 pid로 새로 시작한 캡처를 끄지 않게 한다.
+    // 전체 소리 공유는 pid가 항상 이 앱 자신이라 재시작 때마다 겹친다.
+    if (programAudioCapture.get(pid) !== child) return;
     programAudioCapture.delete(pid);
     if (!webContents.isDestroyed()) {
       webContents.send("program-audio-stopped", { pid, code, error: parseHelperError(stderr) });
