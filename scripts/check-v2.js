@@ -209,7 +209,7 @@ const checks = [
   [programWorklet.includes("registerProcessor") && programWorklet.includes("voice-program-audio"), "program audio worklet registers processor"],
   [html.includes("programAudioList") && app.includes("data-program-audio-pid"), "program audio selection uses checkbox list"],
   [!main.includes("execFile(helper,") && main.includes("execFile(helperInfo.path"), "program audio list helper variable is defined"],
-  [main.includes("getProgramLoopbackHelperInfo") && main.includes("makeHelperError") && main.includes("cwd: helperInfo.cwd"), "program audio helper spawn errors include path and cwd"],
+  [main.includes('getNativeHelperInfo("AccordProcessLoopback.exe")') && main.includes("makeHelperError") && main.includes("cwd: helperInfo.cwd"), "program audio helper spawn errors include path and cwd"],
   [main.includes("platform=${process.platform}") && main.includes("stack=") && main.includes("args="), "program audio helper errors include platform args and stack"],
   [app.includes("program-audio-list-failed") && app.includes("프로그램별 오디오 목록을 불러오지 못했습니다"), "program audio list failure is shown without crashing"],
   [app.includes("isOwnProgramAudioSource") && app.includes("accordprocessloopback"), "program audio list hides this app and helper"],
@@ -337,6 +337,7 @@ const reviews = [
   [main.includes("get-screen-source") && preload.includes("getScreenSource") && app.includes("getElectronDesktopScreenShareStream"), "windows screen share has desktopCapturer getUserMedia fallback"],
   [html.includes("screenTargetSelect") && main.includes('"list-screen-windows"') && preload.includes("listScreenWindows") && app.includes('surface === "monitor" || state.screenWindow') && /if \(state\.screenWindow\) \{[\s\S]{0,300}return getElectronDesktopScreenShareStream\(state\.screenWindow\);/.test(app), "windows screen share can capture one program window without falling back to the whole monitor"],
   [html.includes("screenCaptureModeSelect") && app.includes("voiceChatScreenCaptureMode") && app.includes("screenCaptureModeField.hidden"), "windows electron screen capture mode can be compared"],
+  [html.includes('<option value="native">') && main.includes('"get-native-screen-capture"') && preload.includes("startNativeScreenCapture") && app.includes("new MediaStreamTrackGenerator") && app.includes('["auto", "native", "handler", "browser", "electron"]') && pkg.build.asarUnpack.includes("electron/bin/*.exe") && fs.existsSync("native/windows-screen-capture/main.cpp"), "windows screen share has native WGC capture and keeps the legacy capture modes"],
   [app.includes("screen-share-5s") && app.includes("screen-low-fps") && app.includes("bytesSent") && app.includes("bytesReceived"), "screen share stats are logged after start with raw bytes"],
   [/role === "screen"[\s\S]+degradationPreference = "maintain-framerate"[\s\S]+delete params\.degradationPreference/.test(app), "screen sender tuning is separated from audio sender tuning"],
   [(() => {

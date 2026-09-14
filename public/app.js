@@ -96,7 +96,7 @@ const state = {
   selectedScreenPeerId: "",
   screenResolution: localStorage.getItem("voiceChatScreenResolution") || "1080",
   screenFps: localStorage.getItem("voiceChatScreenFps") || "30",
-  screenCaptureMode: ["auto", "handler", "browser", "electron"].includes(localStorage.getItem("voiceChatScreenCaptureMode"))
+  screenCaptureMode: ["auto", "native", "handler", "browser", "electron"].includes(localStorage.getItem("voiceChatScreenCaptureMode"))
     ? localStorage.getItem("voiceChatScreenCaptureMode")
     : "auto",
   screenPreviewEnabled: localStorage.getItem("voiceChatScreenPreview") !== "off",
@@ -105,6 +105,7 @@ const state = {
   screenFitMode: localStorage.getItem("voiceChatScreenFitMode") === "cover" ? "cover" : "contain",
   screenSource: "screen", // 현재 공유 슬롯의 소스: "screen"(모니터) 또는 "카메라"(웹캠/가상카메라)
   screenWindow: null, // 창 공유 대상 { id, name } — null이면 모니터(screenDisplayId) 전체
+  nativeScreenCapture: null, // 네이티브 화면 캡처 중이면 preload가 보내는 프레임을 받는 window message 리스너
   screenDisplayId: "", // 공유할 모니터 id — ""이면 공유를 시작할 때 커서가 있는 모니터
   screenControlsHideTimer: 0,
   screenStats: { capture: "", sender: "", receiver: "", bottleneck: "" },
@@ -919,7 +920,7 @@ function restoreScreenShareSettings() {
   if (dom.screenFpsSelect) dom.screenFpsSelect.value = ["15", "30", "60"].includes(state.screenFps) ? state.screenFps : "30";
   if (dom.screenCaptureModeField) dom.screenCaptureModeField.hidden = !isElectronDesktopScreenCaptureSupported();
   if (dom.screenTargetField) dom.screenTargetField.hidden = !isElectronDisplayMediaHandlerSupported();
-  if (dom.screenCaptureModeSelect) dom.screenCaptureModeSelect.value = ["auto", "handler", "browser", "electron"].includes(state.screenCaptureMode) ? state.screenCaptureMode : "auto";
+  if (dom.screenCaptureModeSelect) dom.screenCaptureModeSelect.value = ["auto", "native", "handler", "browser", "electron"].includes(state.screenCaptureMode) ? state.screenCaptureMode : "auto";
   if (dom.screenPreviewToggle) dom.screenPreviewToggle.checked = state.screenPreviewEnabled;
   if (dom.screenProbeToggle) dom.screenProbeToggle.checked = state.screenProbeEnabled;
   if (dom.screenStatsOverlayToggle) dom.screenStatsOverlayToggle.checked = state.screenStatsOverlayEnabled;
@@ -3258,6 +3259,7 @@ function cleanupLocalScreenShare() {
   state.screenSoftwareEncodeWarned = false;
   if (state.selectedScreenPeerId === "local") state.selectedScreenPeerId = "";
   stopScreenCaptureProbe();
+  stopNativeScreenCapture();
   rebuildLocalStream();
   setDesktopScreenShareActive(false).catch(() => {});
   for (const track of tracks) track.stop();
@@ -3294,6 +3296,16 @@ async function getScreenShareStream() {
   state.screenCaptureSource = null;
   state.screenCaptureRequested = null;
   state.screenDesktopDiagnostics = null;
+
+  // 네이티브 캡처(모니터·창 모두)가 자동의 첫 선택이다. 실패하면 자동일 때만 아래 레거시 경로로 넘어간다.
+  if ((state.screenCaptureMode === "auto" || state.screenCaptureMode === "native") && isNativeScreenCaptureSupported()) {
+    try {
+      return await getNativeScreenShareStream();
+    } catch (error) {
+      recordClientError("screen-native-capture-failed", getErrorDetail(error));
+      if (state.screenCaptureMode === "native") throw error;
+    }
+  }
 
   // 창 공유는 그 창 id로 직접 캡처한다. 실패해도 모니터 전체로 넘어가지 않는다(고른 창 밖의 화면이 새지 않게).
   if (state.screenWindow) {
@@ -3375,6 +3387,70 @@ async function getElectronDesktopScreenShareStream(win = null) {
   });
 }
 
+function isNativeScreenCaptureSupported() {
+  return desktop.platform === "win32" && typeof desktop.startNativeScreenCapture === "function";
+}
+
+// 네이티브 캡처(Windows): helper가 WGC로 캡처하고 GPU에서 크기 조절·NV12 변환까지 끝낸 프레임을 preload가 VideoFrame으로 넘겨준다.
+// Chromium 캡처기는 CPU 한 코어의 50%를 넘지 않게 스스로 fps를 깎아서(4K≈30fps) 그 앞단을 통째로 바꾼다. 송출(WebRTC)은 그대로다.
+async function getNativeScreenShareStream() {
+  stopNativeScreenCapture();
+  const generator = new MediaStreamTrackGenerator({ kind: "video" });
+  const writer = generator.writable.getWriter();
+  let started = null;
+  const firstFrame = new Promise((resolve, reject) => {
+    started = { resolve, reject };
+  });
+  const onMessage = (event) => {
+    if (event.source !== window) return;
+    const frame = event.data?.accordNativeScreenFrame;
+    if (frame) {
+      // 인코더 쪽이 밀려 있으면 쌓지 않고 버린다. 버린 프레임은 직접 닫아야 메모리가 새지 않는다.
+      if (writer.desiredSize > 0) writer.write(frame).catch(() => frame.close());
+      else frame.close();
+      started.resolve();
+      return;
+    }
+    const error = event.data?.accordNativeScreenStopped;
+    if (typeof error !== "string") return;
+    started.reject(new Error(error));
+    recordClientError("screen-native-helper-stopped", error);
+    if (state.screenTrack === generator) stopScreenShare({ message: `화면 공유가 멈췄습니다: ${error}` }).catch(() => {});
+  };
+  state.nativeScreenCapture = onMessage;
+  window.addEventListener("message", onMessage);
+  try {
+    await desktop.startNativeScreenCapture({
+      windowId: state.screenWindow?.id || "",
+      fps: Math.max(15, Math.min(60, Number(state.screenFps || 30))),
+      ...getScreenShareTargetSize(),
+    });
+    // 첫 프레임이 와야 성공으로 본다 — 시작하자마자 helper가 죽으면 여기서 실패해 자동 모드가 레거시로 넘어간다.
+    await Promise.race([firstFrame, wait(5000).then(() => {
+      throw new Error("화면 캡처 helper가 화면을 보내지 않습니다.");
+    })]);
+  } catch (error) {
+    stopNativeScreenCapture();
+    generator.stop();
+    throw error;
+  }
+  state.screenCaptureMethod = "native-wgc";
+  state.screenCaptureSource = {
+    id: state.screenWindow?.id || `display:${state.screenDisplayId || "cursor"}`,
+    name: state.screenWindow?.name || "모니터",
+    detail: null,
+  };
+  logClientEvent("screen-capture-path", "native-wgc");
+  return new MediaStream([generator]);
+}
+
+function stopNativeScreenCapture() {
+  if (!state.nativeScreenCapture) return;
+  window.removeEventListener("message", state.nativeScreenCapture);
+  state.nativeScreenCapture = null;
+  desktop.stopNativeScreenCapture?.();
+}
+
 function rememberScreenCaptureSource(source) {
   state.screenCaptureSource = {
     id: source.id,
@@ -3446,7 +3522,8 @@ function getScreenShareTrackConstraints() {
 }
 
 async function applyScreenShareTrackConstraints(track) {
-  if (!track?.applyConstraints) return;
+  // 네이티브 캡처는 helper가 이미 설정 크기·fps로 맞춰 보내므로 트랙 제약을 걸지 않는다.
+  if (!track?.applyConstraints || state.screenCaptureMethod === "native-wgc") return;
   await track.applyConstraints(getScreenShareTrackConstraints()).catch((error) => {
     logClientEvent("screen-constraints-error", error.message || String(error));
   });

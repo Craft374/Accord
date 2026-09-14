@@ -29,7 +29,7 @@
     "productName": "Accord",
     "asar": true,
     "asarUnpack": [
-      "electron/bin/AccordProcessLoopback.exe"
+      "electron/bin/*.exe"
     ],
     "icon": "assets/icon",
     "afterPack": "scripts/mac-resign.js",

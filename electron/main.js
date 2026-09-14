@@ -380,7 +380,7 @@ function setupNavigation() {
 
   ipcMain.handle("list-program-audio-sources", async () => {
     if (process.platform !== "win32") return { ok: false, error: "Windows에서만 사용할 수 있습니다." };
-    const helperInfo = getProgramLoopbackHelperInfo();
+    const helperInfo = getNativeHelperInfo("AccordProcessLoopback.exe");
     if (!helperInfo.exists) return { ok: false, error: makeHelperError("프로그램별 오디오 캡처 helper가 없습니다.", helperInfo) };
     const args = ["list", "--exclude-pid", String(process.pid)];
 
@@ -408,7 +408,7 @@ function setupNavigation() {
 
   ipcMain.handle("start-program-audio-capture", async (event, rawPids, options) => {
     if (process.platform !== "win32") return { ok: false, error: "Windows에서만 사용할 수 있습니다." };
-    const helperInfo = getProgramLoopbackHelperInfo();
+    const helperInfo = getNativeHelperInfo("AccordProcessLoopback.exe");
     if (!helperInfo.exists) return { ok: false, error: makeHelperError("프로그램별 오디오 캡처 helper가 없습니다.", helperInfo) };
 
     // allPrograms = 전체 컴퓨터 소리 공유: pid는 헬퍼가 기본 출력 장치의 세션을 보고 계속 골라 준다(아래 watcher).
@@ -449,6 +449,23 @@ function setupNavigation() {
   ipcMain.handle("stop-program-audio-capture", () => {
     stopProgramAudioCapture();
     return { ok: true };
+  });
+
+  // 네이티브 화면 캡처(helper가 WGC로 캡처하고 GPU에서 NV12로 변환): Chromium 캡처기의 CPU 50% 스로틀(4K≈30fps)을 우회한다.
+  // main은 helper 경로와 인자만 정해 준다. 실행과 프레임 읽기는 preload가 한다 — 4K 프레임을 IPC로 넘기면 복제에만 프레임당 15ms가 넘는다.
+  ipcMain.handle("get-native-screen-capture", (event, options = {}) => {
+    if (process.platform !== "win32") return { ok: false, error: "Windows에서만 사용할 수 있습니다." };
+    const helperInfo = getNativeHelperInfo("AccordScreenCapture.exe");
+    if (!helperInfo.exists) return { ok: false, error: makeHelperError("화면 캡처 helper가 없습니다.", helperInfo) };
+    const hwnd = String(options.windowId || "").match(/^window:(\d+):/)?.[1];
+    const number = (value) => String(Math.max(0, Math.floor(Number(value) || 0)));
+    const args = [
+      ...(hwnd ? ["--window", hwnd] : ["--monitor", ...getScreenCapturePoint()]),
+      "--max-width", number(options.width),
+      "--max-height", number(options.height),
+      "--fps", number(options.fps),
+    ];
+    return { ok: true, path: helperInfo.path, cwd: helperInfo.cwd, args };
   });
 }
 
@@ -674,15 +691,15 @@ function dedupeProgramAudioPids(helperInfo, pids) {
   });
 }
 
-function getProgramLoopbackHelperInfo() {
-  const relative = path.join("electron", "bin", "AccordProcessLoopback.exe");
+function getNativeHelperInfo(exe) {
+  const relative = path.join("electron", "bin", exe);
   const candidates = app.isPackaged
     ? [
       path.join(process.resourcesPath, "app.asar.unpacked", relative),
       path.join(process.resourcesPath, relative),
     ]
     : [
-      path.join(__dirname, "bin", "AccordProcessLoopback.exe"),
+      path.join(__dirname, "bin", exe),
       path.join(__dirname, "..", relative),
     ];
   const found = candidates.find((candidate) => fs.existsSync(candidate));
@@ -823,6 +840,15 @@ function stopProgramAudioCapture() {
   programAudioCapture.clear();
   programAudioPort?.close?.();
   programAudioPort = null;
+}
+
+// 공유할 모니터(설정값, 없으면 커서가 있는 모니터)의 가운데 점을 물리 픽셀로 준다. helper가 이 점으로 모니터를 고른다.
+function getScreenCapturePoint() {
+  const targetId = String(screenCaptureConfig.displayId || getCursorDisplayId() || "");
+  const display = electronScreen.getAllDisplays().find((item) => String(item.id) === targetId) || electronScreen.getPrimaryDisplay();
+  const { x, y, width, height } = display.bounds;
+  const point = electronScreen.dipToScreenPoint({ x: Math.round(x + width / 2), y: Math.round(y + height / 2) });
+  return [String(Math.round(point.x)), String(Math.round(point.y))];
 }
 
 function parseHelperError(stderr) {
