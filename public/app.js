@@ -6212,6 +6212,7 @@ async function updateStats() {
   let screenBytesSent = 0;
   let screenBytesReceived = 0;
   let screenSenderFps = 0;
+  let screenSourceFps = 0; // 캡처 트랙이 송신기에 넘긴 fps(media-source 통계) — 인코딩 전 단계
   let screenReceiverFps = 0;
   let screenFramesEncoded = 0;
   let screenFramesSent = 0;
@@ -6234,7 +6235,7 @@ async function updateStats() {
   let screenOutboundReportCount = 0;
   let candidateText = "";
 
-  const processScreenOutboundReport = (peer, report, now, source) => {
+  const processScreenOutboundReport = (peer, report, now, source, stats) => {
     if (!isVideoOutboundReport(report)) return;
     const reportKey = `${peer.id}:${report.id}`;
     if (processedScreenOutboundReports.has(reportKey)) return;
@@ -6248,6 +6249,7 @@ async function updateStats() {
     screenBytesSent += bytesSent;
     screenSendBps += getBitrate(`${peer.id}:${report.id}:video`, bytesSent, now);
     screenSenderFps = Math.max(screenSenderFps, Number(report.framesPerSecond || 0));
+    screenSourceFps = Math.max(screenSourceFps, Number(stats.get(report.mediaSourceId)?.framesPerSecond || 0));
     screenFramesEncoded += framesEncoded;
     screenFramesSent += framesSent;
     screenHugeFrames += Number(report.hugeFramesSent || 0);
@@ -6272,7 +6274,7 @@ async function updateStats() {
       if (sender?.getStats) {
         try {
           const senderStats = await sender.getStats();
-          senderStats.forEach((report) => processScreenOutboundReport(peer, report, now, "sender.getStats"));
+          senderStats.forEach((report) => processScreenOutboundReport(peer, report, now, "sender.getStats", senderStats));
         } catch (error) {
           screenSenderDiagnostics.push(`peer=${peer.name || peer.id} senderStatsError=${getErrorText(error)}`);
         }
@@ -6287,7 +6289,7 @@ async function updateStats() {
       if (report.type === "outbound-rtp" && report.kind === "audio") {
         sendBps += getBitrate(`${peer.id}:${report.id}`, report.bytesSent, now);
       }
-      processScreenOutboundReport(peer, report, now, "pc.getStats");
+      processScreenOutboundReport(peer, report, now, "pc.getStats", stats);
       if (report.type === "inbound-rtp" && report.kind === "audio") {
         receiveBps += getBitrate(`${peer.id}:${report.id}`, report.bytesReceived, now);
         packetsLost += report.packetsLost || 0;
@@ -6372,6 +6374,7 @@ async function updateStats() {
       `sender bitrate=${Math.round(screenSendBps / 1000)}kbps`,
       `bytesSent=${screenBytesSent}`,
       `bytesDelta=${screenBytesSentDelta}`,
+      `sourceFps=${Math.round(screenSourceFps)}`,
       `framesPerSecond=${Math.round(screenSenderFps) || 0}`,
       `framesEncoded=${screenFramesEncoded}`,
       `framesEncodedDelta=${screenFramesEncodedDelta}`,
@@ -6390,7 +6393,7 @@ async function updateStats() {
   state.screenStats.receiver = screenReceiveBps || screenBytesReceived || screenFramesDecoded || screenFramesDropped || screenFreezeCount
     ? `receiver bitrate=${Math.round(screenReceiveBps / 1000)}kbps bytesReceived=${screenBytesReceived} framesPerSecond=${Math.round(screenReceiverFps) || 0} framesDecoded=${screenFramesDecoded} framesDropped=${screenFramesDropped} freezeCount=${screenFreezeCount}`
     : "";
-  state.screenStats.bottleneck = getScreenBottleneckText(screenSenderFps, screenOutboundReportCount);
+  state.screenStats.bottleneck = getScreenBottleneckText(screenSenderFps, screenOutboundReportCount, screenSourceFps);
   updateScreenStatsLabel();
   logScreenShareStatsIfNeeded();
   updateConnectionStatsLabel({ candidateText, sendBps, receiveBps });
@@ -6553,13 +6556,14 @@ function getScreenSenderUnavailableText(diagnostics) {
   return `sender stats unavailable reason=${reasons}`;
 }
 
-function getScreenBottleneckText(senderFps, screenOutboundReportCount) {
+function getScreenBottleneckText(senderFps, screenOutboundReportCount, sourceFps = 0) {
   if (!state.screenSharing) return "";
-  const captureFps = Number(state.screenCaptureProbe?.fps || 0);
+  // 캡처 fps: Probe가 꺼져 있으면 media-source 통계(캡처 트랙이 송신기에 넘긴 프레임)로 대신한다.
+  const captureFps = Number(state.screenCaptureProbe?.fps || 0) || sourceFps;
   const targetFps = Math.max(15, Math.min(60, Number(state.screenFps || 30)));
   const lowThreshold = Math.min(45, targetFps * 0.75);
   if (!screenOutboundReportCount) return "bottleneck=pending sender stats unavailable";
-  if (!state.screenProbeEnabled || !captureFps) return "bottleneck=pending capture probe unavailable";
+  if (!captureFps) return "bottleneck=pending capture fps unavailable";
   if (captureFps < lowThreshold && senderFps < lowThreshold) return "bottleneck=capture-gpu";
   if (captureFps >= lowThreshold && senderFps < lowThreshold) return "bottleneck=encoder-sender";
   if (senderFps >= lowThreshold) return "bottleneck=no-low-fps";
