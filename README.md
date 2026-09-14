@@ -34,6 +34,7 @@ Discord의 소통, Slack의 협업, Notion의 기록이 만나는 지점—그 �
 
 - **서버를 열고 싶다** → [docs/SERVER.md](docs/SERVER.md)
   (macOS는 `start-server-mac.command`, Windows 로컬 테스트는 `start-server-win.bat` 더블클릭)
+- **임시 외부 접속 주소가 필요하다** → macOS에서 `start-server-cloudflare.command` 더블클릭 후 표시된 주소 공유
 - **데스크톱 앱을 빌드하고 싶다** → [docs/BUILD.md](docs/BUILD.md)
 - **소스로 앱을 실행해보고 싶다** → `npm install` 후 `npm run client`
 

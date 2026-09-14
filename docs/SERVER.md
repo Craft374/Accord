@@ -13,6 +13,20 @@ Accord 서버(`server.js`)는 시그널링(WebSocket)과 통화 UI(`public/`)를
 
 ## 1. 스크립트로 바로 열기 (원클릭)
 
+### macOS — 임시 외부 접속 (Cloudflare)
+
+루트의 **`start-server-cloudflare.command` 더블클릭**.
+기존 Accord/dorm 서버가 켜져 있으면 먼저 끄세요.
+
+Accord 서버와 [Cloudflare Quick Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/)을 함께 실행합니다.
+터미널에 뜨는 `https://...trycloudflare.com` 주소를 친구에게 보내면 됩니다. 브라우저와 데스크톱 앱 모두 이 주소로 접속합니다.
+포트포워딩·도메인·Cloudflare 로그인 없이 쓸 수 있고, 다시 실행할 때마다 주소가 바뀝니다.
+끄려면 `Ctrl+C` 또는 터미널 창 닫기. 서버와 임시 터널이 함께 종료됩니다.
+
+- 필요한 것: Node.js 18+, openssl(macOS 기본 제공), `cloudflared` (`brew install cloudflared`).
+- 웹 접속과 채팅은 터널을 거칩니다. 음성·화면공유는 P2P라 기숙사망 등에서는 외부에서 접근 가능한 TURN이 별도로 필요할 수 있습니다.
+- 기존 `server.env`의 TURN 설정은 그대로 사용합니다.
+
 ### macOS — 실사용 서버 (HTTPS + TURN)
 
 루트의 **`start-server-mac.command` 더블클릭**.

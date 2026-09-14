@@ -56,6 +56,7 @@ const requiredLaunchers = [
   "scripts/win/build-windows.command",
   "scripts/mac/build-mac.command",
   "start-server-mac.command",
+  "start-server-cloudflare.command",
   "start-server-win.bat",
 ];
 const commandBatFiles = listCommandBatFiles(".");
@@ -168,10 +169,18 @@ const checks = [
   [pkg.scripts["server:https"] && startHttps.includes("VOICE_CHAT_REQUIRE_HTTPS") && startHttps.includes("getLanIp"), "https server script uses secure LAN mode"],
   [requiredLaunchers.every((file) => fs.existsSync(file)), "required bat and command launchers exist"],
   [
-    commandBatFiles.length === requiredLaunchers.length &&
-      requiredLaunchers.every((file) => commandBatFiles.includes(file)),
-    "only required bat and command launchers remain",
+    commandBatFiles.every((file) => requiredLaunchers.includes(file) || file === "start-server-dorm.command"),
+    "only required launchers and the optional local dorm launcher remain",
   ],
+  [(() => {
+    if (process.platform !== "darwin") return true;
+    const launcher = "start-server-cloudflare.command";
+    const syntax = spawnSync("zsh", ["-n", launcher], { encoding: "utf8" });
+    const invalidPort = spawnSync("zsh", [launcher], {
+      encoding: "utf8", env: { ...process.env, PORT: "65536" }, timeout: 5000,
+    });
+    return syntax.status === 0 && invalidPort.status === 1 && invalidPort.stdout.includes("PORT는");
+  })(), "cloudflare launcher syntax and invalid port rejection (macOS runtime)"],
   [buildWindowsBat.includes("npm run build:win") && buildWindowsBat.includes("Accord Windows x64 Setup.exe"), "windows bat builds windows artifact"],
   [buildWindowsCommand.includes("npm run build:win") && buildWindowsCommand.includes("Accord Windows x64 Setup.exe"), "mac command builds windows artifact"],
   [buildMacCommand.includes("npm run build:mac") && buildMacCommand.includes("Accord Mac arm64.zip"), "mac command builds mac artifact"],
