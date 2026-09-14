@@ -6229,6 +6229,11 @@ async function updateStats() {
   let screenFramesSentDelta = 0;
   let screenQpSumDelta = 0;
   let screenEncodeTimeDelta = 0;
+  let screenKeyFramesDelta = 0;
+  let screenPliDelta = 0; // 받는 쪽이 키프레임을 다시 요청한 횟수(PLI+FIR) — 패킷 손실 신호
+  let screenNackDelta = 0;
+  let screenResolutionChanges = 0;
+  let screenEncodedSize = "";
   let screenQualityDurations = {};
   const screenQualityReasons = new Set();
   const screenEncoders = new Set();
@@ -6262,6 +6267,11 @@ async function updateStats() {
     screenFramesSentDelta += getStatsCounterDelta(`${peer.id}:${report.id}:screen-framesSent`, framesSent);
     screenQpSumDelta += getStatsCounterDelta(`${peer.id}:${report.id}:screen-qpSum`, qpSum);
     screenEncodeTimeDelta += getStatsCounterDelta(`${peer.id}:${report.id}:screen-totalEncodeTime`, totalEncodeTime);
+    screenKeyFramesDelta += getStatsCounterDelta(`${peer.id}:${report.id}:screen-keyFrames`, Number(report.keyFramesEncoded || 0));
+    screenPliDelta += getStatsCounterDelta(`${peer.id}:${report.id}:screen-pli`, Number(report.pliCount || 0) + Number(report.firCount || 0));
+    screenNackDelta += getStatsCounterDelta(`${peer.id}:${report.id}:screen-nack`, Number(report.nackCount || 0));
+    screenResolutionChanges += Number(report.qualityLimitationResolutionChanges || 0);
+    if (report.frameWidth) screenEncodedSize = `${report.frameWidth}x${report.frameHeight}`;
     if (report.qualityLimitationReason) screenQualityReasons.add(report.qualityLimitationReason);
     addQualityLimitationDurations(screenQualityDurations, report.qualityLimitationDurations);
     if (report.encoderImplementation) screenEncoders.add(report.encoderImplementation);
@@ -6387,6 +6397,9 @@ async function updateStats() {
       `qpSum=${screenQpSum}`,
       screenQpSumDelta ? `qpSumDelta=${screenQpSumDelta}` : "",
       screenEncodeTimeDelta ? `encodeTimeDelta=${screenEncodeTimeDelta.toFixed(3)}s` : "",
+      screenEncodedSize ? `encodedSize=${screenEncodedSize}` : "",
+      `keyFramesDelta=${screenKeyFramesDelta} pliDelta=${screenPliDelta} nackDelta=${screenNackDelta}`,
+      screenResolutionChanges ? `qualityResolutionChanges=${screenResolutionChanges}` : "",
       screenQualityReasons.size ? `qualityLimitationReason=${[...screenQualityReasons].join("+")}` : "",
       formatQualityLimitationDurations(screenQualityDurations),
       screenEncoders.size ? `encoderImplementation=${[...screenEncoders].join("+")}` : "",
