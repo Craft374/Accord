@@ -3177,6 +3177,8 @@ async function restartScreenShare() {
   let stream = null;
   const oldStream = state.screenStream;
   const oldTrack = state.screenTrack;
+  // 네이티브 캡처는 새 캡처를 열기 전에 이전 helper를 끄므로, 실패하면 옛 트랙으로 되돌려도 멈춘 화면만 남는다.
+  const wasNative = Boolean(state.nativeScreenCapture);
   try {
     dom.screenShareButton.disabled = true;
     stream = await getScreenShareStream();
@@ -3225,6 +3227,12 @@ async function restartScreenShare() {
     setMessage("화면 공유 설정을 적용했습니다. 오디오 설정은 변경하지 않았습니다.");
   } catch (error) {
     cleanupStream(stream);
+    stopNativeScreenCapture(); // 새로 띄운 helper가 있으면 같이 끈다
+    if (wasNative) {
+      recordClientError("screen-restart-failed", getErrorText(error));
+      await stopScreenShare({ message: error.message || "화면 공유 설정을 바꾸지 못해 공유를 껐습니다." });
+      return;
+    }
     if (state.screenTrack !== oldTrack) {
       state.screenStream = oldStream;
       state.screenTrack = oldTrack;
@@ -3296,6 +3304,7 @@ async function getScreenShareStream() {
   state.screenCaptureSource = null;
   state.screenCaptureRequested = null;
   state.screenDesktopDiagnostics = null;
+  stopNativeScreenCapture(); // 재시작이면 이전 helper부터 끈다(레거시 방식으로 바꿔도 뒤에 남지 않게)
 
   // 네이티브 캡처(모니터·창 모두)가 자동의 첫 선택이다. 실패하면 자동일 때만 아래 레거시 경로로 넘어간다.
   if ((state.screenCaptureMode === "auto" || state.screenCaptureMode === "native") && isNativeScreenCaptureSupported()) {
@@ -3394,7 +3403,6 @@ function isNativeScreenCaptureSupported() {
 // 네이티브 캡처(Windows): helper가 WGC로 캡처하고 GPU에서 크기 조절·NV12 변환까지 끝낸 프레임을 preload가 VideoFrame으로 넘겨준다.
 // Chromium 캡처기는 CPU 한 코어의 50%를 넘지 않게 스스로 fps를 깎아서(4K≈30fps) 그 앞단을 통째로 바꾼다. 송출(WebRTC)은 그대로다.
 async function getNativeScreenShareStream() {
-  stopNativeScreenCapture();
   const generator = new MediaStreamTrackGenerator({ kind: "video" });
   const writer = generator.writable.getWriter();
   let started = null;
