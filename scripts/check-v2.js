@@ -329,6 +329,17 @@ const reviews = [
   [html.includes("screenCaptureModeSelect") && app.includes("voiceChatScreenCaptureMode") && app.includes("screenCaptureModeField.hidden"), "windows electron screen capture mode can be compared"],
   [app.includes("screen-share-5s") && app.includes("screen-low-fps") && app.includes("bytesSent") && app.includes("bytesReceived"), "screen share stats are logged after start with raw bytes"],
   [/role === "screen"[\s\S]+degradationPreference = "maintain-framerate"[\s\S]+delete params\.degradationPreference/.test(app), "screen sender tuning is separated from audio sender tuning"],
+  [(() => {
+    // 비트레이트 상한은 설정값이 아니라 실제 캡처 크기 기준 — 4K 설정인데 캡처가 1080p면 1080p 상한, 16:10 축소도 같은 등급.
+    try {
+      const src = app.match(/function getScreenShareBitrate\(\) \{[\s\S]*?\n\}/);
+      if (!src) return false;
+      const rate = (width, height, screenFps = "60") => new Function("state", `${src[0]}\nreturn getScreenShareBitrate();`)(
+        { screenFps, screenResolution: "2160", screenTrack: { getSettings: () => ({ width, height }) } });
+      return rate(1920, 1080) === 9000000 && rate(1728, 1080) === 9000000
+        && rate(3840, 2160) === 34000000 && rate(1280, 720, "30") === 2800000;
+    } catch { return false; }
+  })(), "screen share bitrate follows the actual capture size, not the setting (runtime)"],
   [/isElectronLoopbackSystemAudioSupported\(\)[\s\S]+desktop\.platform === "win32"/.test(app), "electron loopback is limited to windows"],
   [/getElectronDisplayLoopbackSystemAudioStream\(\)[\s\S]+getSystemAudioCaptureConstraints\(\)/.test(app), "windows system share uses constrained display loopback"],
   [/getSystemAudioStreamOrNull\("Windows process loopback"[\s\S]+getSystemAudioStreamOrNull\("Windows display loopback"/.test(systemAudioDisplayFunction) && helperSource.includes('"watch-sessions"') && main.includes('"watch-sessions"') && preload.includes("allPrograms: true") && !helperSource.includes('"--exclude"'), "windows system share captures default-output program sessions (not every device) before endpoint loopback"],

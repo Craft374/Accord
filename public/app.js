@@ -112,6 +112,7 @@ const state = {
   screenCaptureProbe: { stop: null, fps: 0, method: "", frames: 0, enabled: true, sampling: false },
   lastScreenStatsLogAt: 0,
   screenLowFpsStrikes: 0,
+  screenLowFpsWarned: false,
   ignoreScreenEndedUntil: 0,
   programAudioSources: [],
   programAudioSourcesLoaded: false,
@@ -3316,6 +3317,7 @@ function cleanupLocalScreenShare() {
   state.screenCaptureSource = null;
   state.screenCaptureRequested = null;
   state.lastScreenStatsLogAt = 0;
+  state.screenLowFpsWarned = false;
   if (state.selectedScreenPeerId === "local") state.selectedScreenPeerId = "";
   stopScreenCaptureProbe();
   rebuildLocalStream();
@@ -4758,26 +4760,17 @@ function tuneSender(sender, role) {
 }
 
 function getScreenShareBitrate() {
+  // 설정값이 아니라 실제 캡처 크기로 정한다 — 4K로 설정해도 캡처가 1080p면 1080p 상한을 쓴다.
+  // 16:9가 아니면 한 변만 기준에 닿으므로(1920x1200→1728x1080 등) 가로·세로 중 하나만 넘어도 그 등급으로 본다.
   const fps = Number(state.screenFps || 30);
-  if (state.screenResolution === "720") return fps >= 60 ? 4500000 : 2800000;
-  if (state.screenResolution === "1080") return fps >= 60 ? 9000000 : 6000000;
-  if (state.screenResolution === "1440") return fps >= 60 ? 18000000 : 11000000;
-  if (state.screenResolution === "2160") return fps >= 60 ? 34000000 : 22000000;
-  if (state.screenResolution === "native") {
-    const pixels = getScreenSharePixelCount();
-    if (pixels >= 3840 * 2160) return fps >= 60 ? 34000000 : 22000000;
-    if (pixels >= 2560 * 1440) return fps >= 60 ? 18000000 : 11000000;
-    if (pixels >= 1920 * 1080) return fps >= 60 ? 9000000 : 6000000;
-    return fps >= 60 ? 4500000 : 2800000;
-  }
-  return fps >= 60 ? 9000000 : 6000000;
-}
-
-function getScreenSharePixelCount() {
   const settings = state.screenTrack?.getSettings?.() || {};
-  const width = Number(settings.width || 0);
-  const height = Number(settings.height || 0);
-  return width > 0 && height > 0 ? width * height : 1920 * 1080;
+  const width = Number(settings.width || 1920);
+  const height = Number(settings.height || 1080);
+  const atLeast = (w, h) => width >= w || height >= h;
+  if (atLeast(3840, 2160)) return fps >= 60 ? 34000000 : 22000000;
+  if (atLeast(2560, 1440)) return fps >= 60 ? 18000000 : 11000000;
+  if (atLeast(1920, 1080)) return fps >= 60 ? 9000000 : 6000000;
+  return fps >= 60 ? 4500000 : 2800000;
 }
 
 function tuneOpus(sdp) {
@@ -6569,6 +6562,9 @@ function handleScreenSenderPerformance(senderFps) {
   if (state.screenLowFpsStrikes < 3) return;
   state.screenLowFpsStrikes = 0;
   logClientEvent("screen-low-fps", state.screenStats.sender || getScreenCaptureStatsText());
+  // 게임 중엔 저FPS가 계속 이어져 3초마다 토스트가 쌓였다 — 공유 한 번에 한 번만 알린다.
+  if (state.screenLowFpsWarned) return;
+  state.screenLowFpsWarned = true;
   setMessage("화면공유 60fps 인코딩 FPS가 낮습니다. 끊기면 30fps로 낮추는 게 안정적입니다.");
 }
 
