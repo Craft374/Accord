@@ -54,6 +54,7 @@ let tray = null;
 let isQuitting = false;
 let programAudioCapture = new Map();
 let programAudioPort = null;
+let systemAudioSessionWatcher = null;
 let screenSharePowerBlockerId = null;
 let screenCaptureConfig = {};
 
@@ -399,10 +400,10 @@ function setupNavigation() {
     const helperInfo = getProgramLoopbackHelperInfo();
     if (!helperInfo.exists) return { ok: false, error: makeHelperError("프로그램별 오디오 캡처 helper가 없습니다.", helperInfo) };
 
-    // excludeSelf = 전체 컴퓨터 소리 공유: 이 앱(통화 소리·알림음) 프로세스 트리만 빼고 나머지 전부를 캡처한다.
-    const exclude = options?.excludeSelf === true;
-    const rawList = exclude ? [process.pid] : normalizePidList(rawPids);
-    if (!rawList.length) return { ok: false, error: "공유할 프로그램을 선택하세요." };
+    // allPrograms = 전체 컴퓨터 소리 공유: pid는 헬퍼가 기본 출력 장치의 세션을 보고 계속 골라 준다(아래 watcher).
+    const allPrograms = options?.allPrograms === true;
+    const rawList = normalizePidList(rawPids);
+    if (!allPrograms && !rawList.length) return { ok: false, error: "공유할 프로그램을 선택하세요." };
 
     // 캡처는 프로세스 트리 포함 모드라, 다른 선택 pid의 자손을 또 캡처하면
     // 같은 오디오가 중복 합산된다(증폭/클리핑 + 콤 필터). 트리 루트만 남긴다.
@@ -422,15 +423,16 @@ function setupNavigation() {
     }
     try {
       for (const pid of pids) {
-        startProgramAudioCaptureProcess(event.sender, helperInfo, pid, exclude);
+        startProgramAudioCaptureProcess(event.sender, helperInfo, pid);
       }
+      if (allPrograms) startSystemAudioSessionWatcher(event.sender, helperInfo);
     } catch (error) {
       stopProgramAudioCapture();
       console.error("program audio capture failed", error, helperInfo);
       return { ok: false, error: makeHelperError(error.message, helperInfo, error, ["capture", "--pid", pids.join(","), "--sample-rate", "48000", "--channels", "2"]) };
     }
 
-    return { ok: true, pids };
+    return { ok: true };
   });
 
   ipcMain.handle("stop-program-audio-capture", () => {
@@ -694,7 +696,7 @@ function normalizePidList(rawPids) {
   return pids.slice(0, 12);
 }
 
-function startProgramAudioCaptureProcess(webContents, helperInfo, pid, exclude = false) {
+function startProgramAudioCaptureProcess(webContents, helperInfo, pid) {
   const args = [
     "capture",
     "--pid",
@@ -704,7 +706,6 @@ function startProgramAudioCaptureProcess(webContents, helperInfo, pid, exclude =
     "--channels",
     "2",
   ];
-  if (exclude) args.push("--exclude");
   const child = spawn(helperInfo.path, args, {
     cwd: helperInfo.cwd,
     windowsHide: true,
@@ -742,8 +743,7 @@ function startProgramAudioCaptureProcess(webContents, helperInfo, pid, exclude =
   });
 
   child.on("close", (code) => {
-    // 우리가 끈(stopProgramAudioCapture) 옛 프로세스의 늦은 close가, 같은 pid로 새로 시작한 캡처를 끄지 않게 한다.
-    // 전체 소리 공유는 pid가 항상 이 앱 자신이라 재시작 때마다 겹친다.
+    // 우리가 끈(stopProgramAudioCapture·세션 동기화) 옛 프로세스의 늦은 close가, 같은 pid로 새로 시작한 캡처를 끄지 않게 한다.
     if (programAudioCapture.get(pid) !== child) return;
     programAudioCapture.delete(pid);
     if (!webContents.isDestroyed()) {
@@ -769,7 +769,43 @@ function makeHelperError(message, helperInfo, error = null, args = []) {
   return parts.join(" / ");
 }
 
+// 전체 컴퓨터 소리 공유: 헬퍼가 2초마다 보내는 "기본 출력 장치에서 소리 내는 프로그램" pid 목록에 맞춰, 새 프로그램엔
+// 캡처를 붙이고 사라진 프로그램은 뗀다. 나머지 캡처는 끊김 없이 그대로 둔다.
+function startSystemAudioSessionWatcher(webContents, helperInfo) {
+  const watcher = spawn(helperInfo.path, ["watch-sessions", "--exclude-pid", String(process.pid)], {
+    cwd: helperInfo.cwd,
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  systemAudioSessionWatcher = watcher;
+  watcher.on("error", (error) => console.error("system audio session watcher failed", error, helperInfo));
+
+  let buffered = "";
+  watcher.stdout.on("data", (chunk) => {
+    const lines = (buffered + chunk.toString("utf8")).split("\n");
+    buffered = lines.pop();
+    if (!lines.length || systemAudioSessionWatcher !== watcher || webContents.isDestroyed()) return;
+    let pids;
+    try {
+      pids = JSON.parse(lines.at(-1)).pids;
+    } catch {
+      return;
+    }
+    if (!Array.isArray(pids)) return;
+    for (const [pid, child] of programAudioCapture) {
+      if (pids.includes(pid)) continue;
+      programAudioCapture.delete(pid); // close 가드가 '꺼짐' 통지를 막는다
+      child.kill();
+    }
+    for (const pid of pids) {
+      if (!programAudioCapture.has(pid)) startProgramAudioCaptureProcess(webContents, helperInfo, pid);
+    }
+  });
+}
+
 function stopProgramAudioCapture() {
+  systemAudioSessionWatcher?.kill();
+  systemAudioSessionWatcher = null;
   for (const child of programAudioCapture.values()) {
     if (!child.killed) child.kill();
   }

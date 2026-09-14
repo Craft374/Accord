@@ -2478,10 +2478,11 @@ async function startProgramSystemAudioShare(options = {}) {
   }
 }
 
-// excludeSelf = 전체 컴퓨터 소리 공유: 선택한 프로그램 대신 Accord 자신만 뺀 나머지 전부를 같은 경로로 캡처한다.
-async function getProgramSystemAudioStream({ excludeSelf = false } = {}) {
+// allPrograms = 전체 컴퓨터 소리 공유: 선택 대신 메인이 기본 출력 장치에서 소리 내는 프로그램을 계속 골라 붙인다.
+// pids가 비어 있으니 프로그램 하나가 꺼져 헬퍼가 끝나도 공유 전체를 끄지 않는다.
+async function getProgramSystemAudioStream({ allPrograms = false } = {}) {
   let pids = [];
-  if (!excludeSelf) {
+  if (!allPrograms) {
     if (!state.programAudioSourcesLoaded) {
       await refreshProgramAudioSources({ silent: true });
     }
@@ -2537,12 +2538,11 @@ async function getProgramSystemAudioStream({ excludeSelf = false } = {}) {
       if (state.programAudioProcess.stopping) return;
       const error = payload?.error || `PID ${pid} 캡처가 종료되었습니다.`;
       recordClientError("program-audio-helper-stopped", error);
-      setMessage(`${excludeSelf ? "컴퓨터 사운드" : "프로그램별"} 캡처 실패: ${error}`);
+      setMessage(`프로그램별 캡처 실패: ${error}`);
       stopSystemAudio();
     });
 
-    if (excludeSelf) pids = (await desktop.startSystemAudioCapture()).pids || [];
-    else await desktop.startProgramAudioCapture(pids);
+    await (allPrograms ? desktop.startSystemAudioCapture() : desktop.startProgramAudioCapture(pids));
     await context.resume().catch(() => {});
 
     state.programAudioProcess = { context, destination, node, portListener, unsubscribeData, unsubscribeStopped, pids, stopping: false };
@@ -2593,10 +2593,11 @@ async function startDisplaySystemAudioShare(options = {}) {
 async function getSystemAudioDisplayStream() {
   const failures = [];
 
-  // 출력 장치 루프백은 스피커 음향효과(APO)까지 입힌 소리라 스피커로 두면 통화음질이 됐다. Accord만 뺀 프로세스
-  // 루프백은 효과 전 소리이고 통화 소리도 안 섞인다. 구버전 클라이언트거나 실패하면 기존 루프백으로 내려간다.
+  // 출력 장치 루프백은 스피커 음향효과(APO)까지 입힌 소리라 스피커로 두면 통화음질이 됐다. 기본 출력 장치에서 소리 내는
+  // 프로그램을 프로그램별 공유 방식으로 모아 잡으면 효과 전 소리이고, 통화 소리·가상 케이블로 가는 마이크도 안 섞인다.
+  // 구버전 클라이언트거나 실패하면 기존 루프백으로 내려간다.
   if (typeof desktop.startSystemAudioCapture === "function") {
-    const processStream = await getSystemAudioStreamOrNull("Windows process loopback", () => getProgramSystemAudioStream({ excludeSelf: true }), failures);
+    const processStream = await getSystemAudioStreamOrNull("Windows process loopback", () => getProgramSystemAudioStream({ allPrograms: true }), failures);
     if (processStream) return processStream;
   }
 
