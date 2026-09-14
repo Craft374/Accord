@@ -3373,6 +3373,7 @@ body.dm-open .dm-panel {
   background: transparent;
   border: 0;
 }
+#screenTargetField { grid-column: 1 / -1; }
 
 /* ─── 스위치 ─────────────────────────────── */
 
@@ -6195,42 +6196,9 @@ body.font-row-dragging * { cursor: grabbing !important; }
 }
 .font-manager.font-dragging .font-drop-hint { display: flex; }
 
-/* ─── 모니터 선택(듀얼모니터 화면 공유) ─────── */
+/* ─── 카메라 선택 모달 ─────── */
 .monitor-picker-backdrop { z-index: 260; }
 .monitor-picker { width: min(94vw, 460px); }
-.monitor-map {
-  position: relative;
-  margin: 6px auto 2px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-deepest);
-  border: 1px solid var(--line);
-}
-.monitor-tile {
-  position: absolute;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 2px;
-  padding: 2px;
-  border: 2px solid var(--line-strong);
-  border-radius: 6px;
-  background: var(--bg-elevated);
-  color: var(--text);
-  cursor: pointer;
-  overflow: hidden;
-  transition: border-color 0.12s ease, background 0.12s ease, transform 0.08s ease;
-}
-.monitor-tile:hover {
-  border-color: var(--blurple);
-  background: rgba(88, 101, 242, 0.22);
-  color: var(--heading);
-  transform: translateY(-1px);
-}
-.monitor-tile-cursor { border-color: var(--green); }
-.monitor-tile-num { font-size: 18px; font-weight: 800; line-height: 1; }
-.monitor-tile-meta { font-size: 10px; line-height: 1.15; text-align: center; color: var(--muted); }
-.monitor-tile:hover .monitor-tile-meta { color: var(--text); }
 .camera-list { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
 .camera-option {
   min-height: 40px;

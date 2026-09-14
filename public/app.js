@@ -104,7 +104,8 @@ const state = {
   screenStatsOverlayEnabled: localStorage.getItem("voiceChatScreenStatsOverlay") !== "off",
   screenFitMode: localStorage.getItem("voiceChatScreenFitMode") === "cover" ? "cover" : "contain",
   screenSource: "screen", // 현재 공유 슬롯의 소스: "screen"(모니터) 또는 "카메라"(웹캠/가상카메라)
-  screenWindow: null, // 창 공유 대상 { id, name } — null이면 모니터 전체
+  screenWindow: null, // 창 공유 대상 { id, name } — null이면 모니터(screenDisplayId) 전체
+  screenDisplayId: "", // 공유할 모니터 id — ""이면 공유를 시작할 때 커서가 있는 모니터
   screenControlsHideTimer: 0,
   screenStats: { capture: "", sender: "", receiver: "", bottleneck: "" },
   screenStatsOverlay: { timer: 0, frameHandle: 0, frames: 0, changed: 0, prev: null, ctx: null },
@@ -413,6 +414,8 @@ const dom = {
   screenFpsSelect: document.querySelector("#screenFpsSelect"),
   screenCaptureModeField: document.querySelector("#screenCaptureModeField"),
   screenCaptureModeSelect: document.querySelector("#screenCaptureModeSelect"),
+  screenTargetField: document.querySelector("#screenTargetField"),
+  screenTargetSelect: document.querySelector("#screenTargetSelect"),
   screenPreviewToggle: document.querySelector("#screenPreviewToggle"),
   screenProbeToggle: document.querySelector("#screenProbeToggle"),
   screenStatsOverlayToggle: document.querySelector("#screenStatsOverlayToggle"),
@@ -826,6 +829,17 @@ function bindEvents() {
     logClientEvent("screen-capture-mode", state.screenCaptureMode);
     if (state.screenSharing) restartScreenShare();
   });
+  // 공유 대상(모니터·프로그램 창)은 화면 공유 설정에서 고르고, 공유 중에 바꾸면 바로 갈아탄다.
+  dom.screenTargetSelect?.addEventListener("change", async () => {
+    const option = dom.screenTargetSelect.selectedOptions[0];
+    const value = option?.value || "";
+    state.screenWindow = value.startsWith("window:") ? { id: value, name: option.textContent } : null;
+    state.screenDisplayId = value.startsWith("display:") ? value.slice("display:".length) : "";
+    logClientEvent("screen-target", value || "auto");
+    if (!state.screenSharing) return;
+    await applyScreenDisplayTarget();
+    restartScreenShare();
+  });
   dom.screenPreviewToggle?.addEventListener("change", () => {
     state.screenPreviewEnabled = Boolean(dom.screenPreviewToggle.checked);
     localStorage.setItem("voiceChatScreenPreview", state.screenPreviewEnabled ? "on" : "off");
@@ -903,6 +917,7 @@ function restoreScreenShareSettings() {
   if (dom.screenResolutionSelect) dom.screenResolutionSelect.value = ["720", "1080", "1440", "2160", "native"].includes(state.screenResolution) ? state.screenResolution : "1080";
   if (dom.screenFpsSelect) dom.screenFpsSelect.value = ["15", "30", "60"].includes(state.screenFps) ? state.screenFps : "30";
   if (dom.screenCaptureModeField) dom.screenCaptureModeField.hidden = !isElectronDesktopScreenCaptureSupported();
+  if (dom.screenTargetField) dom.screenTargetField.hidden = !isElectronDisplayMediaHandlerSupported();
   if (dom.screenCaptureModeSelect) dom.screenCaptureModeSelect.value = ["auto", "handler", "browser", "electron"].includes(state.screenCaptureMode) ? state.screenCaptureMode : "auto";
   if (dom.screenPreviewToggle) dom.screenPreviewToggle.checked = state.screenPreviewEnabled;
   if (dom.screenProbeToggle) dom.screenProbeToggle.checked = state.screenProbeEnabled;
@@ -2917,158 +2932,43 @@ async function toggleScreenShare() {
     return;
   }
   announceMediaIntent("screenOn");
-  await requestScreenShare();
-}
-
-// 화면 공유 시작 진입점: 모니터가 여러 개이거나 창 공유가 되면 무엇을 공유할지 먼저 고르게 한다.
-async function requestScreenShare() {
-  if (state.screenSharing) return;
-  if (!state.currentRoom) {
-    setMessage("방에 들어가면 화면 공유를 켤 수 있습니다.");
-    return;
-  }
-  if (!isScreenShareSendSupported()) {
-    setMessage("이 환경에서는 화면 공유 송출을 지원하지 않습니다.");
-    updateControls();
-    return;
-  }
-  state.screenWindow = null;
-  if (screenMonitorPickerSupported()) {
-    try {
-      const diag = await desktop.getScreenDiagnostics();
-      const displays = Array.isArray(diag?.displays) ? diag.displays : [];
-      // 창 공유를 지원하는 앱이면 모니터가 하나여도 띄운다(모니터 또는 프로그램 창 선택).
-      if (displays.length > 1 || (displays.length && typeof desktop.listScreenWindows === "function")) { openMonitorPicker(displays); return; }
-    } catch (error) {
-      recordClientError("monitor-picker-list-failed", getErrorDetail(error));
-    }
-  }
+  // 모니터는 화면 공유 설정의 "공유 대상"을 따른다(자동이면 지금 커서가 있는 모니터).
+  await applyScreenDisplayTarget();
   await startScreenShare();
 }
 
-// 모니터 선택 UI는 윈도우 앱의 데스크톱 캡처 경로에서만 의미가 있다.
-// (맥/브라우저 기본 캡처는 OS 자체 화면 선택 창을 띄우므로 우리 창은 건너뛴다.)
-function screenMonitorPickerSupported() {
-  return desktop.isDesktop && desktop.platform === "win32"
-    && typeof desktop.getScreenDiagnostics === "function"
-    && typeof desktop.setScreenCaptureConfig === "function"
-    && state.screenCaptureMode !== "browser";
+// 공유할 모니터를 main에 넘긴다(""=커서가 있는 모니터). getScreenSource와 getDisplayMedia 핸들러가 이 값을 쓴다.
+function applyScreenDisplayTarget() {
+  return desktop.setScreenCaptureConfig?.({ displayId: state.screenDisplayId, mode: "screen-share" })
+    .catch((error) => recordClientError("screen-target-config-failed", getErrorDetail(error)));
 }
 
-let monitorPickerEl = null;
-function closeMonitorPicker() {
-  if (monitorPickerEl) { monitorPickerEl.remove(); monitorPickerEl = null; }
-  document.removeEventListener("keydown", onMonitorPickerKey, true);
-}
-function onMonitorPickerKey(e) {
-  if (e.key === "Escape") { e.preventDefault(); closeMonitorPicker(); }
-}
-
-// 윈도우 디스플레이 설정처럼 모니터들을 실제 배치(bounds)대로 그려서 어떤 화면을 공유할지 직접 고른다.
-function openMonitorPicker(displays) {
-  closeMonitorPicker();
-  const backdrop = document.createElement("div");
-  backdrop.className = "modal-backdrop monitor-picker-backdrop";
-  backdrop.addEventListener("click", (e) => { if (e.target === backdrop) closeMonitorPicker(); });
-  const panel = document.createElement("div");
-  panel.className = "modal monitor-picker";
-  panel.innerHTML = `
-    <header class="modal-head">
-      <h2>공유할 화면 선택</h2>
-      <button class="ghost small" data-mp-close="1" type="button">닫기</button>
-    </header>
-    <div class="modal-body">
-      <p class="modal-hint">공유할 모니터를 누르세요. 배치는 실제 모니터 위치와 같아요.</p>
-      <div class="monitor-map" data-mp-map></div>
-      <div class="modal-actions">
-        <button class="secondary" data-mp-auto="1" type="button">커서가 있는 모니터로 자동 선택</button>
-      </div>
-      <p class="modal-hint" data-mp-windows-hint hidden>또는 프로그램 창 하나만 공유</p>
-      <div class="camera-list" data-mp-windows hidden></div>
-    </div>`;
-  backdrop.append(panel);
-  document.body.append(backdrop);
-  monitorPickerEl = backdrop;
-  panel.querySelector("[data-mp-close]").addEventListener("click", closeMonitorPicker);
-  panel.querySelector("[data-mp-auto]").addEventListener("click", () => chooseMonitorAndShare(""));
-  renderMonitorMap(panel.querySelector("[data-mp-map]"), displays);
-  document.addEventListener("keydown", onMonitorPickerKey, true);
-  // 프로그램 창 공유: 고른 창만 그 창 id로 직접 캡처한다(모니터 전체 캡처와 다른 경로).
-  desktop.listScreenWindows?.().then((windows) => {
-    const list = panel.querySelector("[data-mp-windows]");
-    for (const win of windows) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "camera-option";
-      btn.textContent = win.name;
-      btn.addEventListener("click", () => {
-        closeMonitorPicker();
-        state.screenWindow = win;
-        startScreenShare();
-      });
-      list.append(btn);
-    }
-    list.hidden = !windows.length;
-    panel.querySelector("[data-mp-windows-hint]").hidden = !windows.length;
-  }).catch((error) => recordClientError("window-picker-list-failed", getErrorDetail(error)));
-}
-
-function renderMonitorMap(map, displays) {
-  if (!map) return;
-  // 전체 가상 데스크톱의 경계 상자를 구해 미리보기 영역에 비례 축소해 배치한다.
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const d of displays) {
-    const b = d.bounds || {};
-    minX = Math.min(minX, b.x || 0);
-    minY = Math.min(minY, b.y || 0);
-    maxX = Math.max(maxX, (b.x || 0) + (b.width || 0));
-    maxY = Math.max(maxY, (b.y || 0) + (b.height || 0));
-  }
-  const spanW = Math.max(1, maxX - minX);
-  const spanH = Math.max(1, maxY - minY);
-  const BOX_W = 360, BOX_H = 200, PAD = 6;
-  const scale = Math.min((BOX_W - PAD * 2) / spanW, (BOX_H - PAD * 2) / spanH);
-  const mapW = spanW * scale + PAD * 2;
-  const mapH = spanH * scale + PAD * 2;
-  map.style.width = `${Math.round(mapW)}px`;
-  map.style.height = `${Math.round(mapH)}px`;
-  map.innerHTML = "";
-  const cursorId = String(getCursorDisplayGuess(displays));
-  displays.forEach((d, i) => {
-    const b = d.bounds || {};
-    const el = document.createElement("button");
-    el.type = "button";
-    el.className = "monitor-tile";
-    el.style.left = `${Math.round(((b.x || 0) - minX) * scale + PAD)}px`;
-    el.style.top = `${Math.round(((b.y || 0) - minY) * scale + PAD)}px`;
-    el.style.width = `${Math.max(28, Math.round((b.width || 0) * scale))}px`;
-    el.style.height = `${Math.max(20, Math.round((b.height || 0) * scale))}px`;
+// "공유 대상" 목록(모니터 + 프로그램 창)을 다시 채운다. 창은 수시로 바뀌므로 화면 공유 설정을 열 때마다 부른다.
+async function refreshScreenTargets() {
+  const select = dom.screenTargetSelect;
+  if (!select || dom.screenTargetField.hidden) return;
+  const [diag, windows = []] = await Promise.all([
+    desktop.getScreenDiagnostics?.().catch(() => null),
+    desktop.listScreenWindows?.().catch(() => []),
+  ]);
+  const monitors = document.createElement("optgroup");
+  monitors.label = "모니터";
+  (diag?.displays || []).forEach((d, i) => {
     const sf = d.scaleFactor || 1;
-    const pxW = Math.round((b.width || 0) * sf);
-    const pxH = Math.round((b.height || 0) * sf);
-    const label = d.internal ? "노트북 화면" : `모니터 ${i + 1}`;
-    el.innerHTML = `<span class="monitor-tile-num">${i + 1}</span><span class="monitor-tile-meta">${escapeHtmlText(label)}<br>${pxW}×${pxH}</span>`;
-    if (String(d.id) === cursorId) el.classList.add("monitor-tile-cursor");
-    el.title = `${label} · ${pxW}×${pxH}`;
-    el.addEventListener("click", () => chooseMonitorAndShare(String(d.id)));
-    map.append(el);
+    const name = d.internal ? "노트북 화면" : `모니터 ${i + 1}`;
+    monitors.append(new Option(`${name} · ${Math.round(d.bounds.width * sf)}×${Math.round(d.bounds.height * sf)}`, `display:${d.id}`));
   });
-}
-
-// bounds 상 (0,0)에 가까운 모니터를 대략 주 모니터로 보고 표시만 강조한다(정확한 커서 위치는 캡처 시 결정).
-function getCursorDisplayGuess(displays) {
-  const primary = displays.find((d) => (d.bounds?.x || 0) === 0 && (d.bounds?.y || 0) === 0);
-  return primary ? primary.id : (displays[0]?.id ?? "");
-}
-
-async function chooseMonitorAndShare(displayId) {
-  closeMonitorPicker();
-  try {
-    await desktop.setScreenCaptureConfig({ displayId: String(displayId || ""), mode: "screen-share" });
-  } catch (error) {
-    recordClientError("monitor-picker-config-failed", getErrorDetail(error));
+  const apps = document.createElement("optgroup");
+  apps.label = "프로그램 창";
+  for (const win of windows) apps.append(new Option(win.name, win.id));
+  select.replaceChildren(new Option("자동 (커서가 있는 모니터)", ""), monitors, apps);
+  select.value = state.screenWindow?.id || (state.screenDisplayId && `display:${state.screenDisplayId}`);
+  // 고른 창이 닫혔거나 모니터가 빠졌으면 자동으로 되돌린다.
+  if (select.selectedIndex < 0) {
+    state.screenWindow = null;
+    state.screenDisplayId = "";
+    select.value = "";
   }
-  await startScreenShare();
 }
 
 // ── 카메라 공유(웹캠 / OBS 가상카메라) ──
@@ -16021,6 +15921,7 @@ function bindCallDockPopovers() {
       const willOpen = pop && pop.hidden;
       closeAll();
       if (pop) pop.hidden = !willOpen;
+      if (willOpen && pop.id === "callDockPopScreen") refreshScreenTargets();
       return;
     }
     if (event.target?.closest?.("[data-dock-pop-close]")) closeAll();
