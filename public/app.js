@@ -3270,7 +3270,8 @@ async function stopScreenShare({ renegotiate = true, message = "화면 공유를
 }
 
 async function restartScreenShare() {
-  if (!state.currentRoom || !state.screenSharing) return;
+  // 카메라 공유 중에 해상도·fps를 바꿔도 화면 캡처로 갈아타지 않는다.
+  if (!state.currentRoom || !state.screenSharing || state.screenSource !== "screen") return;
   let stream = null;
   const oldStream = state.screenStream;
   const oldTrack = state.screenTrack;
@@ -3395,7 +3396,7 @@ async function getScreenShareStream() {
   if (state.screenWindow) {
     state.screenCaptureMethod = "electron-window";
     logClientEvent("screen-capture-path", `electron-window ${state.screenWindow.name}`);
-    return getElectronDesktopScreenShareStream(state.screenWindow.id);
+    return getElectronDesktopScreenShareStream(state.screenWindow);
   }
 
   if ((state.screenCaptureMode === "auto" || state.screenCaptureMode === "handler") && isElectronDisplayMediaHandlerSupported()) {
@@ -3458,10 +3459,11 @@ async function getElectronDisplayMediaHandlerScreenShareStream() {
   });
 }
 
-async function getElectronDesktopScreenShareStream(windowId = "") {
-  const source = await desktop.getScreenSource();
+async function getElectronDesktopScreenShareStream(win = null) {
+  // 창 공유면 캡처·로그의 id/name을 그 창으로 덮는다(디스플레이 진단 정보는 모니터 것 유지).
+  const source = { ...(await desktop.getScreenSource()), ...win };
   rememberScreenCaptureSource(source);
-  const constraints = getElectronScreenCaptureConstraints(windowId || source.id);
+  const constraints = getElectronScreenCaptureConstraints(source.id);
   state.screenCaptureRequested = { audio: false, video: constraints };
   logClientEvent("screen-capture-source", getScreenCaptureSourceText());
   return navigator.mediaDevices.getUserMedia({
