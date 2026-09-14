@@ -140,6 +140,7 @@
               </div>
             </div>
             <video id="screenViewer" autoplay playsinline></video>
+            <div class="screen-stats-overlay" id="screenStatsOverlay" hidden></div>
             <div class="screen-share-list" id="screenShareList"></div>
           </section>
 
@@ -258,6 +259,10 @@
               <label class="switch screen-probe-switch">
                 <input id="screenProbeToggle" type="checkbox" checked />
                 <span>캡처 Probe</span>
+              </label>
+              <label class="switch screen-stats-switch">
+                <input id="screenStatsOverlayToggle" type="checkbox" checked />
+                <span>해상도·fps 표시</span>
               </label>
               <button class="secondary screen-test-button" id="openScreenTestButton" type="button">최소 화면 테스트</button>
               <p class="screen-share-note">60fps는 PC 성능과 인터넷 상태에 따라 불안정할 수 있습니다.</p>

@@ -101,10 +101,12 @@ const state = {
     : "auto",
   screenPreviewEnabled: localStorage.getItem("voiceChatScreenPreview") !== "off",
   screenProbeEnabled: localStorage.getItem("voiceChatScreenProbe") !== "off",
+  screenStatsOverlayEnabled: localStorage.getItem("voiceChatScreenStatsOverlay") !== "off",
   screenFitMode: localStorage.getItem("voiceChatScreenFitMode") === "cover" ? "cover" : "contain",
   screenSource: "screen", // 현재 공유 슬롯의 소스: "screen"(모니터) 또는 "카메라"(웹캠/가상카메라)
   screenControlsHideTimer: 0,
   screenStats: { capture: "", sender: "", receiver: "", bottleneck: "" },
+  screenStatsOverlay: { timer: 0, frameHandle: 0, frames: 0, changed: 0, prev: null, ctx: null },
   screenCaptureMethod: "",
   screenCaptureSource: null,
   screenCaptureRequested: null,
@@ -412,9 +414,11 @@ const dom = {
   screenCaptureModeSelect: document.querySelector("#screenCaptureModeSelect"),
   screenPreviewToggle: document.querySelector("#screenPreviewToggle"),
   screenProbeToggle: document.querySelector("#screenProbeToggle"),
+  screenStatsOverlayToggle: document.querySelector("#screenStatsOverlayToggle"),
   openScreenTestButton: document.querySelector("#openScreenTestButton"),
   screenStage: document.querySelector("#screenStage"),
   screenViewer: document.querySelector("#screenViewer"),
+  screenStatsOverlay: document.querySelector("#screenStatsOverlay"),
   screenViewerTitle: document.querySelector("#screenViewerTitle"),
   screenFitButton: document.querySelector("#screenFitButton"),
   screenPipButton: document.querySelector("#screenPipButton"),
@@ -840,6 +844,11 @@ function bindEvents() {
     state.screenStats.capture = getScreenCaptureStatsText();
     updateScreenStatsLabel();
   });
+  dom.screenStatsOverlayToggle?.addEventListener("change", () => {
+    state.screenStatsOverlayEnabled = Boolean(dom.screenStatsOverlayToggle.checked);
+    localStorage.setItem("voiceChatScreenStatsOverlay", state.screenStatsOverlayEnabled ? "on" : "off");
+    updateScreenStatsOverlay();
+  });
   dom.openScreenTestButton?.addEventListener("click", openMinimalScreenTest);
   dom.systemCaptureFullRadio?.addEventListener("change", () => setSystemCaptureMode("full"));
   dom.systemCaptureProgramRadio?.addEventListener("change", () => setSystemCaptureMode("program"));
@@ -896,6 +905,7 @@ function restoreScreenShareSettings() {
   if (dom.screenCaptureModeSelect) dom.screenCaptureModeSelect.value = ["auto", "handler", "browser", "electron"].includes(state.screenCaptureMode) ? state.screenCaptureMode : "auto";
   if (dom.screenPreviewToggle) dom.screenPreviewToggle.checked = state.screenPreviewEnabled;
   if (dom.screenProbeToggle) dom.screenProbeToggle.checked = state.screenProbeEnabled;
+  if (dom.screenStatsOverlayToggle) dom.screenStatsOverlayToggle.checked = state.screenStatsOverlayEnabled;
   state.screenResolution = dom.screenResolutionSelect?.value || "1080";
   state.screenFps = dom.screenFpsSelect?.value || "30";
   state.screenCaptureMode = isElectronDesktopScreenCaptureSupported() ? (dom.screenCaptureModeSelect?.value || "auto") : "browser";
@@ -16280,6 +16290,7 @@ function renderScreenStage() {
     dom.screenShareList.innerHTML = "";
     if (state.screenControlsHideTimer) window.clearTimeout(state.screenControlsHideTimer);
     state.screenControlsHideTimer = 0;
+    updateScreenStatsOverlay();
     return;
   }
 
@@ -16302,6 +16313,54 @@ function renderScreenStage() {
     button.textContent = share.id === state.selectedScreenPeerId ? `${share.name} 보는 중` : share.name;
     dom.screenShareList.append(button);
   }
+  updateScreenStatsOverlay();
+}
+
+// 화면공유 보기 왼쪽 위 해상도·fps 표시. 받은 프레임 수와, 그중 그림이 실제로 바뀐 프레임 수를 따로 센다 —
+// 공유 쪽 캡처가 같은 화면을 반복해 보내면 fps는 30이어도 체감은 스톱모션이라 둘을 같이 봐야 한다.
+function updateScreenStatsOverlay() {
+  const overlay = dom.screenStatsOverlay;
+  const video = dom.screenViewer;
+  const probe = state.screenStatsOverlay;
+  const on = Boolean(overlay) && state.screenStatsOverlayEnabled && !dom.screenStage.hidden;
+  if (overlay) overlay.hidden = !on;
+  if (!on) {
+    window.clearInterval(probe.timer);
+    video.cancelVideoFrameCallback?.(probe.frameHandle);
+    probe.timer = 0;
+    return;
+  }
+  if (probe.timer) return;
+  const onFrame = () => {
+    probe.frames += 1;
+    countScreenFrameChange(video, probe);
+    probe.frameHandle = video.requestVideoFrameCallback(onFrame);
+  };
+  probe.frameHandle = video.requestVideoFrameCallback?.(onFrame);
+  overlay.textContent = "측정 중…";
+  probe.timer = window.setInterval(() => {
+    overlay.textContent = `${video.videoWidth}×${video.videoHeight} · ${probe.frames}fps · 변화 ${probe.changed}fps`;
+    probe.frames = 0;
+    probe.changed = 0;
+  }, 1000);
+}
+
+// 32x18로 줄여 직전 프레임과 비교한다. 같은 화면 반복(인코더 skip 프레임)은 픽셀이 그대로라 차이가 0이다.
+// createImageBitmap 의 resize 는 GPU에서 줄이므로 원본(4K) 전체를 CPU로 읽어 오지 않는다.
+function countScreenFrameChange(video, probe) {
+  createImageBitmap(video, { resizeWidth: 32, resizeHeight: 18 }).then((bitmap) => {
+    probe.ctx ||= Object.assign(document.createElement("canvas"), { width: 32, height: 18 }).getContext("2d", { willReadFrequently: true });
+    probe.ctx.drawImage(bitmap, 0, 0);
+    bitmap.close();
+    const pixels = probe.ctx.getImageData(0, 0, 32, 18).data;
+    const prev = probe.prev;
+    probe.prev = pixels;
+    if (!prev) return;
+    let diff = 0;
+    for (let i = 0; i < pixels.length; i += 1) diff += Math.abs(pixels[i] - prev[i]);
+    // ponytail: 픽셀당 평균 차이 2 미만은 인코딩 잡음으로 보고 안 센다 — 커서 이동 같은 아주 작은 변화도 빠진다.
+    if (diff > 32 * 18 * 2) probe.changed += 1;
+  }).catch(() => {});
 }
 
 function getActiveScreenShares() {
