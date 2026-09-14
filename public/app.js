@@ -117,6 +117,7 @@ const state = {
   lastScreenStatsLogAt: 0,
   screenLowFpsStrikes: 0,
   screenLowFpsWarned: false,
+  screenSoftwareEncodeWarned: false,
   ignoreScreenEndedUntil: 0,
   programAudioSources: [],
   programAudioSourcesLoaded: false,
@@ -3189,6 +3190,7 @@ async function restartScreenShare() {
     });
 
     state.ignoreScreenEndedUntil = Date.now() + 1200;
+    state.screenSoftwareEncodeWarned = false; // 해상도·fps가 바뀌면 인코더를 다시 고르므로 다시 확인한다
     state.screenStream = stream;
     state.screenTrack = track;
     state.screenSharing = true;
@@ -3253,6 +3255,7 @@ function cleanupLocalScreenShare() {
   state.screenCaptureRequested = null;
   state.lastScreenStatsLogAt = 0;
   state.screenLowFpsWarned = false;
+  state.screenSoftwareEncodeWarned = false;
   if (state.selectedScreenPeerId === "local") state.selectedScreenPeerId = "";
   stopScreenCaptureProbe();
   rebuildLocalStream();
@@ -6399,6 +6402,13 @@ async function updateStats() {
   updateConnectionStatsLabel({ candidateText, sendBps, receiveBps });
   checkMediaByteFlow({ sendBps, receiveBps, candidateText });
   handleScreenSenderPerformance(screenSenderFps);
+  // GPU 인코더를 못 잡고 CPU(OpenH264 등)로 인코딩하면 4K에서 fps가 크게 떨어진다(9/14 1080p=GPU, 9/15 4K60=OpenH264).
+  if (state.screenSharing && state.screenSource === "screen" && screenPowerEfficientEncoders.has("false") && !state.screenSoftwareEncodeWarned) {
+    state.screenSoftwareEncodeWarned = true;
+    const encoder = [...screenEncoders].join("+") || "software";
+    logClientEvent("screen-software-encoder", `${encoder} ${getScreenCaptureStatsText()}`);
+    setMessage(`화면 공유를 GPU가 아닌 CPU(${encoder})로 인코딩하고 있어 끊길 수 있습니다. 해상도나 fps를 낮추면 GPU 인코더로 바뀔 수 있습니다.`);
+  }
   const health = getQualityHealthText({
     receiveBps,
     rttMs: rttCount ? (rttTotal / rttCount) * 1000 : 0,
