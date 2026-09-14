@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld("voiceDesktop", {
     if (!result?.ok) throw new Error(result?.error || "공유할 화면 소스를 찾지 못했습니다.");
     return { id: result.id, name: result.name, source: result.source || null, diagnostics: result.diagnostics || null };
   },
+  listScreenWindows: () => ipcRenderer.invoke("list-screen-windows"),
   getScreenDiagnostics: async () => {
     const result = await ipcRenderer.invoke("get-screen-diagnostics");
     if (!result?.ok) throw new Error(result?.error || "화면 진단 정보를 가져오지 못했습니다.");

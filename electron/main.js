@@ -38,7 +38,8 @@ function getCommandLineSwitches() {
 
   if (process.platform === "win32") {
     // Chromium 126 기본 캡처 백엔드(DXGI/GDI)는 4K에서 느림. WGC 사용 시 캡처 fps 대폭 개선.
-    switches.push(["enable-features", "AllowWgcScreenCapturer"]);
+    // 창 공유도 WGC로 캡처한다. 같은 스위치를 두 번 넣으면 마지막 값만 남으므로 한 값에 묶는다.
+    switches.push(["enable-features", "AllowWgcScreenCapturer,AllowWgcWindowCapturer"]);
   }
 
   if (process.platform === "win32" && getEffectiveWindowsGpuMode() === "d3d11") {
@@ -305,6 +306,16 @@ function setupNavigation() {
       source: getSourceDiagnostics(screen),
       diagnostics: await getScreenDiagnostics(),
     };
+  });
+
+  // 창(프로그램) 단위 화면 공유용 목록. 캡처는 렌더러가 고른 id로 getUserMedia(desktop)를 연다.
+  ipcMain.handle("list-screen-windows", async () => {
+    const sources = await desktopCapturer.getSources({
+      types: ["window"],
+      thumbnailSize: { width: 0, height: 0 },
+      fetchWindowIcons: false,
+    });
+    return sources.filter((source) => source.name).map(({ id, name }) => ({ id, name }));
   });
 
   ipcMain.handle("get-screen-diagnostics", async () => {

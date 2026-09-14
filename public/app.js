@@ -104,6 +104,7 @@ const state = {
   screenStatsOverlayEnabled: localStorage.getItem("voiceChatScreenStatsOverlay") !== "off",
   screenFitMode: localStorage.getItem("voiceChatScreenFitMode") === "cover" ? "cover" : "contain",
   screenSource: "screen", // 현재 공유 슬롯의 소스: "screen"(모니터) 또는 "카메라"(웹캠/가상카메라)
+  screenWindow: null, // 창 공유 대상 { id, name } — null이면 모니터 전체
   screenControlsHideTimer: 0,
   screenStats: { capture: "", sender: "", receiver: "", bottleneck: "" },
   screenStatsOverlay: { timer: 0, frameHandle: 0, frames: 0, changed: 0, prev: null, ctx: null },
@@ -2919,7 +2920,7 @@ async function toggleScreenShare() {
   await requestScreenShare();
 }
 
-// 화면 공유 시작 진입점: 모니터가 여러 개면 어떤 모니터를 공유할지 먼저 고르게 한다.
+// 화면 공유 시작 진입점: 모니터가 여러 개이거나 창 공유가 되면 무엇을 공유할지 먼저 고르게 한다.
 async function requestScreenShare() {
   if (state.screenSharing) return;
   if (!state.currentRoom) {
@@ -2931,11 +2932,13 @@ async function requestScreenShare() {
     updateControls();
     return;
   }
+  state.screenWindow = null;
   if (screenMonitorPickerSupported()) {
     try {
       const diag = await desktop.getScreenDiagnostics();
       const displays = Array.isArray(diag?.displays) ? diag.displays : [];
-      if (displays.length > 1) { openMonitorPicker(displays); return; }
+      // 창 공유를 지원하는 앱이면 모니터가 하나여도 띄운다(모니터 또는 프로그램 창 선택).
+      if (displays.length > 1 || (displays.length && typeof desktop.listScreenWindows === "function")) { openMonitorPicker(displays); return; }
     } catch (error) {
       recordClientError("monitor-picker-list-failed", getErrorDetail(error));
     }
@@ -2971,7 +2974,7 @@ function openMonitorPicker(displays) {
   panel.className = "modal monitor-picker";
   panel.innerHTML = `
     <header class="modal-head">
-      <h2>공유할 모니터 선택</h2>
+      <h2>공유할 화면 선택</h2>
       <button class="ghost small" data-mp-close="1" type="button">닫기</button>
     </header>
     <div class="modal-body">
@@ -2980,6 +2983,8 @@ function openMonitorPicker(displays) {
       <div class="modal-actions">
         <button class="secondary" data-mp-auto="1" type="button">커서가 있는 모니터로 자동 선택</button>
       </div>
+      <p class="modal-hint" data-mp-windows-hint hidden>또는 프로그램 창 하나만 공유</p>
+      <div class="camera-list" data-mp-windows hidden></div>
     </div>`;
   backdrop.append(panel);
   document.body.append(backdrop);
@@ -2988,6 +2993,24 @@ function openMonitorPicker(displays) {
   panel.querySelector("[data-mp-auto]").addEventListener("click", () => chooseMonitorAndShare(""));
   renderMonitorMap(panel.querySelector("[data-mp-map]"), displays);
   document.addEventListener("keydown", onMonitorPickerKey, true);
+  // 프로그램 창 공유: 고른 창만 그 창 id로 직접 캡처한다(모니터 전체 캡처와 다른 경로).
+  desktop.listScreenWindows?.().then((windows) => {
+    const list = panel.querySelector("[data-mp-windows]");
+    for (const win of windows) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "camera-option";
+      btn.textContent = win.name;
+      btn.addEventListener("click", () => {
+        closeMonitorPicker();
+        state.screenWindow = win;
+        startScreenShare();
+      });
+      list.append(btn);
+    }
+    list.hidden = !windows.length;
+    panel.querySelector("[data-mp-windows-hint]").hidden = !windows.length;
+  }).catch((error) => recordClientError("window-picker-list-failed", getErrorDetail(error)));
 }
 
 function renderMonitorMap(map, displays) {
@@ -3211,9 +3234,10 @@ async function startScreenShare() {
     renderScreenStage();
     logScreenShareStats("screen-share-start");
     scheduleScreenShareStatsLog("screen-share-5s");
+    const target = state.screenWindow ? `'${state.screenWindow.name}' 창` : "전체 화면";
     setMessage(Number(state.screenFps || 30) >= 60
-      ? "전체 화면 공유를 시작했습니다. 60fps는 PC 상태에 따라 불안정할 수 있습니다."
-      : "전체 화면 공유를 시작했습니다. 소리는 컴퓨터 사운드 공유를 따로 사용합니다.");
+      ? `${target} 공유를 시작했습니다. 60fps는 PC 상태에 따라 불안정할 수 있습니다.`
+      : `${target} 공유를 시작했습니다. 소리는 컴퓨터 사운드 공유를 따로 사용합니다.`);
   } catch (error) {
     cleanupStream(stream);
     stopScreenCaptureProbe();
@@ -3367,6 +3391,13 @@ async function getScreenShareStream() {
   state.screenCaptureRequested = null;
   state.screenDesktopDiagnostics = null;
 
+  // 창 공유는 그 창 id로 직접 캡처한다. 실패해도 모니터 전체로 넘어가지 않는다(고른 창 밖의 화면이 새지 않게).
+  if (state.screenWindow) {
+    state.screenCaptureMethod = "electron-window";
+    logClientEvent("screen-capture-path", `electron-window ${state.screenWindow.name}`);
+    return getElectronDesktopScreenShareStream(state.screenWindow.id);
+  }
+
   if ((state.screenCaptureMode === "auto" || state.screenCaptureMode === "handler") && isElectronDisplayMediaHandlerSupported()) {
     try {
       return await getElectronDisplayMediaHandlerScreenShareStream();
@@ -3427,10 +3458,10 @@ async function getElectronDisplayMediaHandlerScreenShareStream() {
   });
 }
 
-async function getElectronDesktopScreenShareStream() {
+async function getElectronDesktopScreenShareStream(windowId = "") {
   const source = await desktop.getScreenSource();
   rememberScreenCaptureSource(source);
-  const constraints = getElectronScreenCaptureConstraints(source.id);
+  const constraints = getElectronScreenCaptureConstraints(windowId || source.id);
   state.screenCaptureRequested = { audio: false, video: constraints };
   logClientEvent("screen-capture-source", getScreenCaptureSourceText());
   return navigator.mediaDevices.getUserMedia({
@@ -3518,7 +3549,7 @@ async function applyScreenShareTrackConstraints(track) {
 
 function assertFullScreenShareTrack(track) {
   const surface = track.getSettings?.().displaySurface;
-  if (!surface || surface === "monitor") return;
+  if (!surface || surface === "monitor" || state.screenWindow) return;
   track.stop();
   throw new Error("전체 화면 공유만 지원합니다. 창 공유는 사용할 수 없습니다.");
 }
