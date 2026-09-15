@@ -38,7 +38,8 @@ function getCommandLineSwitches() {
 
   if (process.platform === "win32") {
     // Chromium 126 기본 캡처 백엔드(DXGI/GDI)는 4K에서 느림. WGC 사용 시 캡처 fps 대폭 개선.
-    switches.push(["enable-features", "AllowWgcScreenCapturer"]);
+    // 창 공유도 WGC로 캡처한다. 같은 스위치를 두 번 넣으면 마지막 값만 남으므로 한 값에 묶는다.
+    switches.push(["enable-features", "AllowWgcScreenCapturer,AllowWgcWindowCapturer"]);
   }
 
   if (process.platform === "win32" && getEffectiveWindowsGpuMode() === "d3d11") {
@@ -54,6 +55,7 @@ let tray = null;
 let isQuitting = false;
 let programAudioCapture = new Map();
 let programAudioPort = null;
+let systemAudioSessionWatcher = null;
 let screenSharePowerBlockerId = null;
 let screenCaptureConfig = {};
 
@@ -306,6 +308,16 @@ function setupNavigation() {
     };
   });
 
+  // 창(프로그램) 단위 화면 공유용 목록. 캡처는 렌더러가 고른 id로 getUserMedia(desktop)를 연다.
+  ipcMain.handle("list-screen-windows", async () => {
+    const sources = await desktopCapturer.getSources({
+      types: ["window"],
+      thumbnailSize: { width: 0, height: 0 },
+      fetchWindowIcons: false,
+    });
+    return sources.filter((source) => source.name).map(({ id, name }) => ({ id, name }));
+  });
+
   ipcMain.handle("get-screen-diagnostics", async () => {
     return { ok: true, diagnostics: await getScreenDiagnostics() };
   });
@@ -368,7 +380,7 @@ function setupNavigation() {
 
   ipcMain.handle("list-program-audio-sources", async () => {
     if (process.platform !== "win32") return { ok: false, error: "Windows에서만 사용할 수 있습니다." };
-    const helperInfo = getProgramLoopbackHelperInfo();
+    const helperInfo = getNativeHelperInfo("AccordProcessLoopback.exe");
     if (!helperInfo.exists) return { ok: false, error: makeHelperError("프로그램별 오디오 캡처 helper가 없습니다.", helperInfo) };
     const args = ["list", "--exclude-pid", String(process.pid)];
 
@@ -394,13 +406,15 @@ function setupNavigation() {
     });
   });
 
-  ipcMain.handle("start-program-audio-capture", async (event, rawPids) => {
+  ipcMain.handle("start-program-audio-capture", async (event, rawPids, options) => {
     if (process.platform !== "win32") return { ok: false, error: "Windows에서만 사용할 수 있습니다." };
-    const helperInfo = getProgramLoopbackHelperInfo();
+    const helperInfo = getNativeHelperInfo("AccordProcessLoopback.exe");
     if (!helperInfo.exists) return { ok: false, error: makeHelperError("프로그램별 오디오 캡처 helper가 없습니다.", helperInfo) };
 
+    // allPrograms = 전체 컴퓨터 소리 공유: pid는 헬퍼가 기본 출력 장치의 세션을 보고 계속 골라 준다(아래 watcher).
+    const allPrograms = options?.allPrograms === true;
     const rawList = normalizePidList(rawPids);
-    if (!rawList.length) return { ok: false, error: "공유할 프로그램을 선택하세요." };
+    if (!allPrograms && !rawList.length) return { ok: false, error: "공유할 프로그램을 선택하세요." };
 
     // 캡처는 프로세스 트리 포함 모드라, 다른 선택 pid의 자손을 또 캡처하면
     // 같은 오디오가 중복 합산된다(증폭/클리핑 + 콤 필터). 트리 루트만 남긴다.
@@ -422,6 +436,7 @@ function setupNavigation() {
       for (const pid of pids) {
         startProgramAudioCaptureProcess(event.sender, helperInfo, pid);
       }
+      if (allPrograms) startSystemAudioSessionWatcher(event.sender, helperInfo);
     } catch (error) {
       stopProgramAudioCapture();
       console.error("program audio capture failed", error, helperInfo);
@@ -434,6 +449,23 @@ function setupNavigation() {
   ipcMain.handle("stop-program-audio-capture", () => {
     stopProgramAudioCapture();
     return { ok: true };
+  });
+
+  // 네이티브 화면 캡처(helper가 WGC로 캡처하고 GPU에서 NV12로 변환): Chromium 캡처기의 CPU 50% 스로틀(4K≈30fps)을 우회한다.
+  // main은 helper 경로와 인자만 정해 준다. 실행과 프레임 읽기는 preload가 한다 — 4K 프레임을 IPC로 넘기면 복제에만 프레임당 15ms가 넘는다.
+  ipcMain.handle("get-native-screen-capture", (event, options = {}) => {
+    if (process.platform !== "win32") return { ok: false, error: "Windows에서만 사용할 수 있습니다." };
+    const helperInfo = getNativeHelperInfo("AccordScreenCapture.exe");
+    if (!helperInfo.exists) return { ok: false, error: makeHelperError("화면 캡처 helper가 없습니다.", helperInfo) };
+    const hwnd = String(options.windowId || "").match(/^window:(\d+):/)?.[1];
+    const number = (value) => String(Math.max(0, Math.floor(Number(value) || 0)));
+    const args = [
+      ...(hwnd ? ["--window", hwnd] : ["--monitor", ...getScreenCapturePoint()]),
+      "--max-width", number(options.width),
+      "--max-height", number(options.height),
+      "--fps", number(options.fps),
+    ];
+    return { ok: true, path: helperInfo.path, cwd: helperInfo.cwd, args };
   });
 }
 
@@ -659,15 +691,15 @@ function dedupeProgramAudioPids(helperInfo, pids) {
   });
 }
 
-function getProgramLoopbackHelperInfo() {
-  const relative = path.join("electron", "bin", "AccordProcessLoopback.exe");
+function getNativeHelperInfo(exe) {
+  const relative = path.join("electron", "bin", exe);
   const candidates = app.isPackaged
     ? [
       path.join(process.resourcesPath, "app.asar.unpacked", relative),
       path.join(process.resourcesPath, relative),
     ]
     : [
-      path.join(__dirname, "bin", "AccordProcessLoopback.exe"),
+      path.join(__dirname, "bin", exe),
       path.join(__dirname, "..", relative),
     ];
   const found = candidates.find((candidate) => fs.existsSync(candidate));
@@ -739,6 +771,8 @@ function startProgramAudioCaptureProcess(webContents, helperInfo, pid) {
   });
 
   child.on("close", (code) => {
+    // 우리가 끈(stopProgramAudioCapture·세션 동기화) 옛 프로세스의 늦은 close가, 같은 pid로 새로 시작한 캡처를 끄지 않게 한다.
+    if (programAudioCapture.get(pid) !== child) return;
     programAudioCapture.delete(pid);
     if (!webContents.isDestroyed()) {
       webContents.send("program-audio-stopped", { pid, code, error: parseHelperError(stderr) });
@@ -763,13 +797,58 @@ function makeHelperError(message, helperInfo, error = null, args = []) {
   return parts.join(" / ");
 }
 
+// 전체 컴퓨터 소리 공유: 헬퍼가 2초마다 보내는 "기본 출력 장치에서 소리 내는 프로그램" pid 목록에 맞춰, 새 프로그램엔
+// 캡처를 붙이고 사라진 프로그램은 뗀다. 나머지 캡처는 끊김 없이 그대로 둔다.
+function startSystemAudioSessionWatcher(webContents, helperInfo) {
+  const watcher = spawn(helperInfo.path, ["watch-sessions", "--exclude-pid", String(process.pid)], {
+    cwd: helperInfo.cwd,
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  systemAudioSessionWatcher = watcher;
+  watcher.on("error", (error) => console.error("system audio session watcher failed", error, helperInfo));
+
+  let buffered = "";
+  watcher.stdout.on("data", (chunk) => {
+    const lines = (buffered + chunk.toString("utf8")).split("\n");
+    buffered = lines.pop();
+    if (!lines.length || systemAudioSessionWatcher !== watcher || webContents.isDestroyed()) return;
+    let pids;
+    try {
+      pids = JSON.parse(lines.at(-1)).pids;
+    } catch {
+      return;
+    }
+    if (!Array.isArray(pids)) return;
+    for (const [pid, child] of programAudioCapture) {
+      if (pids.includes(pid)) continue;
+      programAudioCapture.delete(pid); // close 가드가 '꺼짐' 통지를 막는다
+      child.kill();
+    }
+    for (const pid of pids) {
+      if (!programAudioCapture.has(pid)) startProgramAudioCaptureProcess(webContents, helperInfo, pid);
+    }
+  });
+}
+
 function stopProgramAudioCapture() {
+  systemAudioSessionWatcher?.kill();
+  systemAudioSessionWatcher = null;
   for (const child of programAudioCapture.values()) {
     if (!child.killed) child.kill();
   }
   programAudioCapture.clear();
   programAudioPort?.close?.();
   programAudioPort = null;
+}
+
+// 공유할 모니터(설정값, 없으면 커서가 있는 모니터)의 가운데 점을 물리 픽셀로 준다. helper가 이 점으로 모니터를 고른다.
+function getScreenCapturePoint() {
+  const targetId = String(screenCaptureConfig.displayId || getCursorDisplayId() || "");
+  const display = electronScreen.getAllDisplays().find((item) => String(item.id) === targetId) || electronScreen.getPrimaryDisplay();
+  const { x, y, width, height } = display.bounds;
+  const point = electronScreen.dipToScreenPoint({ x: Math.round(x + width / 2), y: Math.round(y + height / 2) });
+  return [String(Math.round(point.x)), String(Math.round(point.y))];
 }
 
 function parseHelperError(stderr) {

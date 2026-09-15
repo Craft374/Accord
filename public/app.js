@@ -96,15 +96,20 @@ const state = {
   selectedScreenPeerId: "",
   screenResolution: localStorage.getItem("voiceChatScreenResolution") || "1080",
   screenFps: localStorage.getItem("voiceChatScreenFps") || "30",
-  screenCaptureMode: ["auto", "handler", "browser", "electron"].includes(localStorage.getItem("voiceChatScreenCaptureMode"))
+  screenCaptureMode: ["auto", "native", "handler", "browser", "electron"].includes(localStorage.getItem("voiceChatScreenCaptureMode"))
     ? localStorage.getItem("voiceChatScreenCaptureMode")
     : "auto",
   screenPreviewEnabled: localStorage.getItem("voiceChatScreenPreview") !== "off",
   screenProbeEnabled: localStorage.getItem("voiceChatScreenProbe") !== "off",
+  screenStatsOverlayEnabled: localStorage.getItem("voiceChatScreenStatsOverlay") !== "off",
   screenFitMode: localStorage.getItem("voiceChatScreenFitMode") === "cover" ? "cover" : "contain",
   screenSource: "screen", // 현재 공유 슬롯의 소스: "screen"(모니터) 또는 "카메라"(웹캠/가상카메라)
+  screenWindow: null, // 창 공유 대상 { id, name } — null이면 모니터(screenDisplayId) 전체
+  nativeScreenCapture: null, // 네이티브 화면 캡처 중이면 preload가 보내는 프레임을 받는 window message 리스너
+  screenDisplayId: "", // 공유할 모니터 id — ""이면 공유를 시작할 때 커서가 있는 모니터
   screenControlsHideTimer: 0,
   screenStats: { capture: "", sender: "", receiver: "", bottleneck: "" },
+  screenStatsOverlay: { timer: 0, frameHandle: 0, frames: 0, changed: 0, prev: null, ctx: null },
   screenCaptureMethod: "",
   screenCaptureSource: null,
   screenCaptureRequested: null,
@@ -112,6 +117,8 @@ const state = {
   screenCaptureProbe: { stop: null, fps: 0, method: "", frames: 0, enabled: true, sampling: false },
   lastScreenStatsLogAt: 0,
   screenLowFpsStrikes: 0,
+  screenLowFpsWarned: false,
+  screenSoftwareEncodeStrikes: 0, // CPU 인코딩이 이어진 초(1초마다 도는 통계 기준)
   ignoreScreenEndedUntil: 0,
   programAudioSources: [],
   programAudioSourcesLoaded: false,
@@ -409,11 +416,16 @@ const dom = {
   screenFpsSelect: document.querySelector("#screenFpsSelect"),
   screenCaptureModeField: document.querySelector("#screenCaptureModeField"),
   screenCaptureModeSelect: document.querySelector("#screenCaptureModeSelect"),
+  screenTargetField: document.querySelector("#screenTargetField"),
+  screenTargetSelect: document.querySelector("#screenTargetSelect"),
   screenPreviewToggle: document.querySelector("#screenPreviewToggle"),
   screenProbeToggle: document.querySelector("#screenProbeToggle"),
+  screenStatsOverlayToggle: document.querySelector("#screenStatsOverlayToggle"),
   openScreenTestButton: document.querySelector("#openScreenTestButton"),
   screenStage: document.querySelector("#screenStage"),
   screenViewer: document.querySelector("#screenViewer"),
+  screenStatsOverlay: document.querySelector("#screenStatsOverlay"),
+  screenEndedNotice: document.querySelector("#screenEndedNotice"),
   screenViewerTitle: document.querySelector("#screenViewerTitle"),
   screenFitButton: document.querySelector("#screenFitButton"),
   screenPipButton: document.querySelector("#screenPipButton"),
@@ -820,6 +832,17 @@ function bindEvents() {
     logClientEvent("screen-capture-mode", state.screenCaptureMode);
     if (state.screenSharing) restartScreenShare();
   });
+  // 공유 대상(모니터·프로그램 창)은 화면 공유 설정에서 고르고, 공유 중에 바꾸면 바로 갈아탄다.
+  dom.screenTargetSelect?.addEventListener("change", async () => {
+    const option = dom.screenTargetSelect.selectedOptions[0];
+    const value = option?.value || "";
+    state.screenWindow = value.startsWith("window:") ? { id: value, name: option.textContent } : null;
+    state.screenDisplayId = value.startsWith("display:") ? value.slice("display:".length) : "";
+    logClientEvent("screen-target", value || "auto");
+    if (!state.screenSharing) return;
+    await applyScreenDisplayTarget();
+    restartScreenShare();
+  });
   dom.screenPreviewToggle?.addEventListener("change", () => {
     state.screenPreviewEnabled = Boolean(dom.screenPreviewToggle.checked);
     localStorage.setItem("voiceChatScreenPreview", state.screenPreviewEnabled ? "on" : "off");
@@ -838,6 +861,11 @@ function bindEvents() {
     else stopScreenCaptureProbe();
     state.screenStats.capture = getScreenCaptureStatsText();
     updateScreenStatsLabel();
+  });
+  dom.screenStatsOverlayToggle?.addEventListener("change", () => {
+    state.screenStatsOverlayEnabled = Boolean(dom.screenStatsOverlayToggle.checked);
+    localStorage.setItem("voiceChatScreenStatsOverlay", state.screenStatsOverlayEnabled ? "on" : "off");
+    updateScreenStatsOverlay();
   });
   dom.openScreenTestButton?.addEventListener("click", openMinimalScreenTest);
   dom.systemCaptureFullRadio?.addEventListener("change", () => setSystemCaptureMode("full"));
@@ -892,9 +920,11 @@ function restoreScreenShareSettings() {
   if (dom.screenResolutionSelect) dom.screenResolutionSelect.value = ["720", "1080", "1440", "2160", "native"].includes(state.screenResolution) ? state.screenResolution : "1080";
   if (dom.screenFpsSelect) dom.screenFpsSelect.value = ["15", "30", "60"].includes(state.screenFps) ? state.screenFps : "30";
   if (dom.screenCaptureModeField) dom.screenCaptureModeField.hidden = !isElectronDesktopScreenCaptureSupported();
-  if (dom.screenCaptureModeSelect) dom.screenCaptureModeSelect.value = ["auto", "handler", "browser", "electron"].includes(state.screenCaptureMode) ? state.screenCaptureMode : "auto";
+  if (dom.screenTargetField) dom.screenTargetField.hidden = !isElectronDisplayMediaHandlerSupported();
+  if (dom.screenCaptureModeSelect) dom.screenCaptureModeSelect.value = ["auto", "native", "handler", "browser", "electron"].includes(state.screenCaptureMode) ? state.screenCaptureMode : "auto";
   if (dom.screenPreviewToggle) dom.screenPreviewToggle.checked = state.screenPreviewEnabled;
   if (dom.screenProbeToggle) dom.screenProbeToggle.checked = state.screenProbeEnabled;
+  if (dom.screenStatsOverlayToggle) dom.screenStatsOverlayToggle.checked = state.screenStatsOverlayEnabled;
   state.screenResolution = dom.screenResolutionSelect?.value || "1080";
   state.screenFps = dom.screenFpsSelect?.value || "30";
   state.screenCaptureMode = isElectronDesktopScreenCaptureSupported() ? (dom.screenCaptureModeSelect?.value || "auto") : "browser";
@@ -994,7 +1024,7 @@ function openSocket() {
   });
 }
 
-// 유휴 상태 등으로 연결이 끊기면 지수 백오프로 다시 연결하고 인증을 복원한다.
+// 유휴 상태·서버 재시작 등으로 연결이 끊기면 지수 백오프로 다시 연결하고, 붙으면 새로고침한다.
 function scheduleReconnect() {
   if (reconnectTimer) return;
   reconnectAttempts += 1;
@@ -1015,11 +1045,9 @@ function scheduleReconnect() {
     reconnectTimer = 0;
     try {
       await openSocket();
-      reconnectAttempts = 0;
-      attemptAuthResume();
-      logClientEvent("client-env", getClientEnvironmentSummary());
-      setStatus("서버 연결", "good");
-      setMessage("서버에 다시 연결되었습니다.");
+      // 다시 붙으면 새로고침한다: 서버를 재시작·업데이트했으면 새 화면 코드를 받고, 로그인은 저장된 토큰으로 이어진다.
+      // 통화는 끊길 때 resetRoomState에서 이미 정리됐으므로 새로고침으로 더 잃는 것은 없다.
+      window.location.reload();
     } catch {
       scheduleReconnect();
     }
@@ -2478,14 +2506,19 @@ async function startProgramSystemAudioShare(options = {}) {
   }
 }
 
-async function getProgramSystemAudioStream() {
-  if (!state.programAudioSourcesLoaded) {
-    await refreshProgramAudioSources({ silent: true });
-  }
+// allPrograms = 전체 컴퓨터 소리 공유: 선택 대신 메인이 기본 출력 장치에서 소리 내는 프로그램을 계속 골라 붙인다.
+// pids가 비어 있으니 프로그램 하나가 꺼져 헬퍼가 끝나도 공유 전체를 끄지 않는다.
+async function getProgramSystemAudioStream({ allPrograms = false } = {}) {
+  let pids = [];
+  if (!allPrograms) {
+    if (!state.programAudioSourcesLoaded) {
+      await refreshProgramAudioSources({ silent: true });
+    }
 
-  const pids = getSelectedProgramAudioCapturePids();
-  if (!pids.length) throw new Error("공유할 프로그램을 선택하세요.");
-  if (!isProgramSystemAudioSupported()) throw new Error("Windows 프로그램별 캡처를 사용할 수 없습니다.");
+    pids = getSelectedProgramAudioCapturePids();
+    if (!pids.length) throw new Error("공유할 프로그램을 선택하세요.");
+    if (!isProgramSystemAudioSupported()) throw new Error("Windows 프로그램별 캡처를 사용할 수 없습니다.");
+  }
 
   const AudioContext = window.AudioContext || window.webkitAudioContext;
   if (!AudioContext || !window.AudioWorkletNode) throw new Error("AudioWorklet을 사용할 수 없습니다.");
@@ -2537,7 +2570,7 @@ async function getProgramSystemAudioStream() {
       stopSystemAudio();
     });
 
-    await desktop.startProgramAudioCapture(pids);
+    await (allPrograms ? desktop.startSystemAudioCapture() : desktop.startProgramAudioCapture(pids));
     await context.resume().catch(() => {});
 
     state.programAudioProcess = { context, destination, node, portListener, unsubscribeData, unsubscribeStopped, pids, stopping: false };
@@ -2587,6 +2620,14 @@ async function startDisplaySystemAudioShare(options = {}) {
 
 async function getSystemAudioDisplayStream() {
   const failures = [];
+
+  // 출력 장치 루프백은 스피커 음향효과(APO)까지 입힌 소리라 스피커로 두면 통화음질이 됐다. 기본 출력 장치에서 소리 내는
+  // 프로그램을 프로그램별 공유 방식으로 모아 잡으면 효과 전 소리이고, 통화 소리·가상 케이블로 가는 마이크도 안 섞인다.
+  // 구버전 클라이언트거나 실패하면 기존 루프백으로 내려간다.
+  if (typeof desktop.startSystemAudioCapture === "function") {
+    const processStream = await getSystemAudioStreamOrNull("Windows process loopback", () => getProgramSystemAudioStream({ allPrograms: true }), failures);
+    if (processStream) return processStream;
+  }
 
   if (isElectronLoopbackSystemAudioSupported()) {
     const displayStream = await getSystemAudioStreamOrNull("Windows display loopback", getElectronDisplayLoopbackSystemAudioStream, failures);
@@ -2892,136 +2933,43 @@ async function toggleScreenShare() {
     return;
   }
   announceMediaIntent("screenOn");
-  await requestScreenShare();
-}
-
-// 화면 공유 시작 진입점: 모니터가 여러 개면 어떤 모니터를 공유할지 먼저 고르게 한다.
-async function requestScreenShare() {
-  if (state.screenSharing) return;
-  if (!state.currentRoom) {
-    setMessage("방에 들어가면 화면 공유를 켤 수 있습니다.");
-    return;
-  }
-  if (!isScreenShareSendSupported()) {
-    setMessage("이 환경에서는 화면 공유 송출을 지원하지 않습니다.");
-    updateControls();
-    return;
-  }
-  if (screenMonitorPickerSupported()) {
-    try {
-      const diag = await desktop.getScreenDiagnostics();
-      const displays = Array.isArray(diag?.displays) ? diag.displays : [];
-      if (displays.length > 1) { openMonitorPicker(displays); return; }
-    } catch (error) {
-      recordClientError("monitor-picker-list-failed", getErrorDetail(error));
-    }
-  }
+  // 모니터는 화면 공유 설정의 "공유 대상"을 따른다(자동이면 지금 커서가 있는 모니터).
+  await applyScreenDisplayTarget();
   await startScreenShare();
 }
 
-// 모니터 선택 UI는 윈도우 앱의 데스크톱 캡처 경로에서만 의미가 있다.
-// (맥/브라우저 기본 캡처는 OS 자체 화면 선택 창을 띄우므로 우리 창은 건너뛴다.)
-function screenMonitorPickerSupported() {
-  return desktop.isDesktop && desktop.platform === "win32"
-    && typeof desktop.getScreenDiagnostics === "function"
-    && typeof desktop.setScreenCaptureConfig === "function"
-    && state.screenCaptureMode !== "browser";
+// 공유할 모니터를 main에 넘긴다(""=커서가 있는 모니터). getScreenSource와 getDisplayMedia 핸들러가 이 값을 쓴다.
+function applyScreenDisplayTarget() {
+  return desktop.setScreenCaptureConfig?.({ displayId: state.screenDisplayId, mode: "screen-share" })
+    .catch((error) => recordClientError("screen-target-config-failed", getErrorDetail(error)));
 }
 
-let monitorPickerEl = null;
-function closeMonitorPicker() {
-  if (monitorPickerEl) { monitorPickerEl.remove(); monitorPickerEl = null; }
-  document.removeEventListener("keydown", onMonitorPickerKey, true);
-}
-function onMonitorPickerKey(e) {
-  if (e.key === "Escape") { e.preventDefault(); closeMonitorPicker(); }
-}
-
-// 윈도우 디스플레이 설정처럼 모니터들을 실제 배치(bounds)대로 그려서 어떤 화면을 공유할지 직접 고른다.
-function openMonitorPicker(displays) {
-  closeMonitorPicker();
-  const backdrop = document.createElement("div");
-  backdrop.className = "modal-backdrop monitor-picker-backdrop";
-  backdrop.addEventListener("click", (e) => { if (e.target === backdrop) closeMonitorPicker(); });
-  const panel = document.createElement("div");
-  panel.className = "modal monitor-picker";
-  panel.innerHTML = `
-    <header class="modal-head">
-      <h2>공유할 모니터 선택</h2>
-      <button class="ghost small" data-mp-close="1" type="button">닫기</button>
-    </header>
-    <div class="modal-body">
-      <p class="modal-hint">공유할 모니터를 누르세요. 배치는 실제 모니터 위치와 같아요.</p>
-      <div class="monitor-map" data-mp-map></div>
-      <div class="modal-actions">
-        <button class="secondary" data-mp-auto="1" type="button">커서가 있는 모니터로 자동 선택</button>
-      </div>
-    </div>`;
-  backdrop.append(panel);
-  document.body.append(backdrop);
-  monitorPickerEl = backdrop;
-  panel.querySelector("[data-mp-close]").addEventListener("click", closeMonitorPicker);
-  panel.querySelector("[data-mp-auto]").addEventListener("click", () => chooseMonitorAndShare(""));
-  renderMonitorMap(panel.querySelector("[data-mp-map]"), displays);
-  document.addEventListener("keydown", onMonitorPickerKey, true);
-}
-
-function renderMonitorMap(map, displays) {
-  if (!map) return;
-  // 전체 가상 데스크톱의 경계 상자를 구해 미리보기 영역에 비례 축소해 배치한다.
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const d of displays) {
-    const b = d.bounds || {};
-    minX = Math.min(minX, b.x || 0);
-    minY = Math.min(minY, b.y || 0);
-    maxX = Math.max(maxX, (b.x || 0) + (b.width || 0));
-    maxY = Math.max(maxY, (b.y || 0) + (b.height || 0));
-  }
-  const spanW = Math.max(1, maxX - minX);
-  const spanH = Math.max(1, maxY - minY);
-  const BOX_W = 360, BOX_H = 200, PAD = 6;
-  const scale = Math.min((BOX_W - PAD * 2) / spanW, (BOX_H - PAD * 2) / spanH);
-  const mapW = spanW * scale + PAD * 2;
-  const mapH = spanH * scale + PAD * 2;
-  map.style.width = `${Math.round(mapW)}px`;
-  map.style.height = `${Math.round(mapH)}px`;
-  map.innerHTML = "";
-  const cursorId = String(getCursorDisplayGuess(displays));
-  displays.forEach((d, i) => {
-    const b = d.bounds || {};
-    const el = document.createElement("button");
-    el.type = "button";
-    el.className = "monitor-tile";
-    el.style.left = `${Math.round(((b.x || 0) - minX) * scale + PAD)}px`;
-    el.style.top = `${Math.round(((b.y || 0) - minY) * scale + PAD)}px`;
-    el.style.width = `${Math.max(28, Math.round((b.width || 0) * scale))}px`;
-    el.style.height = `${Math.max(20, Math.round((b.height || 0) * scale))}px`;
+// "공유 대상" 목록(모니터 + 프로그램 창)을 다시 채운다. 창은 수시로 바뀌므로 화면 공유 설정을 열 때마다 부른다.
+async function refreshScreenTargets() {
+  const select = dom.screenTargetSelect;
+  if (!select || dom.screenTargetField.hidden) return;
+  const [diag, windows = []] = await Promise.all([
+    desktop.getScreenDiagnostics?.().catch(() => null),
+    desktop.listScreenWindows?.().catch(() => []),
+  ]);
+  const monitors = document.createElement("optgroup");
+  monitors.label = "모니터";
+  (diag?.displays || []).forEach((d, i) => {
     const sf = d.scaleFactor || 1;
-    const pxW = Math.round((b.width || 0) * sf);
-    const pxH = Math.round((b.height || 0) * sf);
-    const label = d.internal ? "노트북 화면" : `모니터 ${i + 1}`;
-    el.innerHTML = `<span class="monitor-tile-num">${i + 1}</span><span class="monitor-tile-meta">${escapeHtmlText(label)}<br>${pxW}×${pxH}</span>`;
-    if (String(d.id) === cursorId) el.classList.add("monitor-tile-cursor");
-    el.title = `${label} · ${pxW}×${pxH}`;
-    el.addEventListener("click", () => chooseMonitorAndShare(String(d.id)));
-    map.append(el);
+    const name = d.internal ? "노트북 화면" : `모니터 ${i + 1}`;
+    monitors.append(new Option(`${name} · ${Math.round(d.bounds.width * sf)}×${Math.round(d.bounds.height * sf)}`, `display:${d.id}`));
   });
-}
-
-// bounds 상 (0,0)에 가까운 모니터를 대략 주 모니터로 보고 표시만 강조한다(정확한 커서 위치는 캡처 시 결정).
-function getCursorDisplayGuess(displays) {
-  const primary = displays.find((d) => (d.bounds?.x || 0) === 0 && (d.bounds?.y || 0) === 0);
-  return primary ? primary.id : (displays[0]?.id ?? "");
-}
-
-async function chooseMonitorAndShare(displayId) {
-  closeMonitorPicker();
-  try {
-    await desktop.setScreenCaptureConfig({ displayId: String(displayId || ""), mode: "screen-share" });
-  } catch (error) {
-    recordClientError("monitor-picker-config-failed", getErrorDetail(error));
+  const apps = document.createElement("optgroup");
+  apps.label = "프로그램 창";
+  for (const win of windows) apps.append(new Option(win.name, win.id));
+  select.replaceChildren(new Option("자동 (커서가 있는 모니터)", ""), monitors, apps);
+  select.value = state.screenWindow?.id || (state.screenDisplayId && `display:${state.screenDisplayId}`);
+  // 고른 창이 닫혔거나 모니터가 빠졌으면 자동으로 되돌린다.
+  if (select.selectedIndex < 0) {
+    state.screenWindow = null;
+    state.screenDisplayId = "";
+    select.value = "";
   }
-  await startScreenShare();
 }
 
 // ── 카메라 공유(웹캠 / OBS 가상카메라) ──
@@ -3187,9 +3135,10 @@ async function startScreenShare() {
     renderScreenStage();
     logScreenShareStats("screen-share-start");
     scheduleScreenShareStatsLog("screen-share-5s");
+    const target = state.screenWindow ? `'${state.screenWindow.name}' 창` : "전체 화면";
     setMessage(Number(state.screenFps || 30) >= 60
-      ? "전체 화면 공유를 시작했습니다. 60fps는 PC 상태에 따라 불안정할 수 있습니다."
-      : "전체 화면 공유를 시작했습니다. 소리는 컴퓨터 사운드 공유를 따로 사용합니다.");
+      ? `${target} 공유를 시작했습니다. 60fps는 PC 상태에 따라 불안정할 수 있습니다.`
+      : `${target} 공유를 시작했습니다. 소리는 컴퓨터 사운드 공유를 따로 사용합니다.`);
   } catch (error) {
     cleanupStream(stream);
     stopScreenCaptureProbe();
@@ -3222,10 +3171,13 @@ async function stopScreenShare({ renegotiate = true, message = "화면 공유를
 }
 
 async function restartScreenShare() {
-  if (!state.currentRoom || !state.screenSharing) return;
+  // 카메라 공유 중에 해상도·fps를 바꿔도 화면 캡처로 갈아타지 않는다.
+  if (!state.currentRoom || !state.screenSharing || state.screenSource !== "screen") return;
   let stream = null;
   const oldStream = state.screenStream;
   const oldTrack = state.screenTrack;
+  // 네이티브 캡처는 새 캡처를 열기 전에 이전 helper를 끄므로, 실패하면 옛 트랙으로 되돌려도 멈춘 화면만 남는다.
+  const wasNative = Boolean(state.nativeScreenCapture);
   try {
     dom.screenShareButton.disabled = true;
     stream = await getScreenShareStream();
@@ -3240,6 +3192,7 @@ async function restartScreenShare() {
     });
 
     state.ignoreScreenEndedUntil = Date.now() + 1200;
+    state.screenSoftwareEncodeStrikes = 0; // 해상도·fps가 바뀌면 인코더를 다시 고르므로 다시 확인한다
     state.screenStream = stream;
     state.screenTrack = track;
     state.screenSharing = true;
@@ -3273,6 +3226,12 @@ async function restartScreenShare() {
     setMessage("화면 공유 설정을 적용했습니다. 오디오 설정은 변경하지 않았습니다.");
   } catch (error) {
     cleanupStream(stream);
+    stopNativeScreenCapture(); // 새로 띄운 helper가 있으면 같이 끈다
+    if (wasNative) {
+      recordClientError("screen-restart-failed", getErrorText(error));
+      await stopScreenShare({ message: error.message || "화면 공유 설정을 바꾸지 못해 공유를 껐습니다." });
+      return;
+    }
     if (state.screenTrack !== oldTrack) {
       state.screenStream = oldStream;
       state.screenTrack = oldTrack;
@@ -3303,8 +3262,11 @@ function cleanupLocalScreenShare() {
   state.screenCaptureSource = null;
   state.screenCaptureRequested = null;
   state.lastScreenStatsLogAt = 0;
+  state.screenLowFpsWarned = false;
+  state.screenSoftwareEncodeStrikes = 0;
   if (state.selectedScreenPeerId === "local") state.selectedScreenPeerId = "";
   stopScreenCaptureProbe();
+  stopNativeScreenCapture();
   rebuildLocalStream();
   setDesktopScreenShareActive(false).catch(() => {});
   for (const track of tracks) track.stop();
@@ -3316,24 +3278,8 @@ function cleanupLocalScreenShare() {
 
 function getScreenShareVideoConstraints() {
   const fps = Math.max(15, Math.min(60, Number(state.screenFps || 30)));
-  const video = {
-    frameRate: { ideal: fps, max: fps },
-    displaySurface: "monitor",
-  };
-  if (state.screenResolution === "720") {
-    video.width = { ideal: 1280 };
-    video.height = { ideal: 720 };
-  } else if (state.screenResolution === "1080") {
-    video.width = { ideal: 1920 };
-    video.height = { ideal: 1080 };
-  } else if (state.screenResolution === "1440") {
-    video.width = { ideal: 2560 };
-    video.height = { ideal: 1440 };
-  } else if (state.screenResolution === "2160") {
-    video.width = { ideal: 3840 };
-    video.height = { ideal: 2160 };
-  }
-  return video;
+  // 크기는 여기서 요청하지 않는다: 모니터 크기로 받은 뒤 applyScreenShareTrackConstraints가 필요할 때만 줄인다.
+  return { frameRate: { ideal: fps, max: fps }, displaySurface: "monitor" };
 }
 
 async function getScreenShareStream() {
@@ -3341,6 +3287,24 @@ async function getScreenShareStream() {
   state.screenCaptureSource = null;
   state.screenCaptureRequested = null;
   state.screenDesktopDiagnostics = null;
+  stopNativeScreenCapture(); // 재시작이면 이전 helper부터 끈다(레거시 방식으로 바꿔도 뒤에 남지 않게)
+
+  // 네이티브 캡처(모니터·창 모두)가 자동의 첫 선택이다. 실패하면 자동일 때만 아래 레거시 경로로 넘어간다.
+  if ((state.screenCaptureMode === "auto" || state.screenCaptureMode === "native") && isNativeScreenCaptureSupported()) {
+    try {
+      return await getNativeScreenShareStream();
+    } catch (error) {
+      recordClientError("screen-native-capture-failed", getErrorDetail(error));
+      if (state.screenCaptureMode === "native") throw error;
+    }
+  }
+
+  // 창 공유는 그 창 id로 직접 캡처한다. 실패해도 모니터 전체로 넘어가지 않는다(고른 창 밖의 화면이 새지 않게).
+  if (state.screenWindow) {
+    state.screenCaptureMethod = "electron-window";
+    logClientEvent("screen-capture-path", `electron-window ${state.screenWindow.name}`);
+    return getElectronDesktopScreenShareStream(state.screenWindow);
+  }
 
   if ((state.screenCaptureMode === "auto" || state.screenCaptureMode === "handler") && isElectronDisplayMediaHandlerSupported()) {
     try {
@@ -3402,8 +3366,9 @@ async function getElectronDisplayMediaHandlerScreenShareStream() {
   });
 }
 
-async function getElectronDesktopScreenShareStream() {
-  const source = await desktop.getScreenSource();
+async function getElectronDesktopScreenShareStream(win = null) {
+  // 창 공유면 캡처·로그의 id/name을 그 창으로 덮는다(디스플레이 진단 정보는 모니터 것 유지).
+  const source = { ...(await desktop.getScreenSource()), ...win };
   rememberScreenCaptureSource(source);
   const constraints = getElectronScreenCaptureConstraints(source.id);
   state.screenCaptureRequested = { audio: false, video: constraints };
@@ -3412,6 +3377,69 @@ async function getElectronDesktopScreenShareStream() {
     audio: false,
     video: constraints,
   });
+}
+
+function isNativeScreenCaptureSupported() {
+  return desktop.platform === "win32" && typeof desktop.startNativeScreenCapture === "function";
+}
+
+// 네이티브 캡처(Windows): helper가 WGC로 캡처하고 GPU에서 크기 조절·NV12 변환까지 끝낸 프레임을 preload가 VideoFrame으로 넘겨준다.
+// Chromium 캡처기는 CPU 한 코어의 50%를 넘지 않게 스스로 fps를 깎아서(4K≈30fps) 그 앞단을 통째로 바꾼다. 송출(WebRTC)은 그대로다.
+async function getNativeScreenShareStream() {
+  const generator = new MediaStreamTrackGenerator({ kind: "video" });
+  const writer = generator.writable.getWriter();
+  let started = null;
+  const firstFrame = new Promise((resolve, reject) => {
+    started = { resolve, reject };
+  });
+  const onMessage = (event) => {
+    if (event.source !== window) return;
+    const frame = event.data?.accordNativeScreenFrame;
+    if (frame) {
+      // 인코더 쪽이 밀려 있으면 쌓지 않고 버린다. 버린 프레임은 직접 닫아야 메모리가 새지 않는다.
+      if (writer.desiredSize > 0) writer.write(frame).catch(() => frame.close());
+      else frame.close();
+      started.resolve();
+      return;
+    }
+    const error = event.data?.accordNativeScreenStopped;
+    if (typeof error !== "string") return;
+    started.reject(new Error(error));
+    recordClientError("screen-native-helper-stopped", error);
+    if (state.screenTrack === generator) stopScreenShare({ message: `${error} 화면 공유를 껐습니다.` }).catch(() => {});
+  };
+  state.nativeScreenCapture = onMessage;
+  window.addEventListener("message", onMessage);
+  try {
+    await desktop.startNativeScreenCapture({
+      windowId: state.screenWindow?.id || "",
+      fps: Math.max(15, Math.min(60, Number(state.screenFps || 30))),
+      ...getScreenShareTargetSize(),
+    });
+    // 첫 프레임이 와야 성공으로 본다 — 시작하자마자 helper가 죽으면 여기서 실패해 자동 모드가 레거시로 넘어간다.
+    await Promise.race([firstFrame, wait(5000).then(() => {
+      throw new Error("화면 캡처 helper가 화면을 보내지 않습니다.");
+    })]);
+  } catch (error) {
+    stopNativeScreenCapture();
+    generator.stop();
+    throw error;
+  }
+  state.screenCaptureMethod = "native-wgc";
+  state.screenCaptureSource = {
+    id: state.screenWindow?.id || `display:${state.screenDisplayId || "cursor"}`,
+    name: state.screenWindow?.name || "모니터",
+    detail: null,
+  };
+  logClientEvent("screen-capture-path", "native-wgc");
+  return new MediaStream([generator]);
+}
+
+function stopNativeScreenCapture() {
+  if (!state.nativeScreenCapture) return;
+  window.removeEventListener("message", state.nativeScreenCapture);
+  state.nativeScreenCapture = null;
+  desktop.stopNativeScreenCapture?.();
 }
 
 function rememberScreenCaptureSource(source) {
@@ -3478,22 +3506,26 @@ function getScreenShareTargetSize() {
   return null;
 }
 
-function getScreenShareTrackConstraints() {
-  const constraints = { ...getScreenShareVideoConstraints() };
-  delete constraints.displaySurface;
-  return constraints;
-}
-
 async function applyScreenShareTrackConstraints(track) {
-  if (!track?.applyConstraints) return;
-  await track.applyConstraints(getScreenShareTrackConstraints()).catch((error) => {
+  // 네이티브 캡처는 helper가 이미 설정 크기·fps로 맞춰 보내므로 트랙 제약을 걸지 않는다.
+  if (!track?.applyConstraints || state.screenCaptureMethod === "native-wgc") return;
+  const constraints = { frameRate: getScreenShareVideoConstraints().frameRate };
+  // 설정 해상도가 지금 잡힌 화면보다 작을 때만 줄인다. 크거나 같으면(맥 1496x967에 1080p·4K 등) 모니터 크기 그대로 둔다 —
+  // 더 크게 요청하면 맥에서 374x240처럼 오히려 작아졌다.
+  const size = getScreenShareTargetSize();
+  const { width = 0, height = 0 } = track.getSettings?.() || {};
+  if (size && size.width < width && size.height < height) {
+    constraints.width = { ideal: size.width };
+    constraints.height = { ideal: size.height };
+  }
+  await track.applyConstraints(constraints).catch((error) => {
     logClientEvent("screen-constraints-error", error.message || String(error));
   });
 }
 
 function assertFullScreenShareTrack(track) {
   const surface = track.getSettings?.().displaySurface;
-  if (!surface || surface === "monitor") return;
+  if (!surface || surface === "monitor" || state.screenWindow) return;
   track.stop();
   throw new Error("전체 화면 공유만 지원합니다. 창 공유는 사용할 수 없습니다.");
 }
@@ -4506,7 +4538,6 @@ function setupRemoteScreenPlayback(peer, track, streamId = track.id) {
     // 공유 재시작으로 이미 새 트랙이 붙었다면 시청 상태를 건드리지 않는다.
     if (peer.remote.screen !== playback) return;
     peer.remote.screen = null;
-    if (state.selectedScreenPeerId === peer.id) state.selectedScreenPeerId = "";
     renderParticipants();
     renderScreenStage();
   });
@@ -4745,26 +4776,17 @@ function tuneSender(sender, role) {
 }
 
 function getScreenShareBitrate() {
+  // 설정값이 아니라 실제 캡처 크기로 정한다 — 4K로 설정해도 캡처가 1080p면 1080p 상한을 쓴다.
+  // 16:9가 아니면 한 변만 기준에 닿으므로(1920x1200→1728x1080 등) 가로·세로 중 하나만 넘어도 그 등급으로 본다.
   const fps = Number(state.screenFps || 30);
-  if (state.screenResolution === "720") return fps >= 60 ? 4500000 : 2800000;
-  if (state.screenResolution === "1080") return fps >= 60 ? 9000000 : 6000000;
-  if (state.screenResolution === "1440") return fps >= 60 ? 18000000 : 11000000;
-  if (state.screenResolution === "2160") return fps >= 60 ? 34000000 : 22000000;
-  if (state.screenResolution === "native") {
-    const pixels = getScreenSharePixelCount();
-    if (pixels >= 3840 * 2160) return fps >= 60 ? 34000000 : 22000000;
-    if (pixels >= 2560 * 1440) return fps >= 60 ? 18000000 : 11000000;
-    if (pixels >= 1920 * 1080) return fps >= 60 ? 9000000 : 6000000;
-    return fps >= 60 ? 4500000 : 2800000;
-  }
-  return fps >= 60 ? 9000000 : 6000000;
-}
-
-function getScreenSharePixelCount() {
   const settings = state.screenTrack?.getSettings?.() || {};
-  const width = Number(settings.width || 0);
-  const height = Number(settings.height || 0);
-  return width > 0 && height > 0 ? width * height : 1920 * 1080;
+  const width = Number(settings.width || 1920);
+  const height = Number(settings.height || 1080);
+  const atLeast = (w, h) => width >= w || height >= h;
+  if (atLeast(3840, 2160)) return fps >= 60 ? 34000000 : 22000000;
+  if (atLeast(2560, 1440)) return fps >= 60 ? 18000000 : 11000000;
+  if (atLeast(1920, 1080)) return fps >= 60 ? 9000000 : 6000000;
+  return fps >= 60 ? 4500000 : 2800000;
 }
 
 function tuneOpus(sdp) {
@@ -6058,7 +6080,6 @@ async function handleMediaStatus(peer, status) {
     if (role === "screen" && !value.live && peer.remote.screen) {
       cleanupScreenPlayback(peer.remote.screen);
       peer.remote.screen = null;
-      if (state.selectedScreenPeerId === peer.id) state.selectedScreenPeerId = "";
       renderParticipants();
       renderScreenStage();
     }
@@ -6263,6 +6284,7 @@ async function updateStats() {
   let screenBytesSent = 0;
   let screenBytesReceived = 0;
   let screenSenderFps = 0;
+  let screenSourceFps = 0; // 캡처 트랙이 송신기에 넘긴 fps(media-source 통계) — 인코딩 전 단계
   let screenReceiverFps = 0;
   let screenFramesEncoded = 0;
   let screenFramesSent = 0;
@@ -6276,6 +6298,11 @@ async function updateStats() {
   let screenFramesSentDelta = 0;
   let screenQpSumDelta = 0;
   let screenEncodeTimeDelta = 0;
+  let screenKeyFramesDelta = 0;
+  let screenPliDelta = 0; // 받는 쪽이 키프레임을 다시 요청한 횟수(PLI+FIR) — 패킷 손실 신호
+  let screenNackDelta = 0;
+  let screenResolutionChanges = 0;
+  let screenEncodedSize = "";
   let screenQualityDurations = {};
   const screenQualityReasons = new Set();
   const screenEncoders = new Set();
@@ -6285,7 +6312,7 @@ async function updateStats() {
   let screenOutboundReportCount = 0;
   let candidateText = "";
 
-  const processScreenOutboundReport = (peer, report, now, source) => {
+  const processScreenOutboundReport = (peer, report, now, source, stats) => {
     if (!isVideoOutboundReport(report)) return;
     const reportKey = `${peer.id}:${report.id}`;
     if (processedScreenOutboundReports.has(reportKey)) return;
@@ -6299,6 +6326,7 @@ async function updateStats() {
     screenBytesSent += bytesSent;
     screenSendBps += getBitrate(`${peer.id}:${report.id}:video`, bytesSent, now);
     screenSenderFps = Math.max(screenSenderFps, Number(report.framesPerSecond || 0));
+    screenSourceFps = Math.max(screenSourceFps, Number(stats.get(report.mediaSourceId)?.framesPerSecond || 0));
     screenFramesEncoded += framesEncoded;
     screenFramesSent += framesSent;
     screenHugeFrames += Number(report.hugeFramesSent || 0);
@@ -6308,6 +6336,11 @@ async function updateStats() {
     screenFramesSentDelta += getStatsCounterDelta(`${peer.id}:${report.id}:screen-framesSent`, framesSent);
     screenQpSumDelta += getStatsCounterDelta(`${peer.id}:${report.id}:screen-qpSum`, qpSum);
     screenEncodeTimeDelta += getStatsCounterDelta(`${peer.id}:${report.id}:screen-totalEncodeTime`, totalEncodeTime);
+    screenKeyFramesDelta += getStatsCounterDelta(`${peer.id}:${report.id}:screen-keyFrames`, Number(report.keyFramesEncoded || 0));
+    screenPliDelta += getStatsCounterDelta(`${peer.id}:${report.id}:screen-pli`, Number(report.pliCount || 0) + Number(report.firCount || 0));
+    screenNackDelta += getStatsCounterDelta(`${peer.id}:${report.id}:screen-nack`, Number(report.nackCount || 0));
+    screenResolutionChanges += Number(report.qualityLimitationResolutionChanges || 0);
+    if (report.frameWidth) screenEncodedSize = `${report.frameWidth}x${report.frameHeight}`;
     if (report.qualityLimitationReason) screenQualityReasons.add(report.qualityLimitationReason);
     addQualityLimitationDurations(screenQualityDurations, report.qualityLimitationDurations);
     if (report.encoderImplementation) screenEncoders.add(report.encoderImplementation);
@@ -6323,7 +6356,7 @@ async function updateStats() {
       if (sender?.getStats) {
         try {
           const senderStats = await sender.getStats();
-          senderStats.forEach((report) => processScreenOutboundReport(peer, report, now, "sender.getStats"));
+          senderStats.forEach((report) => processScreenOutboundReport(peer, report, now, "sender.getStats", senderStats));
         } catch (error) {
           screenSenderDiagnostics.push(`peer=${peer.name || peer.id} senderStatsError=${getErrorText(error)}`);
         }
@@ -6338,7 +6371,7 @@ async function updateStats() {
       if (report.type === "outbound-rtp" && report.kind === "audio") {
         sendBps += getBitrate(`${peer.id}:${report.id}`, report.bytesSent, now);
       }
-      processScreenOutboundReport(peer, report, now, "pc.getStats");
+      processScreenOutboundReport(peer, report, now, "pc.getStats", stats);
       if (report.type === "inbound-rtp" && report.kind === "audio") {
         receiveBps += getBitrate(`${peer.id}:${report.id}`, report.bytesReceived, now);
         packetsLost += report.packetsLost || 0;
@@ -6423,6 +6456,7 @@ async function updateStats() {
       `sender bitrate=${Math.round(screenSendBps / 1000)}kbps`,
       `bytesSent=${screenBytesSent}`,
       `bytesDelta=${screenBytesSentDelta}`,
+      `sourceFps=${Math.round(screenSourceFps)}`,
       `framesPerSecond=${Math.round(screenSenderFps) || 0}`,
       `framesEncoded=${screenFramesEncoded}`,
       `framesEncodedDelta=${screenFramesEncodedDelta}`,
@@ -6432,6 +6466,9 @@ async function updateStats() {
       `qpSum=${screenQpSum}`,
       screenQpSumDelta ? `qpSumDelta=${screenQpSumDelta}` : "",
       screenEncodeTimeDelta ? `encodeTimeDelta=${screenEncodeTimeDelta.toFixed(3)}s` : "",
+      screenEncodedSize ? `encodedSize=${screenEncodedSize}` : "",
+      `keyFramesDelta=${screenKeyFramesDelta} pliDelta=${screenPliDelta} nackDelta=${screenNackDelta}`,
+      screenResolutionChanges ? `qualityResolutionChanges=${screenResolutionChanges}` : "",
       screenQualityReasons.size ? `qualityLimitationReason=${[...screenQualityReasons].join("+")}` : "",
       formatQualityLimitationDurations(screenQualityDurations),
       screenEncoders.size ? `encoderImplementation=${[...screenEncoders].join("+")}` : "",
@@ -6441,12 +6478,21 @@ async function updateStats() {
   state.screenStats.receiver = screenReceiveBps || screenBytesReceived || screenFramesDecoded || screenFramesDropped || screenFreezeCount
     ? `receiver bitrate=${Math.round(screenReceiveBps / 1000)}kbps bytesReceived=${screenBytesReceived} framesPerSecond=${Math.round(screenReceiverFps) || 0} framesDecoded=${screenFramesDecoded} framesDropped=${screenFramesDropped} freezeCount=${screenFreezeCount}`
     : "";
-  state.screenStats.bottleneck = getScreenBottleneckText(screenSenderFps, screenOutboundReportCount);
+  state.screenStats.bottleneck = getScreenBottleneckText(screenSenderFps, screenOutboundReportCount, screenSourceFps);
   updateScreenStatsLabel();
   logScreenShareStatsIfNeeded();
   updateConnectionStatsLabel({ candidateText, sendBps, receiveBps });
   checkMediaByteFlow({ sendBps, receiveBps, candidateText });
   handleScreenSenderPerformance(screenSenderFps);
+  // GPU 인코더를 못 잡고 CPU(OpenH264 등)로 인코딩하면 4K에서 fps가 크게 떨어진다(9/14 1080p=GPU, 9/15 4K60=OpenH264).
+  // 4K는 시작 직후 대역폭이 오르는 동안 잠깐(약 20초) CPU로 갔다가 GPU로 돌아오기도 해서, 30초 넘게 이어질 때만 알린다.
+  const softwareEncoding = state.screenSharing && state.screenSource === "screen" && screenPowerEfficientEncoders.has("false");
+  state.screenSoftwareEncodeStrikes = softwareEncoding ? state.screenSoftwareEncodeStrikes + 1 : 0;
+  if (state.screenSoftwareEncodeStrikes === 30) {
+    const encoder = [...screenEncoders].join("+") || "software";
+    logClientEvent("screen-software-encoder", `${encoder} ${getScreenCaptureStatsText()}`);
+    setMessage(`화면 공유를 GPU가 아닌 CPU(${encoder})로 인코딩하고 있어 끊길 수 있습니다. 해상도나 fps를 낮추면 GPU 인코더로 바뀔 수 있습니다.`);
+  }
   const health = getQualityHealthText({
     receiveBps,
     rttMs: rttCount ? (rttTotal / rttCount) * 1000 : 0,
@@ -6556,6 +6602,9 @@ function handleScreenSenderPerformance(senderFps) {
   if (state.screenLowFpsStrikes < 3) return;
   state.screenLowFpsStrikes = 0;
   logClientEvent("screen-low-fps", state.screenStats.sender || getScreenCaptureStatsText());
+  // 게임 중엔 저FPS가 계속 이어져 3초마다 토스트가 쌓였다 — 공유 한 번에 한 번만 알린다.
+  if (state.screenLowFpsWarned) return;
+  state.screenLowFpsWarned = true;
   setMessage("화면공유 60fps 인코딩 FPS가 낮습니다. 끊기면 30fps로 낮추는 게 안정적입니다.");
 }
 
@@ -6601,13 +6650,14 @@ function getScreenSenderUnavailableText(diagnostics) {
   return `sender stats unavailable reason=${reasons}`;
 }
 
-function getScreenBottleneckText(senderFps, screenOutboundReportCount) {
+function getScreenBottleneckText(senderFps, screenOutboundReportCount, sourceFps = 0) {
   if (!state.screenSharing) return "";
-  const captureFps = Number(state.screenCaptureProbe?.fps || 0);
+  // 캡처 fps: Probe가 꺼져 있으면 media-source 통계(캡처 트랙이 송신기에 넘긴 프레임)로 대신한다.
+  const captureFps = Number(state.screenCaptureProbe?.fps || 0) || sourceFps;
   const targetFps = Math.max(15, Math.min(60, Number(state.screenFps || 30)));
   const lowThreshold = Math.min(45, targetFps * 0.75);
   if (!screenOutboundReportCount) return "bottleneck=pending sender stats unavailable";
-  if (!state.screenProbeEnabled || !captureFps) return "bottleneck=pending capture probe unavailable";
+  if (!captureFps) return "bottleneck=pending capture fps unavailable";
   if (captureFps < lowThreshold && senderFps < lowThreshold) return "bottleneck=capture-gpu";
   if (captureFps >= lowThreshold && senderFps < lowThreshold) return "bottleneck=encoder-sender";
   if (senderFps >= lowThreshold) return "bottleneck=no-low-fps";
@@ -15969,6 +16019,7 @@ function bindCallDockPopovers() {
       const willOpen = pop && pop.hidden;
       closeAll();
       if (pop) pop.hidden = !willOpen;
+      if (willOpen && pop.id === "callDockPopScreen") refreshScreenTargets();
       return;
     }
     if (event.target?.closest?.("[data-dock-pop-close]")) closeAll();
@@ -16254,7 +16305,10 @@ function updateScreenFullscreenButton() {
 function renderScreenStage() {
   const shares = getActiveScreenShares();
   const selected = shares.find((item) => item.id === state.selectedScreenPeerId) || null;
-  if (!selected) {
+  // 보던 사람이 공유를 끄면 창을 바로 닫지 않고 알린다(디스코드처럼). 보는 사람이 직접 닫으면 되고, 그 사람이 다시 공유하면 바로 이어서 보인다.
+  const endedPeer = selected ? null : state.peers.get(state.selectedScreenPeerId);
+  dom.screenEndedNotice.hidden = !endedPeer;
+  if (!selected && !endedPeer) {
     // 보던 공유가 사라져도 다른 공유로 자동 전환하지 않는다 — 잘못된 "보고 있음" 표시의 원인.
     // 내 미리보기("local")는 공유 재시작 중 잠깐 사라질 수 있으니 선택을 유지한다.
     if (state.selectedScreenPeerId && state.selectedScreenPeerId !== "local") {
@@ -16271,15 +16325,18 @@ function renderScreenStage() {
     dom.screenShareList.innerHTML = "";
     if (state.screenControlsHideTimer) window.clearTimeout(state.screenControlsHideTimer);
     state.screenControlsHideTimer = 0;
+    updateScreenStatsOverlay();
     return;
   }
 
   dom.screenStage.hidden = false;
   applyScreenFitMode();
   updateScreenFullscreenButton();
-  dom.screenViewerTitle.textContent = `${selected.name} ${selected.kind === "camera" ? "카메라" : "화면 공유"}`;
-  if (dom.screenViewer.srcObject !== selected.stream) {
-    dom.screenViewer.srcObject = selected.stream;
+  const viewing = selected || { name: endedPeer.name, kind: "screen", stream: null };
+  dom.screenViewerTitle.textContent = `${viewing.name} ${viewing.kind === "camera" ? "카메라" : "화면 공유"}`;
+  dom.screenEndedNotice.textContent = endedPeer ? `${endedPeer.name}님이 화면 공유를 껐습니다` : "";
+  if (dom.screenViewer.srcObject !== viewing.stream) {
+    dom.screenViewer.srcObject = viewing.stream;
     dom.screenViewer.play?.().catch(() => {});
   }
   revealScreenControls();
@@ -16293,6 +16350,54 @@ function renderScreenStage() {
     button.textContent = share.id === state.selectedScreenPeerId ? `${share.name} 보는 중` : share.name;
     dom.screenShareList.append(button);
   }
+  updateScreenStatsOverlay();
+}
+
+// 화면공유 보기 왼쪽 위 해상도·fps 표시. 받은 프레임 수와, 그중 그림이 실제로 바뀐 프레임 수를 따로 센다 —
+// 공유 쪽 캡처가 같은 화면을 반복해 보내면 fps는 30이어도 체감은 스톱모션이라 둘을 같이 봐야 한다.
+function updateScreenStatsOverlay() {
+  const overlay = dom.screenStatsOverlay;
+  const video = dom.screenViewer;
+  const probe = state.screenStatsOverlay;
+  const on = Boolean(overlay) && state.screenStatsOverlayEnabled && !dom.screenStage.hidden && dom.screenEndedNotice.hidden;
+  if (overlay) overlay.hidden = !on;
+  if (!on) {
+    window.clearInterval(probe.timer);
+    video.cancelVideoFrameCallback?.(probe.frameHandle);
+    probe.timer = 0;
+    return;
+  }
+  if (probe.timer) return;
+  const onFrame = () => {
+    probe.frames += 1;
+    countScreenFrameChange(video, probe);
+    probe.frameHandle = video.requestVideoFrameCallback(onFrame);
+  };
+  probe.frameHandle = video.requestVideoFrameCallback?.(onFrame);
+  overlay.textContent = "측정 중…";
+  probe.timer = window.setInterval(() => {
+    overlay.textContent = `${video.videoWidth}×${video.videoHeight} · ${probe.frames}fps · 변화 ${probe.changed}fps`;
+    probe.frames = 0;
+    probe.changed = 0;
+  }, 1000);
+}
+
+// 32x18로 줄여 직전 프레임과 비교한다. 같은 화면 반복(인코더 skip 프레임)은 픽셀이 그대로라 차이가 0이다.
+// createImageBitmap 의 resize 는 GPU에서 줄이므로 원본(4K) 전체를 CPU로 읽어 오지 않는다.
+function countScreenFrameChange(video, probe) {
+  createImageBitmap(video, { resizeWidth: 32, resizeHeight: 18 }).then((bitmap) => {
+    probe.ctx ||= Object.assign(document.createElement("canvas"), { width: 32, height: 18 }).getContext("2d", { willReadFrequently: true });
+    probe.ctx.drawImage(bitmap, 0, 0);
+    bitmap.close();
+    const pixels = probe.ctx.getImageData(0, 0, 32, 18).data;
+    const prev = probe.prev;
+    probe.prev = pixels;
+    if (!prev) return;
+    let diff = 0;
+    for (let i = 0; i < pixels.length; i += 1) diff += Math.abs(pixels[i] - prev[i]);
+    // ponytail: 픽셀당 평균 차이 2 미만은 인코딩 잡음으로 보고 안 센다 — 커서 이동 같은 아주 작은 변화도 빠진다.
+    if (diff > 32 * 18 * 2) probe.changed += 1;
+  }).catch(() => {});
 }
 
 function getActiveScreenShares() {
@@ -16857,7 +16962,8 @@ function isWindowsSystemShareSafeOutputOption(option) {
 
 function shouldUseWindowsLoopbackEchoReducer() {
   if (!desktop.isDesktop || desktop.platform !== "win32") return false;
-  if (isProgramSystemAudioMode()) return false;
+  // 프로세스 루프백(프로그램별·전체 공유)은 Accord 자신의 소리를 애초에 빼고 잡아 보정할 반향이 없다.
+  if (state.programAudioProcess) return false;
   if (!dom.loopbackEchoReductionToggle.checked) return false;
   const selected = dom.outputDeviceSelect.selectedOptions[0];
   return !isWindowsSystemShareSafeOutputOption(selected);

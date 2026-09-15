@@ -140,6 +140,8 @@
               </div>
             </div>
             <video id="screenViewer" autoplay playsinline></video>
+            <div class="screen-ended-notice" id="screenEndedNotice" hidden></div>
+            <div class="screen-stats-overlay" id="screenStatsOverlay" hidden></div>
             <div class="screen-share-list" id="screenShareList"></div>
           </section>
 
@@ -224,6 +226,12 @@
                 <button class="call-dock-pop-close" type="button" data-dock-pop-close aria-label="닫기">✕</button>
               </div>
               <section class="screen-share-grid" id="screenSharePanel">
+              <label class="field" id="screenTargetField" hidden>
+                <span>공유 대상</span>
+                <select id="screenTargetSelect">
+                  <option value="">자동 (커서가 있는 모니터)</option>
+                </select>
+              </label>
               <label class="field">
                 <span>해상도</span>
                 <select id="screenResolutionSelect">
@@ -246,9 +254,10 @@
                 <span>캡처 방식</span>
                 <select id="screenCaptureModeSelect">
                   <option value="auto" selected>자동</option>
-                  <option value="handler">Screen Test 방식</option>
-                  <option value="browser">브라우저 기본</option>
-                  <option value="electron">Electron 직접 캡처</option>
+                  <option value="native">네이티브 캡처</option>
+                  <option value="handler">Screen Test 방식 (레거시)</option>
+                  <option value="browser">브라우저 기본 (레거시)</option>
+                  <option value="electron">Electron 직접 캡처 (레거시)</option>
                 </select>
               </label>
               <label class="switch screen-preview-switch">
@@ -258,6 +267,10 @@
               <label class="switch screen-probe-switch">
                 <input id="screenProbeToggle" type="checkbox" checked />
                 <span>캡처 Probe</span>
+              </label>
+              <label class="switch screen-stats-switch">
+                <input id="screenStatsOverlayToggle" type="checkbox" checked />
+                <span>해상도·fps 표시</span>
               </label>
               <button class="secondary screen-test-button" id="openScreenTestButton" type="button">최소 화면 테스트</button>
               <p class="screen-share-note">60fps는 PC 성능과 인터넷 상태에 따라 불안정할 수 있습니다.</p>

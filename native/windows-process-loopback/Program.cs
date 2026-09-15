@@ -54,6 +54,25 @@ internal static class Program
                 return 0;
             }
 
+            if (command == "watch-sessions")
+            {
+                // 전체 컴퓨터 소리 공유: 캡처할 pid 목록을 2초마다 한 줄씩 낸다. 앱이 꺼져 파이프가 끊기면 같이 끝난다.
+                int excludePid = GetIntArg(args, "--exclude-pid", -1);
+                while (true)
+                {
+                    try
+                    {
+                        Console.WriteLine(GetSystemSessionPidsJson(excludePid));
+                    }
+                    catch (IOException)
+                    {
+                        return 0;
+                    }
+                    catch {} // 출력 장치 전환 중 같은 일시 오류는 다음 주기에 다시 읽는다.
+                    Thread.Sleep(2000);
+                }
+            }
+
             if (command == "dedupe")
             {
                 WriteDedupedPids(GetPidListArg(args, "--pids"));
@@ -77,6 +96,7 @@ internal static class Program
     {
         Console.WriteLine("AccordProcessLoopback list [--exclude-pid PID]");
         Console.WriteLine("AccordProcessLoopback capture --pid PID [--sample-rate 48000] [--channels 2]");
+        Console.WriteLine("AccordProcessLoopback watch-sessions --exclude-pid PID");
     }
 
     private static bool HasArg(string[] args, string name)
@@ -127,10 +147,10 @@ internal static class Program
         Console.WriteLine(json.ToString());
     }
 
-    private static List<AudioSessionItem> ListAudioSessions(int excludePid)
+    // 사용자가 실제로 듣는 기본 출력 장치의 오디오 세션(pid, 상태) 목록.
+    private static List<KeyValuePair<int, AudioSessionState>> GetDefaultRenderSessions()
     {
-        Dictionary<int, AudioSessionItem> byPid = new Dictionary<int, AudioSessionItem>();
-        HashSet<int> excludedPids = GetProcessTreePids(excludePid);
+        List<KeyValuePair<int, AudioSessionState>> sessions = new List<KeyValuePair<int, AudioSessionState>>();
         IMMDeviceEnumerator enumerator = null;
         IMMDevice device = null;
         IAudioSessionManager2 manager = null;
@@ -161,14 +181,9 @@ internal static class Program
 
                     uint rawPid;
                     Marshal.ThrowExceptionForHR(control2.GetProcessId(out rawPid));
-                    int pid = unchecked((int)rawPid);
-                    if (pid <= 0 || excludedPids.Contains(pid) || byPid.ContainsKey(pid)) continue;
-
                     AudioSessionState state;
                     Marshal.ThrowExceptionForHR(control.GetState(out state));
-                    AudioSessionItem item = CreateSessionItem(pid, state);
-                    if (String.IsNullOrEmpty(item.Name)) continue;
-                    byPid[pid] = item;
+                    sessions.Add(new KeyValuePair<int, AudioSessionState>(unchecked((int)rawPid), state));
                 }
                 finally
                 {
@@ -182,6 +197,57 @@ internal static class Program
             Release(manager);
             Release(device);
             Release(enumerator);
+        }
+        return sessions;
+    }
+
+    // 전체 컴퓨터 소리 공유용 캡처 대상. 프로세스 루프백은 출력 장치를 가리지 않아, "Accord만 빼고 전부" 모드는 가상
+    // 케이블로 내보내는 마이크(Light Host 등)까지 섞였다. 그래서 기본 출력 장치에 세션이 있는 프로그램만 고른다.
+    private static string GetSystemSessionPidsJson(int excludePid)
+    {
+        List<int> accordAncestors = GetAncestorPids(excludePid);
+        Dictionary<int, List<int>> candidates = new Dictionary<int, List<int>>();
+        foreach (KeyValuePair<int, AudioSessionState> session in GetDefaultRenderSessions())
+        {
+            int pid = session.Key;
+            if (pid <= 0 || candidates.ContainsKey(pid) || session.Value == AudioSessionState.AudioSessionStateExpired) continue;
+            List<int> ancestors = GetAncestorPids(pid);
+            // Accord 자신·자식(통화 소리)은 빼고, Accord의 조상(탐색기 등)도 트리째 잡으면 Accord 소리가 섞이므로 뺀다.
+            if (pid == excludePid || ancestors.Contains(excludePid) || accordAncestors.Contains(pid)) continue;
+            candidates[pid] = ancestors;
+        }
+
+        // 트리 포함 캡처라 다른 후보의 자손은 조상 캡처에 이미 들어 있다(중복 합산 방지).
+        List<int> keep = new List<int>();
+        foreach (KeyValuePair<int, List<int>> candidate in candidates)
+        {
+            if (!candidate.Value.Exists(candidates.ContainsKey)) keep.Add(candidate.Key);
+        }
+        return FormatPidsJson(keep);
+    }
+
+    // ponytail: 부모 pid만 따라 올라가고 pid 재사용은 무시한다(드물게 무관한 앱 하나를 빼먹을 수 있음). 필요하면 생성 시각 비교 추가.
+    private static List<int> GetAncestorPids(int pid)
+    {
+        List<int> ancestors = new List<int>();
+        for (int parent = GetParentProcessId(pid); parent > 0 && parent != pid && !ancestors.Contains(parent); parent = GetParentProcessId(parent))
+        {
+            ancestors.Add(parent);
+        }
+        return ancestors;
+    }
+
+    private static List<AudioSessionItem> ListAudioSessions(int excludePid)
+    {
+        Dictionary<int, AudioSessionItem> byPid = new Dictionary<int, AudioSessionItem>();
+        HashSet<int> excludedPids = GetProcessTreePids(excludePid);
+        foreach (KeyValuePair<int, AudioSessionState> session in GetDefaultRenderSessions())
+        {
+            int pid = session.Key;
+            if (pid <= 0 || excludedPids.Contains(pid) || byPid.ContainsKey(pid)) continue;
+            AudioSessionItem item = CreateSessionItem(pid, session.Value);
+            if (String.IsNullOrEmpty(item.Name)) continue;
+            byPid[pid] = item;
         }
 
         AddVisibleWindowProcesses(byPid, excludedPids);
@@ -561,16 +627,20 @@ internal static class Program
         }
 
         if (keep.Count == 0) keep = pids;
+        Console.WriteLine(FormatPidsJson(keep));
+    }
 
+    private static string FormatPidsJson(List<int> pids)
+    {
         StringBuilder json = new StringBuilder();
         json.Append("{\"ok\":true,\"pids\":[");
-        for (int i = 0; i < keep.Count; i += 1)
+        for (int i = 0; i < pids.Count; i += 1)
         {
             if (i > 0) json.Append(',');
-            json.Append(keep[i]);
+            json.Append(pids[i]);
         }
         json.Append("]}");
-        Console.WriteLine(json.ToString());
+        return json.ToString();
     }
 
     private static HashSet<int> GetProcessTreePids(int rootPid)

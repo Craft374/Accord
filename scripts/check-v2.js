@@ -56,6 +56,7 @@ const requiredLaunchers = [
   "scripts/win/build-windows.command",
   "scripts/mac/build-mac.command",
   "start-server-mac.command",
+  "start-server-cloudflare.command",
   "start-server-win.bat",
 ];
 const commandBatFiles = listCommandBatFiles(".");
@@ -168,10 +169,18 @@ const checks = [
   [pkg.scripts["server:https"] && startHttps.includes("VOICE_CHAT_REQUIRE_HTTPS") && startHttps.includes("getLanIp"), "https server script uses secure LAN mode"],
   [requiredLaunchers.every((file) => fs.existsSync(file)), "required bat and command launchers exist"],
   [
-    commandBatFiles.length === requiredLaunchers.length &&
-      requiredLaunchers.every((file) => commandBatFiles.includes(file)),
-    "only required bat and command launchers remain",
+    commandBatFiles.every((file) => requiredLaunchers.includes(file) || file === "start-server-dorm.command"),
+    "only required launchers and the optional local dorm launcher remain",
   ],
+  [(() => {
+    if (process.platform !== "darwin") return true;
+    const launcher = "start-server-cloudflare.command";
+    const syntax = spawnSync("zsh", ["-n", launcher], { encoding: "utf8" });
+    const invalidPort = spawnSync("zsh", [launcher], {
+      encoding: "utf8", env: { ...process.env, PORT: "65536" }, timeout: 5000,
+    });
+    return syntax.status === 0 && invalidPort.status === 1 && invalidPort.stdout.includes("PORT는");
+  })(), "cloudflare launcher syntax and invalid port rejection (macOS runtime)"],
   [buildWindowsBat.includes("npm run build:win") && buildWindowsBat.includes("Accord Windows x64 Setup.exe"), "windows bat builds windows artifact"],
   [buildWindowsCommand.includes("npm run build:win") && buildWindowsCommand.includes("Accord Windows x64 Setup.exe"), "mac command builds windows artifact"],
   [buildMacCommand.includes("npm run build:mac") && buildMacCommand.includes("Accord Mac arm64.zip"), "mac command builds mac artifact"],
@@ -200,7 +209,7 @@ const checks = [
   [programWorklet.includes("registerProcessor") && programWorklet.includes("voice-program-audio"), "program audio worklet registers processor"],
   [html.includes("programAudioList") && app.includes("data-program-audio-pid"), "program audio selection uses checkbox list"],
   [!main.includes("execFile(helper,") && main.includes("execFile(helperInfo.path"), "program audio list helper variable is defined"],
-  [main.includes("getProgramLoopbackHelperInfo") && main.includes("makeHelperError") && main.includes("cwd: helperInfo.cwd"), "program audio helper spawn errors include path and cwd"],
+  [main.includes('getNativeHelperInfo("AccordProcessLoopback.exe")') && main.includes("makeHelperError") && main.includes("cwd: helperInfo.cwd"), "program audio helper spawn errors include path and cwd"],
   [main.includes("platform=${process.platform}") && main.includes("stack=") && main.includes("args="), "program audio helper errors include platform args and stack"],
   [app.includes("program-audio-list-failed") && app.includes("프로그램별 오디오 목록을 불러오지 못했습니다"), "program audio list failure is shown without crashing"],
   [app.includes("isOwnProgramAudioSource") && app.includes("accordprocessloopback"), "program audio list hides this app and helper"],
@@ -326,12 +335,26 @@ const reviews = [
   [app.includes("turn-needed") && app.includes("TURN 서버 필요 가능성이 높습니다") && app.includes("shouldRetryIce"), "ICE failure reports TURN need and limits retries"],
   [server.includes("getSignalKind") && server.includes("signal kind=") && server.includes("sid="), "server logs signaling kind and client session id"],
   [main.includes("get-screen-source") && preload.includes("getScreenSource") && app.includes("getElectronDesktopScreenShareStream"), "windows screen share has desktopCapturer getUserMedia fallback"],
+  [html.includes("screenTargetSelect") && main.includes('"list-screen-windows"') && preload.includes("listScreenWindows") && app.includes('surface === "monitor" || state.screenWindow') && /if \(state\.screenWindow\) \{[\s\S]{0,300}return getElectronDesktopScreenShareStream\(state\.screenWindow\);/.test(app), "windows screen share can capture one program window without falling back to the whole monitor"],
   [html.includes("screenCaptureModeSelect") && app.includes("voiceChatScreenCaptureMode") && app.includes("screenCaptureModeField.hidden"), "windows electron screen capture mode can be compared"],
+  [html.includes('<option value="native">') && main.includes('"get-native-screen-capture"') && preload.includes("startNativeScreenCapture") && app.includes("new MediaStreamTrackGenerator") && app.includes('["auto", "native", "handler", "browser", "electron"]') && pkg.build.asarUnpack.includes("electron/bin/*.exe") && fs.existsSync("native/windows-screen-capture/main.cpp"), "windows screen share has native WGC capture and keeps the legacy capture modes"],
   [app.includes("screen-share-5s") && app.includes("screen-low-fps") && app.includes("bytesSent") && app.includes("bytesReceived"), "screen share stats are logged after start with raw bytes"],
   [/role === "screen"[\s\S]+degradationPreference = "maintain-framerate"[\s\S]+delete params\.degradationPreference/.test(app), "screen sender tuning is separated from audio sender tuning"],
+  [(() => {
+    // 비트레이트 상한은 설정값이 아니라 실제 캡처 크기 기준 — 4K 설정인데 캡처가 1080p면 1080p 상한, 16:10 축소도 같은 등급.
+    try {
+      const src = app.match(/function getScreenShareBitrate\(\) \{[\s\S]*?\n\}/);
+      if (!src) return false;
+      const rate = (width, height, screenFps = "60") => new Function("state", `${src[0]}\nreturn getScreenShareBitrate();`)(
+        { screenFps, screenResolution: "2160", screenTrack: { getSettings: () => ({ width, height }) } });
+      return rate(1920, 1080) === 9000000 && rate(1728, 1080) === 9000000
+        && rate(3840, 2160) === 34000000 && rate(1280, 720, "30") === 2800000;
+    } catch { return false; }
+  })(), "screen share bitrate follows the actual capture size, not the setting (runtime)"],
   [/isElectronLoopbackSystemAudioSupported\(\)[\s\S]+desktop\.platform === "win32"/.test(app), "electron loopback is limited to windows"],
   [/getElectronDisplayLoopbackSystemAudioStream\(\)[\s\S]+getSystemAudioCaptureConstraints\(\)/.test(app), "windows system share uses constrained display loopback"],
-  [/getSystemAudioStreamOrNull\("Windows display loopback", getElectronDisplayLoopbackSystemAudioStream/.test(systemAudioDisplayFunction), "windows system share tries display loopback first"],
+  [/getSystemAudioStreamOrNull\("Windows process loopback"[\s\S]+getSystemAudioStreamOrNull\("Windows display loopback"/.test(systemAudioDisplayFunction) && helperSource.includes('"watch-sessions"') && main.includes('"watch-sessions"') && preload.includes("allPrograms: true") && !helperSource.includes('"--exclude"'), "windows system share captures default-output program sessions (not every device) before endpoint loopback"],
+  [/getSystemAudioStreamOrNull\("Windows display loopback", getElectronDisplayLoopbackSystemAudioStream/.test(systemAudioDisplayFunction), "windows system share falls back to display loopback"],
   [/getSystemAudioStreamOrNull\("Windows raw loopback", getElectronLoopbackSystemAudioStream/.test(systemAudioDisplayFunction), "windows system share falls back to raw loopback"],
   [/audio: process\.platform === "darwin" \? undefined : "loopback"/.test(main) && !main.includes("loopbackWithMute"), "electron display handler uses unmuted loopback"],
   [/level: state\.liveEchoGuard\.systemLevel \|\| 0/.test(app), "system share level is still reported in media status"],
