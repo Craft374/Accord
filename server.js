@@ -15,12 +15,16 @@ seedAdminAccount();
 // 서버 버전. 클라이언트(앱) 버전은 package.json 의 version 이며 따로 관리한다.
 // 규칙: 클라 코드가 바뀌면 서버가 그 코드를 배포하므로 서버·클라 둘 다 올리고,
 //       서버만 바뀌면 서버 버전만 올린다.
-const VERSION = "3.2.0";
+const VERSION = "3.3.0";
 const PORT = Number(process.env.PORT || 25565);
 const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_HOST = cleanHost(process.env.PUBLIC_HOST || "");
 const PUBLIC_URL = cleanPublicUrl(process.env.PUBLIC_URL || "", PUBLIC_HOST, PORT);
 const REQUIRE_HTTPS = process.env.VOICE_CHAT_REQUIRE_HTTPS === "1" || process.env.HTTPS === "1";
+// nginx 같은 리버스 프록시 뒤에서만 1 로 둔다: 루프백 연결의 X-Real-IP 를 실제 접속 IP로 쓴다(IP별 제한용).
+const TRUST_PROXY = process.env.TRUST_PROXY === "1";
+// 게스트 체험: 로그인 화면 버튼으로 1회용 계정을 만들어 이 초대 코드의 채널에 넣는다. 비우면 버튼이 안 보인다.
+const GUEST_INVITE_CODE = String(process.env.GUEST_INVITE_CODE || "").trim();
 const MAX_ROOM_LIMIT = 8;
 const PUBLIC_DIR = path.join(__dirname, "public");
 
@@ -41,7 +45,7 @@ const LINK_PREVIEW_HOSTS = new Set(["klipy.com", "www.klipy.com", "tenor.com", "
 const LINK_PREVIEW_MAX_BYTES = 512 * 1024;
 const LINK_PREVIEW_TIMEOUT_MS = 4000;
 // 로그인 전(pre-auth)에 허용하는 메시지 타입. 그 외는 로그인해야 처리한다.
-const PRE_AUTH_TYPES = new Set(["register", "login", "auth-token", "logout", "client-log"]);
+const PRE_AUTH_TYPES = new Set(["register", "login", "guest-login", "auth-token", "logout", "client-log"]);
 // 로그인 브라우저 연결의 Origin 검증에 추가로 허용할 오리진(쉼표 구분, 예: 리버스 프록시 도메인).
 const EXTRA_WS_ORIGINS = new Set(
   String(process.env.ALLOW_WS_ORIGINS || "")
@@ -409,7 +413,7 @@ function handleUpgrade(req, socket) {
   }
 
   // 연결 폭주 방어: IP당 · 전체 동시 연결 상한.
-  const ip = cleanIp(req.socket.remoteAddress);
+  const ip = clientIpOf(req);
   if (clients.size >= MAX_TOTAL_CLIENTS) {
     logServer(`ws upgrade rejected: server full (${clients.size})`);
     socket.destroy();
@@ -458,6 +462,7 @@ function handleUpgrade(req, socket) {
     floodStrikes: 0,
     userId: "",
     isAdmin: false,
+    isGuest: false,
     chatRoomId: "", // 현재 보고 있는 채팅방(입력중 표시 대상 판별용)
     aiRoomId: "", // 현재 보고 있는 AI방(브로드캐스트 대상 판별용)
     memoRoomId: "", // 현재 보고 있는 메모장(실시간 동기화 대상 판별용)
@@ -478,7 +483,7 @@ function handleUpgrade(req, socket) {
   socket.on("data", (chunk) => readFrames(client, chunk));
   socket.on("close", () => removeClient(client));
   socket.on("error", () => removeClient(client));
-  send(client, { type: "hello", id: client.id, version: VERSION });
+  send(client, { type: "hello", id: client.id, version: VERSION, guest: Boolean(GUEST_INVITE_CODE) });
 }
 
 function handleClientError(error, socket) {
@@ -745,6 +750,28 @@ function handleAuthMessage(client, message) {
       finishAuth(client, result.user, "login");
       return true;
     }
+    case "guest-login": {
+      if (authRateLimited(client)) {
+        send(client, { type: "auth-error", action: "guest-login", message: "시도가 너무 많습니다. 잠시 후 다시 시도해 주세요." });
+        return true;
+      }
+      const channel = GUEST_INVITE_CODE ? store.getChannelByInvite(GUEST_INVITE_CODE) : null;
+      if (!channel) {
+        send(client, { type: "auth-error", action: "guest-login", message: "이 서버는 게스트 체험을 지원하지 않습니다." });
+        return true;
+      }
+      const result = store.createGuestUser();
+      if (result.error) {
+        send(client, { type: "auth-error", action: "guest-login", message: result.error });
+        return true;
+      }
+      store.addMember(channel.id, result.user.id);
+      finishAuth(client, result.user, "register");
+      notifyChannelMembers(channel.id);
+      logChannelEvent(channel.id, client, "member-join", {});
+      send(client, { type: "channel-selected", channelId: channel.id });
+      return true;
+    }
     case "auth-token": {
       const user = store.getUserByToken(message.token);
       if (!user) {
@@ -759,6 +786,7 @@ function handleAuthMessage(client, message) {
       leaveRoom(client, false);
       client.userId = "";
       client.isAdmin = false;
+      client.isGuest = false;
       client.name = "Guest";
       broadcastPresence();
       return true;
@@ -808,6 +836,7 @@ function finishAuth(client, user, action, existingToken) {
   const token = existingToken || store.createSession(user.id);
   client.userId = user.id;
   client.isAdmin = Boolean(user.isAdmin);
+  client.isGuest = Boolean(user.isGuest);
   client.name = user.displayName;
   store.recordConnection(user.id, client.ip, action === "resume" ? "connect" : action);
   logServer(`auth ${action} user=${user.username} code=#${user.code} ip=${client.ip}`, client);
@@ -899,6 +928,14 @@ function seedAdminAccount() {
 
 function cleanIp(value) {
   return String(value || "").replace(/^::ffff:/, "");
+}
+
+// 프록시(nginx)는 X-Real-IP 를 항상 덮어쓰므로 루프백 연결일 때만 믿는다. 직접 붙은 연결의 헤더는 위조일 수 있다.
+// Cloudflare 터널처럼 클라 헤더를 그대로 넘기는 프록시에서는 TRUST_PROXY 를 켜면 안 된다.
+function clientIpOf(req) {
+  const ip = cleanIp(req.socket.remoteAddress);
+  if (!TRUST_PROXY || (ip !== "127.0.0.1" && ip !== "::1")) return ip;
+  return cleanIp(String(req.headers["x-real-ip"] || "").trim()) || ip;
 }
 
 function getSignalKind(data) {
@@ -1915,6 +1952,9 @@ const AI_ATTACH_TEXT_MAX = 8000; // 첨부 텍스트 파일에서 프롬프트�
 // 모델이 참조된 방을 고칠 때 쓰는 지시 블록: ```accord:<memo|memo-append|chat> #방이름 \n 내용 ```
 const AI_ACTION_RE = /```accord:(memo|memo-append|chat)[ \t]+#([^\s#`]{1,40})[^\n]*\n([\s\S]*?)```/g;
 
+// 게스트(체험 계정)는 방 전원이 쓰는 대화·메모리·설정·방 파일을 지우거나 바꿀 수 없다(보내기·새 대화는 가능).
+const AI_GUEST_BLOCKED = new Set(["ai:delete", "ai:set-memory", "ai:set-settings", "ai:add-file", "ai:remove-file"]);
+
 const aiDrafts = new Map(); // roomId -> Map(userId -> { text, name, at })
 const aiBusy = new Set();   // 응답 생성 중인 roomId (동시 요청/비용 방어)
 
@@ -2189,6 +2229,10 @@ function applyAiActions(replyText, refMap, ctx, client) {
 
 function handleAiMessage(client, message) {
   if (typeof message.type !== "string" || !message.type.startsWith("ai:")) return false;
+  if (client.isGuest && AI_GUEST_BLOCKED.has(message.type)) {
+    send(client, { type: "ai:error", message: "게스트 계정은 할 수 없는 작업입니다." });
+    return true;
+  }
   switch (message.type) {
     case "ai:open": {
       const ctx = resolveAiRoom(client, message.roomId);

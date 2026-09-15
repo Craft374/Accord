@@ -512,6 +512,39 @@ const reviews = [
         && out.includes("```accord:memo #방이름") && out.includes("```accord:chat #방이름");
     } catch { return false; }
   })(), "AI방 buildAiReferenceBlock injects referenced room content + edit-directive help (runtime)"],
+  [
+    /PRE_AUTH_TYPES = new Set\(\[[^\]]*"guest-login"/.test(server)
+      && server.includes("store.createGuestUser()") && dataStore.includes("function createGuestUser()")
+      && server.includes("client.isGuest = Boolean(user.isGuest)"),
+    "guest login creates a fresh guest account per click",
+  ],
+  [
+    html.includes('id="guestLoginButton"') && app.includes('sendSocket({ type: "guest-login" })')
+      && app.includes("dom.guestLoginButton.hidden = !message.guest") && server.includes("guest: Boolean(GUEST_INVITE_CODE)"),
+    "guest login button shows only when the server sets GUEST_INVITE_CODE",
+  ],
+  [
+    /AI_GUEST_BLOCKED = new Set\(\[[^\]]*"ai:delete"[^\]]*"ai:set-memory"/.test(server)
+      && server.includes("client.isGuest && AI_GUEST_BLOCKED.has(message.type)"),
+    "guests cannot delete or overwrite shared AI room state",
+  ],
+  [(() => {
+    // 프록시 뒤 실제 IP: TRUST_PROXY 이고 루프백 연결일 때만 X-Real-IP 를 믿는다.
+    try {
+      const src = server.match(/function clientIpOf\(req\) \{[\s\S]*?\n\}/);
+      const cleanSrc = server.match(/function cleanIp\(value\) \{[\s\S]*?\n\}/);
+      if (!src || !cleanSrc) return false;
+      const make = (trust) => new Function(`const TRUST_PROXY = ${trust};\n${cleanSrc[0]}\n${src[0]}\nreturn clientIpOf;`)();
+      const req = (addr, realIp) => ({ socket: { remoteAddress: addr }, headers: realIp ? { "x-real-ip": realIp } : {} });
+      const on = make(true);
+      const off = make(false);
+      return on(req("::ffff:127.0.0.1", "1.2.3.4")) === "1.2.3.4"
+        && on(req("::1", "1.2.3.4")) === "1.2.3.4"
+        && on(req("5.6.7.8", "1.2.3.4")) === "5.6.7.8"
+        && on(req("127.0.0.1")) === "127.0.0.1"
+        && off(req("127.0.0.1", "1.2.3.4")) === "127.0.0.1";
+    } catch { return false; }
+  })(), "client IP trusts X-Real-IP only with TRUST_PROXY on loopback (runtime)"],
 ];
 
 for (const [ok, label] of reviews) {

@@ -39,6 +39,8 @@ const DEFAULT_AI_MODEL = "gemini-2.5-flash";
 const DEFAULT_ROOM_LIMIT = 8; // 통화방 기본 정원
 const ROOM_LIMIT_MAX = 99;
 const ROOM_LAYOUT_MAX_DEPTH = 32;
+// ponytail: 게스트 계정은 지우지 않고 쌓인다. 상한에 닿으면 오래된 게스트 정리를 그때 만든다.
+const GUEST_MAX = 500;
 
 let db = { users: [], codeCounter: 0 };
 let sessions = {}; // token -> { userId, createdAt }
@@ -217,6 +219,23 @@ function createUser({ username, password, displayName, email, avatar }) {
   db.users.push(user);
   persistUsers();
   return { user };
+}
+
+// 로그인 화면 "게스트로 체험하기"용 1회용 계정. 비밀번호는 아무도 모르는 무작위 값이라 세션 토큰으로만 이어 쓴다.
+// 누를 때마다 새 계정이라 체험자끼리 입력 미리보기·프로필이 섞이지 않는다.
+function createGuestUser() {
+  if (db.users.filter((u) => u.isGuest).length >= GUEST_MAX) {
+    return { error: "게스트 자리가 가득 찼습니다. 회원가입으로 들어와 주세요." };
+  }
+  const result = createUser({
+    username: `guest-${crypto.randomBytes(4).toString("hex")}`,
+    password: crypto.randomBytes(18).toString("base64url"),
+  });
+  if (result.error) return result;
+  result.user.isGuest = true;
+  result.user.displayName = `게스트 ${result.user.code}`;
+  persistUsers();
+  return result;
 }
 
 function authenticate(username, password) {
@@ -1928,6 +1947,7 @@ function deleteDmMessage(userA, userB, msgId) {
 module.exports = {
   init,
   createUser,
+  createGuestUser,
   authenticate,
   changePassword,
   updateProfile,

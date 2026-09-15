@@ -4,7 +4,7 @@ const serverUrl = location.origin;
 // 클라이언트(앱) 버전. 서버 버전(server.js VERSION, n.n.n)과 헷갈리지 않도록 **그냥 정수**(1, 2, 3 …)로 올린다.
 // package.json 의 version 은 electron-builder 가 semver 를 요구해 "N.0.0" 형태로 두고, 그 major 가 이 값과 같아야 한다.
 // (scripts/check-v2.js 가 둘이 어긋나지 않는지 검사한다)
-const CLIENT_VERSION = "10";
+const CLIENT_VERSION = "11";
 
 function getClientVersion() {
   // 표시는 항상 단일 정수 CLIENT_VERSION 을 쓴다(package.json 의 semver appVersion 대신).
@@ -488,6 +488,7 @@ const dom = {
   authTabLogin: document.querySelector("#authTabLogin"),
   authTabRegister: document.querySelector("#authTabRegister"),
   loginForm: document.querySelector("#loginForm"),
+  guestLoginButton: document.querySelector("#guestLoginButton"),
   loginUsername: document.querySelector("#loginUsername"),
   loginPassword: document.querySelector("#loginPassword"),
   registerForm: document.querySelector("#registerForm"),
@@ -1060,6 +1061,10 @@ function bindAuthEvents() {
   dom.authTabLogin?.addEventListener("click", () => setAuthTab("login"));
   dom.authTabRegister?.addEventListener("click", () => setAuthTab("register"));
   dom.loginForm?.addEventListener("submit", submitLogin);
+  dom.guestLoginButton?.addEventListener("click", () => {
+    setAuthMessage("게스트 계정을 만드는 중...", true);
+    sendSocket({ type: "guest-login" });
+  });
   dom.registerForm?.addEventListener("submit", submitRegister);
   dom.registerAvatar?.addEventListener("change", () => {
     const file = dom.registerAvatar.files?.[0];
@@ -1808,6 +1813,7 @@ async function handleSocketMessage(message) {
 
   if (message.type === "hello") {
     state.clientId = message.id;
+    if (dom.guestLoginButton) dom.guestLoginButton.hidden = !message.guest;
     return;
   }
 
