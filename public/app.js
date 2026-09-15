@@ -425,6 +425,7 @@ const dom = {
   screenStage: document.querySelector("#screenStage"),
   screenViewer: document.querySelector("#screenViewer"),
   screenStatsOverlay: document.querySelector("#screenStatsOverlay"),
+  screenEndedNotice: document.querySelector("#screenEndedNotice"),
   screenViewerTitle: document.querySelector("#screenViewerTitle"),
   screenFitButton: document.querySelector("#screenFitButton"),
   screenPipButton: document.querySelector("#screenPipButton"),
@@ -3409,12 +3410,10 @@ async function getNativeScreenShareStream() {
   const firstFrame = new Promise((resolve, reject) => {
     started = { resolve, reject };
   });
-  let lastTimestamp = 0;
   const onMessage = (event) => {
     if (event.source !== window) return;
     const frame = event.data?.accordNativeScreenFrame;
     if (frame) {
-      lastTimestamp = frame.timestamp;
       // 인코더 쪽이 밀려 있으면 쌓지 않고 버린다. 버린 프레임은 직접 닫아야 메모리가 새지 않는다.
       if (writer.desiredSize > 0) writer.write(frame).catch(() => frame.close());
       else frame.close();
@@ -3425,30 +3424,7 @@ async function getNativeScreenShareStream() {
     if (typeof error !== "string") return;
     started.reject(new Error(error));
     recordClientError("screen-native-helper-stopped", error);
-    if (state.screenTrack !== generator) return;
-    // 창이 닫혀도 공유는 끄지 않는다(디스코드처럼). 보는 쪽에는 일시 중지 화면을 보내고, 다른 대상을 고르면 그대로 이어진다.
-    // 새로 보기 시작한 사람도 받도록 1초마다 다시 보내고, 이 캡처가 끝나면(대상 변경·공유 끄기) 스스로 멈춘다.
-    const canvas = new OffscreenCanvas(1280, 720);
-    const g = canvas.getContext("2d");
-    g.fillStyle = "#1e1f22";
-    g.fillRect(0, 0, 1280, 720);
-    g.textAlign = "center";
-    g.fillStyle = "#f2f3f5";
-    g.font = "bold 48px sans-serif";
-    g.fillText("화면 공유 일시 중지", 640, 340);
-    g.fillStyle = "#b5bac1";
-    g.font = "28px sans-serif";
-    g.fillText(error, 640, 400, 1200);
-    const sendPaused = () => {
-      if (state.nativeScreenCapture !== onMessage) return clearInterval(timer);
-      lastTimestamp += 1000000;
-      const paused = new VideoFrame(canvas, { timestamp: lastTimestamp });
-      writer.write(paused).catch(() => paused.close());
-    };
-    const timer = setInterval(sendPaused, 1000);
-    sendPaused();
-    state.screenLowFpsWarned = true; // 일시 중지 화면은 1fps라 "fps가 낮습니다" 알림이 이 안내를 덮지 않게 한다
-    setMessage(`${error} 화면 공유 설정에서 다른 창이나 모니터를 고르면 이어서 공유하고, 끝내려면 화면 공유 버튼을 눌러 주십시오.`);
+    if (state.screenTrack === generator) stopScreenShare({ message: `${error} 화면 공유를 껐습니다.` }).catch(() => {});
   };
   state.nativeScreenCapture = onMessage;
   window.addEventListener("message", onMessage);
@@ -4577,7 +4553,6 @@ function setupRemoteScreenPlayback(peer, track, streamId = track.id) {
     // 공유 재시작으로 이미 새 트랙이 붙었다면 시청 상태를 건드리지 않는다.
     if (peer.remote.screen !== playback) return;
     peer.remote.screen = null;
-    if (state.selectedScreenPeerId === peer.id) state.selectedScreenPeerId = "";
     renderParticipants();
     renderScreenStage();
   });
@@ -6120,7 +6095,6 @@ async function handleMediaStatus(peer, status) {
     if (role === "screen" && !value.live && peer.remote.screen) {
       cleanupScreenPlayback(peer.remote.screen);
       peer.remote.screen = null;
-      if (state.selectedScreenPeerId === peer.id) state.selectedScreenPeerId = "";
       renderParticipants();
       renderScreenStage();
     }
@@ -16346,7 +16320,10 @@ function updateScreenFullscreenButton() {
 function renderScreenStage() {
   const shares = getActiveScreenShares();
   const selected = shares.find((item) => item.id === state.selectedScreenPeerId) || null;
-  if (!selected) {
+  // 보던 사람이 공유를 끄면 창을 바로 닫지 않고 알린다(디스코드처럼). 보는 사람이 직접 닫으면 되고, 그 사람이 다시 공유하면 바로 이어서 보인다.
+  const endedPeer = selected ? null : state.peers.get(state.selectedScreenPeerId);
+  dom.screenEndedNotice.hidden = !endedPeer;
+  if (!selected && !endedPeer) {
     // 보던 공유가 사라져도 다른 공유로 자동 전환하지 않는다 — 잘못된 "보고 있음" 표시의 원인.
     // 내 미리보기("local")는 공유 재시작 중 잠깐 사라질 수 있으니 선택을 유지한다.
     if (state.selectedScreenPeerId && state.selectedScreenPeerId !== "local") {
@@ -16370,9 +16347,11 @@ function renderScreenStage() {
   dom.screenStage.hidden = false;
   applyScreenFitMode();
   updateScreenFullscreenButton();
-  dom.screenViewerTitle.textContent = `${selected.name} ${selected.kind === "camera" ? "카메라" : "화면 공유"}`;
-  if (dom.screenViewer.srcObject !== selected.stream) {
-    dom.screenViewer.srcObject = selected.stream;
+  const viewing = selected || { name: endedPeer.name, kind: "screen", stream: null };
+  dom.screenViewerTitle.textContent = `${viewing.name} ${viewing.kind === "camera" ? "카메라" : "화면 공유"}`;
+  dom.screenEndedNotice.textContent = endedPeer ? `${endedPeer.name}님이 화면 공유를 껐습니다` : "";
+  if (dom.screenViewer.srcObject !== viewing.stream) {
+    dom.screenViewer.srcObject = viewing.stream;
     dom.screenViewer.play?.().catch(() => {});
   }
   revealScreenControls();
@@ -16395,7 +16374,7 @@ function updateScreenStatsOverlay() {
   const overlay = dom.screenStatsOverlay;
   const video = dom.screenViewer;
   const probe = state.screenStatsOverlay;
-  const on = Boolean(overlay) && state.screenStatsOverlayEnabled && !dom.screenStage.hidden;
+  const on = Boolean(overlay) && state.screenStatsOverlayEnabled && !dom.screenStage.hidden && dom.screenEndedNotice.hidden;
   if (overlay) overlay.hidden = !on;
   if (!on) {
     window.clearInterval(probe.timer);
