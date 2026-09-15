@@ -1024,7 +1024,7 @@ function openSocket() {
   });
 }
 
-// 유휴 상태 등으로 연결이 끊기면 지수 백오프로 다시 연결하고 인증을 복원한다.
+// 유휴 상태·서버 재시작 등으로 연결이 끊기면 지수 백오프로 다시 연결하고, 붙으면 새로고침한다.
 function scheduleReconnect() {
   if (reconnectTimer) return;
   reconnectAttempts += 1;
@@ -1045,11 +1045,9 @@ function scheduleReconnect() {
     reconnectTimer = 0;
     try {
       await openSocket();
-      reconnectAttempts = 0;
-      attemptAuthResume();
-      logClientEvent("client-env", getClientEnvironmentSummary());
-      setStatus("서버 연결", "good");
-      setMessage("서버에 다시 연결되었습니다.");
+      // 다시 붙으면 새로고침한다: 서버를 재시작·업데이트했으면 새 화면 코드를 받고, 로그인은 저장된 토큰으로 이어진다.
+      // 통화는 끊길 때 resetRoomState에서 이미 정리됐으므로 새로고침으로 더 잃는 것은 없다.
+      window.location.reload();
     } catch {
       scheduleReconnect();
     }
