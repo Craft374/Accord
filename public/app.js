@@ -118,7 +118,7 @@ const state = {
   lastScreenStatsLogAt: 0,
   screenLowFpsStrikes: 0,
   screenLowFpsWarned: false,
-  screenSoftwareEncodeWarned: false,
+  screenSoftwareEncodeStrikes: 0, // CPU 인코딩이 이어진 초(1초마다 도는 통계 기준)
   ignoreScreenEndedUntil: 0,
   programAudioSources: [],
   programAudioSourcesLoaded: false,
@@ -3193,7 +3193,7 @@ async function restartScreenShare() {
     });
 
     state.ignoreScreenEndedUntil = Date.now() + 1200;
-    state.screenSoftwareEncodeWarned = false; // 해상도·fps가 바뀌면 인코더를 다시 고르므로 다시 확인한다
+    state.screenSoftwareEncodeStrikes = 0; // 해상도·fps가 바뀌면 인코더를 다시 고르므로 다시 확인한다
     state.screenStream = stream;
     state.screenTrack = track;
     state.screenSharing = true;
@@ -3264,7 +3264,7 @@ function cleanupLocalScreenShare() {
   state.screenCaptureRequested = null;
   state.lastScreenStatsLogAt = 0;
   state.screenLowFpsWarned = false;
-  state.screenSoftwareEncodeWarned = false;
+  state.screenSoftwareEncodeStrikes = 0;
   if (state.selectedScreenPeerId === "local") state.selectedScreenPeerId = "";
   stopScreenCaptureProbe();
   stopNativeScreenCapture();
@@ -3409,10 +3409,12 @@ async function getNativeScreenShareStream() {
   const firstFrame = new Promise((resolve, reject) => {
     started = { resolve, reject };
   });
+  let lastTimestamp = 0;
   const onMessage = (event) => {
     if (event.source !== window) return;
     const frame = event.data?.accordNativeScreenFrame;
     if (frame) {
+      lastTimestamp = frame.timestamp;
       // 인코더 쪽이 밀려 있으면 쌓지 않고 버린다. 버린 프레임은 직접 닫아야 메모리가 새지 않는다.
       if (writer.desiredSize > 0) writer.write(frame).catch(() => frame.close());
       else frame.close();
@@ -3423,7 +3425,30 @@ async function getNativeScreenShareStream() {
     if (typeof error !== "string") return;
     started.reject(new Error(error));
     recordClientError("screen-native-helper-stopped", error);
-    if (state.screenTrack === generator) stopScreenShare({ message: `화면 공유가 멈췄습니다: ${error}` }).catch(() => {});
+    if (state.screenTrack !== generator) return;
+    // 창이 닫혀도 공유는 끄지 않는다(디스코드처럼). 보는 쪽에는 일시 중지 화면을 보내고, 다른 대상을 고르면 그대로 이어진다.
+    // 새로 보기 시작한 사람도 받도록 1초마다 다시 보내고, 이 캡처가 끝나면(대상 변경·공유 끄기) 스스로 멈춘다.
+    const canvas = new OffscreenCanvas(1280, 720);
+    const g = canvas.getContext("2d");
+    g.fillStyle = "#1e1f22";
+    g.fillRect(0, 0, 1280, 720);
+    g.textAlign = "center";
+    g.fillStyle = "#f2f3f5";
+    g.font = "bold 48px sans-serif";
+    g.fillText("화면 공유 일시 중지", 640, 340);
+    g.fillStyle = "#b5bac1";
+    g.font = "28px sans-serif";
+    g.fillText(error, 640, 400, 1200);
+    const sendPaused = () => {
+      if (state.nativeScreenCapture !== onMessage) return clearInterval(timer);
+      lastTimestamp += 1000000;
+      const paused = new VideoFrame(canvas, { timestamp: lastTimestamp });
+      writer.write(paused).catch(() => paused.close());
+    };
+    const timer = setInterval(sendPaused, 1000);
+    sendPaused();
+    state.screenLowFpsWarned = true; // 일시 중지 화면은 1fps라 "fps가 낮습니다" 알림이 이 안내를 덮지 않게 한다
+    setMessage(`${error} 화면 공유 설정에서 다른 창이나 모니터를 고르면 이어서 공유하고, 끝내려면 화면 공유 버튼을 눌러 주십시오.`);
   };
   state.nativeScreenCapture = onMessage;
   window.addEventListener("message", onMessage);
@@ -6501,8 +6526,10 @@ async function updateStats() {
   checkMediaByteFlow({ sendBps, receiveBps, candidateText });
   handleScreenSenderPerformance(screenSenderFps);
   // GPU 인코더를 못 잡고 CPU(OpenH264 등)로 인코딩하면 4K에서 fps가 크게 떨어진다(9/14 1080p=GPU, 9/15 4K60=OpenH264).
-  if (state.screenSharing && state.screenSource === "screen" && screenPowerEfficientEncoders.has("false") && !state.screenSoftwareEncodeWarned) {
-    state.screenSoftwareEncodeWarned = true;
+  // 4K는 시작 직후 대역폭이 오르는 동안 잠깐(약 20초) CPU로 갔다가 GPU로 돌아오기도 해서, 30초 넘게 이어질 때만 알린다.
+  const softwareEncoding = state.screenSharing && state.screenSource === "screen" && screenPowerEfficientEncoders.has("false");
+  state.screenSoftwareEncodeStrikes = softwareEncoding ? state.screenSoftwareEncodeStrikes + 1 : 0;
+  if (state.screenSoftwareEncodeStrikes === 30) {
     const encoder = [...screenEncoders].join("+") || "software";
     logClientEvent("screen-software-encoder", `${encoder} ${getScreenCaptureStatsText()}`);
     setMessage(`화면 공유를 GPU가 아닌 CPU(${encoder})로 인코딩하고 있어 끊길 수 있습니다. 해상도나 fps를 낮추면 GPU 인코더로 바뀔 수 있습니다.`);
