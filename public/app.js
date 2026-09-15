@@ -3280,24 +3280,8 @@ function cleanupLocalScreenShare() {
 
 function getScreenShareVideoConstraints() {
   const fps = Math.max(15, Math.min(60, Number(state.screenFps || 30)));
-  const video = {
-    frameRate: { ideal: fps, max: fps },
-    displaySurface: "monitor",
-  };
-  if (state.screenResolution === "720") {
-    video.width = { ideal: 1280 };
-    video.height = { ideal: 720 };
-  } else if (state.screenResolution === "1080") {
-    video.width = { ideal: 1920 };
-    video.height = { ideal: 1080 };
-  } else if (state.screenResolution === "1440") {
-    video.width = { ideal: 2560 };
-    video.height = { ideal: 1440 };
-  } else if (state.screenResolution === "2160") {
-    video.width = { ideal: 3840 };
-    video.height = { ideal: 2160 };
-  }
-  return video;
+  // 크기는 여기서 요청하지 않는다: 모니터 크기로 받은 뒤 applyScreenShareTrackConstraints가 필요할 때만 줄인다.
+  return { frameRate: { ideal: fps, max: fps }, displaySurface: "monitor" };
 }
 
 async function getScreenShareStream() {
@@ -3524,16 +3508,19 @@ function getScreenShareTargetSize() {
   return null;
 }
 
-function getScreenShareTrackConstraints() {
-  const constraints = { ...getScreenShareVideoConstraints() };
-  delete constraints.displaySurface;
-  return constraints;
-}
-
 async function applyScreenShareTrackConstraints(track) {
   // 네이티브 캡처는 helper가 이미 설정 크기·fps로 맞춰 보내므로 트랙 제약을 걸지 않는다.
   if (!track?.applyConstraints || state.screenCaptureMethod === "native-wgc") return;
-  await track.applyConstraints(getScreenShareTrackConstraints()).catch((error) => {
+  const constraints = { frameRate: getScreenShareVideoConstraints().frameRate };
+  // 설정 해상도가 지금 잡힌 화면보다 작을 때만 줄인다. 크거나 같으면(맥 1496x967에 1080p·4K 등) 모니터 크기 그대로 둔다 —
+  // 더 크게 요청하면 맥에서 374x240처럼 오히려 작아졌다.
+  const size = getScreenShareTargetSize();
+  const { width = 0, height = 0 } = track.getSettings?.() || {};
+  if (size && size.width < width && size.height < height) {
+    constraints.width = { ideal: size.width };
+    constraints.height = { ideal: size.height };
+  }
+  await track.applyConstraints(constraints).catch((error) => {
     logClientEvent("screen-constraints-error", error.message || String(error));
   });
 }
