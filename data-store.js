@@ -1516,7 +1516,10 @@ function setAiGlobalPrompt(text) {
 function buildAiSystemInstruction(doc, globalPrompt) {
   const PROJECT_CHARS = 40000;
   const SESSION_CHARS = 12000;
-  const base = "당신은 Accord 안의 'AI방'에서 여러 사용자가 함께 쓰는 어시스턴트입니다. 각 사용자 발화 앞의 '이름:' 은 말한 사람 표시입니다. 한국어로 간결하고 정확하게 답하세요.";
+  // 메모/채팅 수정 기능은 이번 메시지에 #방이름 이 있어야만(resolveAiRefs) 아래에 상세 안내가 붙는다.
+  // 그 안내가 없는 턴에도 기능 자체는 항상 알려야 한다 — 안 그러면 "그런 기능 없다"고 잘못 답한다.
+  const base = "당신은 Accord 안의 'AI방'에서 여러 사용자가 함께 쓰는 어시스턴트입니다. 각 사용자 발화 앞의 '이름:' 은 말한 사람 표시입니다. 한국어로 간결하고 정확하게 답하세요."
+    + " 이 채널의 메모장·채팅방 내용을 읽거나 고칠 수 있습니다 — 사용자가 메시지에 #방이름 을 포함하면 그 방 내용이 주어지고 수정 방법이 안내됩니다.";
   const parts = [base];
   const mem = (doc && doc.memory) || {};
   const g = String(globalPrompt || "").trim();
