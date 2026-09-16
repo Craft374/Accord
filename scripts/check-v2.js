@@ -512,6 +512,24 @@ const reviews = [
         && out.includes("```accord:memo #방이름") && out.includes("```accord:chat #방이름");
     } catch { return false; }
   })(), "AI방 buildAiReferenceBlock injects referenced room content + edit-directive help (runtime)"],
+  [(() => {
+    // AI방: #방 참조는 아는 방 이름을 긴 것부터 대조한다 — 공백 있는 이름("자유 질문")·조사("회의록에")도 잡혀야 한다.
+    try {
+      const cands = server.match(/function aiRefCandidates\(ctx\) \{[\s\S]*?\n\}/);
+      const match = server.match(/function matchAiRefName\(str, cands\) \{[\s\S]*?\n\}/);
+      if (!cands || !match) return false;
+      const fns = new Function(`${cands[0]}\n${match[0]}\nreturn { aiRefCandidates, matchAiRefName };`)();
+      const list = fns.aiRefCandidates({ channel: { rooms: [
+        { id: "a", type: "chat", name: "자유 질문" }, { id: "b", type: "chat", name: "일반" },
+        { id: "c", type: "chat", name: "일반 공지" }, { id: "d", type: "memo", name: "회의록" },
+        { id: "e", type: "voice", name: "스터디룸1" }, { id: "f", type: "memo", name: "  " },
+      ] } });
+      const hit = (t) => { const h = fns.matchAiRefName(t, list); return h && h.room.name; };
+      return hit("자유 질문 요약해줘") === "자유 질문" && hit("일반 공지 봐줘") === "일반 공지"
+        && hit("일반에 정리해") === "일반" && hit("스터디룸1") === null && hit("없는방") === null
+        && list.every((c) => c.key); // 빈 이름 방은 후보에서 빠진다(모든 #에 걸리는 사고 방지)
+    } catch { return false; }
+  })(), "AI방 #참조가 공백 포함 방 이름을 해석한다 (runtime)"],
   [
     /PRE_AUTH_TYPES = new Set\(\[[^\]]*"guest-login"/.test(server)
       && server.includes("store.createGuestUser()") && dataStore.includes("function createGuestUser()")

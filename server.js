@@ -1950,7 +1950,8 @@ const AI_ATTACH_MAX = 3; // 메시지 하나에 첨부 가능한 파일 수(클�
 const AI_ATTACH_IMG_MAX = 4 * 1024 * 1024; // 이미지 첨부 원본 용량 상한 — base64 인플레이션(~33%) 감안해 요청이 안 커지게
 const AI_ATTACH_TEXT_MAX = 8000; // 첨부 텍스트 파일에서 프롬프트에 끼워 넣는 글자 수 상한
 // 모델이 참조된 방을 고칠 때 쓰는 지시 블록: ```accord:<memo|memo-append|chat> #방이름 \n 내용 ```
-const AI_ACTION_RE = /```accord:(memo|memo-append|chat)[ \t]+#([^\s#`]{1,40})[^\n]*\n([\s\S]*?)```/g;
+// 방 이름에 공백이 있을 수 있으므로 줄 끝까지 받고, refMap 키와 앞머리 매칭으로 실제 이름을 가려낸다.
+const AI_ACTION_RE = /```accord:(memo|memo-append|chat)[ \t]+#([^#`\n]{1,40})[^\n]*\n([\s\S]*?)```/g;
 
 // 게스트(체험 계정)는 방 전원이 쓰는 대화·메모리·설정·방 파일을 지우거나 바꿀 수 없다(보내기·새 대화는 가능).
 const AI_GUEST_BLOCKED = new Set(["ai:delete", "ai:set-memory", "ai:set-settings", "ai:add-file", "ai:remove-file"]);
@@ -2152,22 +2153,39 @@ function buildAiAttachmentParts(files) {
   return { imageParts, extraText };
 }
 
+// 참조 후보: 이 채널의 memo/chat 방을 { 소문자 이름, 방 }으로, 긴 이름부터.
+// 긴 것부터 봐야 "일반"과 "일반 공지"가 같이 있을 때 "#일반 공지"가 제대로 잡힌다.
+function aiRefCandidates(ctx) {
+  return (ctx.channel.rooms || [])
+    .filter((r) => r.type === "memo" || r.type === "chat")
+    .map((r) => ({ key: String(r.name || "").trim().toLowerCase(), room: r }))
+    .filter((c) => c.key) // 빈 이름은 모든 #에 걸려버리므로 제외
+    .sort((a, b) => b.key.length - a.key.length);
+}
+
+// str 앞머리와 일치하는 가장 긴 방 이름을 고른다. 정규식을 만들지 않으므로 "C++" 같은 이름도 안전.
+function matchAiRefName(str, cands) {
+  const low = String(str).toLowerCase();
+  return cands.find((c) => low.startsWith(c.key)) || null;
+}
+
 // 사용자가 이번 메시지에서 #으로 지정한 memo/chat 방만 해석한다(모델이 지어낸 #는 못 건드림).
-// ponytail: 방 이름에 공백 있으면 #참조 불가(토큰이 공백에서 끊김). 필요해지면 따옴표 문법 추가.
+// 토큰을 잘라 이름과 맞추는 대신 아는 방 이름을 텍스트에 대조한다 —
+// 그래야 "#자유 질문"처럼 공백 있는 이름도, "#회의록에"처럼 조사가 붙은 경우도 잡힌다.
 function resolveAiRefs(text, ctx, client) {
-  const tokens = [...new Set((String(text).match(/#[^\s#]{1,40}/g) || []).map((t) => t.slice(1)))].slice(0, AI_REF_MAX);
+  const cands = aiRefCandidates(ctx);
+  const src = String(text);
   const map = new Map(); // 소문자 방이름 -> { room, type }
   const refs = [];
-  for (const tok of tokens) {
-    const key = tok.toLowerCase();
-    if (map.has(key)) continue;
-    const room = (ctx.channel.rooms || []).find((r) => (r.type === "memo" || r.type === "chat") && r.name.toLowerCase() === key);
-    if (!room) continue;
+  for (let i = src.indexOf("#"); i >= 0 && refs.length < AI_REF_MAX; i = src.indexOf("#", i + 1)) {
+    const hit = matchAiRefName(src.slice(i + 1), cands);
+    if (!hit || map.has(hit.key)) continue;
+    const room = hit.room;
     if (!store.canAccessRoom(ctx.channel.id, room.id, client.userId, client.isAdmin)) continue;
     const content = room.type === "memo"
       ? (store.getMemo(room.id).text || "")
       : store.getMessages(room.id, 60).map((m) => `${m.name || "?"}: ${m.text || ""}`).join("\n");
-    map.set(key, { room, type: room.type });
+    map.set(hit.key, { key: hit.key, room, type: room.type });
     refs.push({ name: room.name, type: room.type, content });
   }
   return { map, refs };
@@ -2196,10 +2214,12 @@ function applyAiMemoWrite(roomId, mode, body, client) {
 // 모델 응답의 accord: 지시 블록을 실행하고, 블록을 뺀 표시용 텍스트 + 결과 메모를 돌려준다.
 function applyAiActions(replyText, refMap, ctx, client) {
   const notes = [];
+  // 이번 메시지에서 실제로 해석된 방만 대상 — 모델이 안 지정된 방을 건드리지 못하게 하는 경계다.
+  const refCands = [...refMap.values()].sort((a, b) => b.key.length - a.key.length);
   const display = String(replyText || "").replace(AI_ACTION_RE, (_m, kind, name, payload) => {
     const body = String(payload).replace(/\s+$/, "");
-    const target = refMap.get(name.toLowerCase());
-    if (!target) { notes.push(`⚠️ #${name}: 이번 메시지에서 #로 지정한 방이 아니어서 건드리지 않았습니다.`); return ""; }
+    const target = matchAiRefName(name, refCands);
+    if (!target) { notes.push(`⚠️ #${name.trim()}: 이번 메시지에서 #로 지정한 방이 아니어서 건드리지 않았습니다.`); return ""; }
     const tctx = { channel: ctx.channel, room: target.room };
     if (!isRoomWritable(tctx, client)) { notes.push(`⚠️ #${target.room.name}: 쓰기 권한이 없어 건너뜀`); return ""; }
     try {

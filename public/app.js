@@ -9746,7 +9746,7 @@ function renderAiDrafts() {
 }
 
 // ----- #방이름 자동완성: 같은 채널의 메모장·채팅방을 골라 넣는다(서버가 canAccessRoom 재확인) -----
-// 서버는 /#[^\s#]{1,40}/ 로 토큰을 뽑고 방 이름과 정확히(대소문자 무시) 매칭하므로, 공백/# 없는 이름만 제시한다.
+// 서버는 아는 방 이름을 #뒤 문자열 앞머리와 대조하므로 공백 있는 이름도 된다. #이 든 이름만 제외(accord: 블록 문법과 충돌).
 const aiRefState = { items: [], index: 0, start: -1, end: -1 };
 
 function closeAiRefMenu() {
@@ -9763,13 +9763,14 @@ function updateAiRefMenu() {
   if (!input || !menu || input.disabled || !state.ai || state.ai.composing) { closeAiRefMenu(); return; }
   const caret = input.selectionStart ?? input.value.length;
   if (caret !== (input.selectionEnd ?? caret)) { closeAiRefMenu(); return; }
-  const match = input.value.slice(0, caret).match(/(?:^|\s)#([^\s#]{0,40})$/u);
+  // 공백 있는 방 이름을 이어 칠 수 있게 줄 끝까지 받는다(매칭되는 방이 없으면 아래에서 메뉴가 닫힌다).
+  const match = input.value.slice(0, caret).match(/(?:^|\s)#([^#\n]{0,40})$/u);
   if (!match) { closeAiRefMenu(); return; }
   const query = (match[1] || "").toLocaleLowerCase("ko");
   const channel = state.channels.find((c) => c.id === state.ai.channelId);
   const rooms = (channel?.rooms || []).filter((r) => {
     if (r.type !== "memo" && r.type !== "chat") return false;
-    if (/[\s#]/.test(r.name || "")) return false; // 공백 있는 이름은 #참조가 안 됨
+    if (String(r.name || "").includes("#")) return false; // #이 든 이름은 참조 문법과 충돌
     return !query || String(r.name).toLocaleLowerCase("ko").includes(query);
   }).slice(0, 8);
   if (!rooms.length) { closeAiRefMenu(); return; }
