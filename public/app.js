@@ -583,6 +583,7 @@ const dom = {
   aiSubtitle: document.querySelector("#aiSubtitle"),
   aiModelSelect: document.querySelector("#aiModelSelect"),
   aiThinkingSelect: document.querySelector("#aiThinkingSelect"),
+  aiRefScopeToggle: document.querySelector("#aiRefScopeToggle"),
   aiMemoryButton: document.querySelector("#aiMemoryButton"),
   aiHistoryButton: document.querySelector("#aiHistoryButton"),
   aiNewButton: document.querySelector("#aiNewButton"),
@@ -9387,7 +9388,7 @@ function applyAiState(msg) {
 
 function renderAiControls() {
   if (!state.ai || !dom.aiModelSelect || !dom.aiThinkingSelect) return;
-  const st = state.ai.settings || { model: "", thinking: "auto" };
+  const st = state.ai.settings || { model: "", thinking: "auto", refScope: true };
   const chDefault = state.ai.config?.model || "?";
   dom.aiModelSelect.innerHTML = "";
   for (const [v, l] of AI_MODEL_CHOICES) dom.aiModelSelect.append(new Option(v ? l : `모델: 채널 기본 (${chDefault})`, v, false, v === st.model));
@@ -9404,6 +9405,10 @@ function renderAiControls() {
   const thinkable = /2\.5/.test(eff) && !/image/i.test(eff);
   dom.aiThinkingSelect.disabled = ro || !thinkable;
   dom.aiThinkingSelect.title = thinkable ? "생각 수준" : "이 모델은 생각 수준 조절을 지원하지 않습니다";
+  if (dom.aiRefScopeToggle) {
+    dom.aiRefScopeToggle.checked = st.refScope !== false;
+    dom.aiRefScopeToggle.disabled = ro;
+  }
 }
 
 function renderAiSessions() {
@@ -9789,7 +9794,7 @@ function updateAiRefMenu() {
   const query = (match[1] || "").toLocaleLowerCase("ko");
   const channel = state.channels.find((c) => c.id === state.ai.channelId);
   const aiRoom = channel?.rooms?.find((r) => r.id === state.ai.roomId);
-  const scopeRoot = topRoomGroupId(channel, aiRoom?.groupId);
+  const scopeRoot = state.ai.settings?.refScope === false ? "" : topRoomGroupId(channel, aiRoom?.groupId);
   const rooms = (channel?.rooms || []).filter((r) => {
     if (r.type !== "memo" && r.type !== "chat") return false;
     if (String(r.name || "").includes("#")) return false; // #이 든 이름은 참조 문법과 충돌
@@ -9921,6 +9926,9 @@ function bindAiEvents() {
   });
   dom.aiThinkingSelect?.addEventListener("change", () => {
     if (state.ai) sendSocket({ type: "ai:set-settings", roomId: state.ai.roomId, thinking: dom.aiThinkingSelect.value });
+  });
+  dom.aiRefScopeToggle?.addEventListener("change", () => {
+    if (state.ai) sendSocket({ type: "ai:set-settings", roomId: state.ai.roomId, refScope: dom.aiRefScopeToggle.checked });
   });
   dom.aiSessions?.addEventListener("click", (e) => {
     if (!state.ai) return;

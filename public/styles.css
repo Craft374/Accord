@@ -6704,6 +6704,8 @@ body.ai-open .dm-panel { display: none !important; }
   color: var(--text);
 }
 .ai-head-controls select:disabled { opacity: 0.5; }
+.ai-ref-scope-toggle { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); white-space: nowrap; cursor: pointer; }
+.ai-ref-scope-toggle:has(input:disabled) { opacity: 0.5; cursor: default; }
 
 .ai-body { display: flex; flex: 1; min-height: 0; }
 .ai-sessions {

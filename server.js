@@ -2174,10 +2174,10 @@ function topRoomGroupId(channel, groupId) {
 
 // 참조 후보: 이 채널의 memo/chat 방을 { 소문자 이름, 방 }으로, 긴 이름부터.
 // 긴 것부터 봐야 "일반"과 "일반 공지"가 같이 있을 때 "#일반 공지"가 제대로 잡힌다.
-// AI방이 어떤 그룹(예: "데이터 사이언스 스터디") 안에 있으면 그 최상위 그룹 밑의 방만 후보로 좁힌다 —
-// 안 그러면 채널 전체에서 같은 대화방(#일반 등)이 여러 그룹에 있을 때 엉뚱한 그룹의 방이 섞인다.
-function aiRefCandidates(ctx) {
-  const scopeRoot = topRoomGroupId(ctx.channel, ctx.room.groupId);
+// scoped=true(방 설정 기본값)면 AI방이 속한 최상위 그룹 밑의 방만 — 안 그러면 채널 전체에서
+// 같은 이름의 방이 여러 그룹에 있을 때 엉뚱한 그룹의 방이 섞인다. scoped=false면 채널 전체 대상(끄면).
+function aiRefCandidates(ctx, scoped) {
+  const scopeRoot = scoped ? topRoomGroupId(ctx.channel, ctx.room.groupId) : "";
   return (ctx.channel.rooms || [])
     .filter((r) => (r.type === "memo" || r.type === "chat")
       && (!scopeRoot || topRoomGroupId(ctx.channel, r.groupId) === scopeRoot))
@@ -2195,8 +2195,8 @@ function matchAiRefName(str, cands) {
 // 사용자가 이번 메시지에서 #으로 지정한 memo/chat 방만 해석한다(모델이 지어낸 #는 못 건드림).
 // 토큰을 잘라 이름과 맞추는 대신 아는 방 이름을 텍스트에 대조한다 —
 // 그래야 "#자유 질문"처럼 공백 있는 이름도, "#회의록에"처럼 조사가 붙은 경우도 잡힌다.
-function resolveAiRefs(text, ctx, client) {
-  const cands = aiRefCandidates(ctx);
+function resolveAiRefs(text, ctx, client, scoped) {
+  const cands = aiRefCandidates(ctx, scoped);
   const src = String(text);
   const map = new Map(); // 소문자 방이름 -> { room, type }
   const refs = [];
@@ -2432,7 +2432,7 @@ function handleAiMessage(client, message) {
       broadcastAi(ctx.room.id, { type: "ai:draft", roomId: ctx.room.id, byId: client.userId, byName: client.name || "", text: "" });
 
       // 사용자가 #으로 지정한 방(메모장/채팅) 읽어서 문맥에 넣고, 나중에 수정 대상으로도 쓴다.
-      const { map: refMap, refs } = resolveAiRefs(text, ctx, client);
+      const { map: refMap, refs } = resolveAiRefs(text, ctx, client, doc.settings.refScope);
 
       aiBusy.add(ctx.room.id);
       broadcastAi(ctx.room.id, { type: "ai:thinking", roomId: ctx.room.id, on: true });

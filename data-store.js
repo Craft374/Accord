@@ -1424,6 +1424,7 @@ function getAiDoc(roomId) {
   doc.settings = {
     model: String(st.model || "").slice(0, 80),
     thinking: AI_THINKING_LEVELS.includes(st.thinking) ? st.thinking : "auto",
+    refScope: st.refScope !== false, // #참조를 이 AI방이 속한 최상위 그룹으로 좁힐지. 기본 on.
   };
   if (typeof doc.activeSessionId !== "string") doc.activeSessionId = "";
   doc.files = (Array.isArray(doc.files) ? doc.files : []).slice(0, AI_FILES_MAX).map((f) => ({
@@ -1485,11 +1486,12 @@ function setAiMemory(roomId, { prompt, notes } = {}) {
   return doc.memory;
 }
 
-// 방별 모델/생각수준 오버라이드. model "" = 채널 기본 사용.
-function setAiSettings(roomId, { model, thinking } = {}) {
+// 방별 모델/생각수준/참조범위 오버라이드. model "" = 채널 기본 사용.
+function setAiSettings(roomId, { model, thinking, refScope } = {}) {
   const doc = getAiDoc(roomId);
   if (typeof model === "string") doc.settings.model = model.trim().slice(0, 80);
   if (typeof thinking === "string" && AI_THINKING_LEVELS.includes(thinking)) doc.settings.thinking = thinking;
+  if (typeof refScope === "boolean") doc.settings.refScope = refScope;
   saveAiDoc(roomId, doc);
   return doc.settings;
 }

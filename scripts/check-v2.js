@@ -514,10 +514,11 @@ const reviews = [
   })(), "AI방 buildAiReferenceBlock injects referenced room content + edit-directive help (runtime)"],
   [(() => {
     // AI방: #방 참조는 아는 방 이름을 긴 것부터 대조한다 — 공백 있는 이름("자유 질문")·조사("회의록에")도 잡혀야 한다.
-    // 또한 AI방이 어떤 그룹 안에 있으면 그 최상위 그룹(+하위 그룹) 밖의 동명이인 방은 후보에서 빠져야 한다.
+    // scoped=true(방 설정 기본값)면 AI방이 속한 최상위 그룹(+하위 그룹) 밖의 동명이인 방은 후보에서 빠지고,
+    // scoped=false(설정에서 끔) 또는 AI방이 그룹 밖이면 채널 전체가 대상이어야 한다.
     try {
       const top = server.match(/function topRoomGroupId\(channel, groupId\) \{[\s\S]*?\n\}/);
-      const cands = server.match(/function aiRefCandidates\(ctx\) \{[\s\S]*?\n\}/);
+      const cands = server.match(/function aiRefCandidates\(ctx, scoped\) \{[\s\S]*?\n\}/);
       const match = server.match(/function matchAiRefName\(str, cands\) \{[\s\S]*?\n\}/);
       if (!top || !cands || !match) return false;
       const fns = new Function(`${top[0]}\n${cands[0]}\n${match[0]}\nreturn { aiRefCandidates, matchAiRefName };`)();
@@ -533,18 +534,19 @@ const reviews = [
         ],
       };
       const hit = (list, t) => { const h = fns.matchAiRefName(t, list); return h && h.room.name; };
-      // AI방이 g-ds 그룹(최상위) 안에 있으면: 하위 그룹(g-chat)의 방은 보이고, 다른 그룹(g-proj)의 방은 안 보인다.
-      const scoped = fns.aiRefCandidates({ channel, room: { groupId: "g-ds" } });
+      // scoped on + AI방이 g-ds 그룹(최상위) 안: 하위 그룹(g-chat)의 방은 보이고, 다른 그룹(g-proj)의 방은 안 보인다.
+      const scoped = fns.aiRefCandidates({ channel, room: { groupId: "g-ds" } }, true);
       const scopedOk = hit(scoped, "자유 질문 요약해줘") === "자유 질문" && hit(scoped, "일반 공지 봐줘") === "일반 공지"
         && hit(scoped, "일반에 정리해") === null // g-proj 소속이라 범위 밖
         && hit(scoped, "스터디룸1") === null && hit(scoped, "없는방") === null
         && scoped.every((c) => c.key); // 빈 이름 방은 후보에서 빠진다(모든 #에 걸리는 사고 방지)
-      // AI방이 그룹 밖(채널 루트)이면 범위 제한이 없다 — 기존 채널 전체 동작 유지.
-      const unscoped = fns.aiRefCandidates({ channel, room: { groupId: "" } });
-      const unscopedOk = hit(unscoped, "일반에 정리해") === "일반";
-      return scopedOk && unscopedOk;
+      // scoped on + AI방이 그룹 밖(채널 루트)이면 범위 제한이 없다 — 기존 채널 전체 동작 유지.
+      const rootOk = hit(fns.aiRefCandidates({ channel, room: { groupId: "" } }, true), "일반에 정리해") === "일반";
+      // scoped off: AI방이 그룹 안에 있어도 방 설정에서 끄면 채널 전체가 대상.
+      const offOk = hit(fns.aiRefCandidates({ channel, room: { groupId: "g-ds" } }, false), "일반에 정리해") === "일반";
+      return scopedOk && rootOk && offOk;
     } catch { return false; }
-  })(), "AI방 #참조가 공백 포함 방 이름을 해석하고 AI방이 속한 그룹으로 범위를 좁힌다 (runtime)"],
+  })(), "AI방 #참조가 공백 포함 방 이름을 해석하고, 설정에 따라 AI방이 속한 그룹으로 범위를 좁힌다 (runtime)"],
   [
     /PRE_AUTH_TYPES = new Set\(\[[^\]]*"guest-login"/.test(server)
       && server.includes("store.createGuestUser()") && dataStore.includes("function createGuestUser()")
