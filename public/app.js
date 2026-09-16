@@ -9800,7 +9800,7 @@ function updateAiRefMenu() {
     if (String(r.name || "").includes("#")) return false; // #이 든 이름은 참조 문법과 충돌
     if (scopeRoot && topRoomGroupId(channel, r.groupId) !== scopeRoot) return false; // AI방이 그룹 안이면 그 그룹 밖 방은 제외
     return !query || String(r.name).toLocaleLowerCase("ko").includes(query);
-  }).slice(0, 8);
+  }); // 개수 제한 없음 — 메뉴가 스크롤된다(자르면 뒤쪽 방은 이름을 쳐야만 보였다)
   if (!rooms.length) { closeAiRefMenu(); return; }
   aiRefState.items = rooms;
   aiRefState.index = Math.min(aiRefState.index, rooms.length - 1);
@@ -9833,6 +9833,7 @@ function renderAiRefMenu() {
     menu.append(button);
   });
   menu.hidden = false;
+  menu.querySelector(".active")?.scrollIntoView({ block: "nearest" });
 }
 
 function insertAiRef(index = aiRefState.index) {

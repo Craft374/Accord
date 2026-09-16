@@ -554,6 +554,11 @@ const reviews = [
     "ai:set-settings passes refScope through to store.setAiSettings",
   ],
   [
+    // #참조 메뉴를 개수로 자르면 그룹 뒤쪽 방이 목록에서 사라진다(메뉴는 스크롤로 전부 보여준다).
+    /function updateAiRefMenu\(\) \{(?![\s\S]*?\.slice\(0, \d+\)[\s\S]*?\nfunction renderAiRefMenu)[\s\S]*?\nfunction renderAiRefMenu\(\) \{[\s\S]*?scrollIntoView\(\{ block: "nearest" \}\)/.test(app),
+    "AI방 #참조 메뉴는 방 개수를 자르지 않고 선택 항목을 스크롤해 보여준다",
+  ],
+  [
     /PRE_AUTH_TYPES = new Set\(\[[^\]]*"guest-login"/.test(server)
       && server.includes("store.createGuestUser()") && dataStore.includes("function createGuestUser()")
       && server.includes("client.isGuest = Boolean(user.isGuest)"),
