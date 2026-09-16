@@ -2153,11 +2153,34 @@ function buildAiAttachmentParts(files) {
   return { imageParts, extraText };
 }
 
+// groupId 가 속한 최상위(맨 바깥) 그룹 id. 그룹 밖(채널 루트)이면 "".
+// 순환 참조(있으면 안 되지만 방어적으로)는 만나는 즉시 "" 로 끊는다.
+function topRoomGroupId(channel, groupId) {
+  const groups = channel.roomGroups || [];
+  const byId = new Map(groups.map((g) => [g.id, g]));
+  const seen = new Set();
+  let cur = String(groupId || "");
+  while (cur) {
+    if (seen.has(cur)) return "";
+    seen.add(cur);
+    const g = byId.get(cur);
+    if (!g) return "";
+    const parent = String(g.parentGroupId || "");
+    if (!parent) return cur;
+    cur = parent;
+  }
+  return "";
+}
+
 // 참조 후보: 이 채널의 memo/chat 방을 { 소문자 이름, 방 }으로, 긴 이름부터.
 // 긴 것부터 봐야 "일반"과 "일반 공지"가 같이 있을 때 "#일반 공지"가 제대로 잡힌다.
+// AI방이 어떤 그룹(예: "데이터 사이언스 스터디") 안에 있으면 그 최상위 그룹 밑의 방만 후보로 좁힌다 —
+// 안 그러면 채널 전체에서 같은 대화방(#일반 등)이 여러 그룹에 있을 때 엉뚱한 그룹의 방이 섞인다.
 function aiRefCandidates(ctx) {
+  const scopeRoot = topRoomGroupId(ctx.channel, ctx.room.groupId);
   return (ctx.channel.rooms || [])
-    .filter((r) => r.type === "memo" || r.type === "chat")
+    .filter((r) => (r.type === "memo" || r.type === "chat")
+      && (!scopeRoot || topRoomGroupId(ctx.channel, r.groupId) === scopeRoot))
     .map((r) => ({ key: String(r.name || "").trim().toLowerCase(), room: r }))
     .filter((c) => c.key) // 빈 이름은 모든 #에 걸려버리므로 제외
     .sort((a, b) => b.key.length - a.key.length);

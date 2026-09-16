@@ -514,22 +514,37 @@ const reviews = [
   })(), "AI방 buildAiReferenceBlock injects referenced room content + edit-directive help (runtime)"],
   [(() => {
     // AI방: #방 참조는 아는 방 이름을 긴 것부터 대조한다 — 공백 있는 이름("자유 질문")·조사("회의록에")도 잡혀야 한다.
+    // 또한 AI방이 어떤 그룹 안에 있으면 그 최상위 그룹(+하위 그룹) 밖의 동명이인 방은 후보에서 빠져야 한다.
     try {
+      const top = server.match(/function topRoomGroupId\(channel, groupId\) \{[\s\S]*?\n\}/);
       const cands = server.match(/function aiRefCandidates\(ctx\) \{[\s\S]*?\n\}/);
       const match = server.match(/function matchAiRefName\(str, cands\) \{[\s\S]*?\n\}/);
-      if (!cands || !match) return false;
-      const fns = new Function(`${cands[0]}\n${match[0]}\nreturn { aiRefCandidates, matchAiRefName };`)();
-      const list = fns.aiRefCandidates({ channel: { rooms: [
-        { id: "a", type: "chat", name: "자유 질문" }, { id: "b", type: "chat", name: "일반" },
-        { id: "c", type: "chat", name: "일반 공지" }, { id: "d", type: "memo", name: "회의록" },
-        { id: "e", type: "voice", name: "스터디룸1" }, { id: "f", type: "memo", name: "  " },
-      ] } });
-      const hit = (t) => { const h = fns.matchAiRefName(t, list); return h && h.room.name; };
-      return hit("자유 질문 요약해줘") === "자유 질문" && hit("일반 공지 봐줘") === "일반 공지"
-        && hit("일반에 정리해") === "일반" && hit("스터디룸1") === null && hit("없는방") === null
-        && list.every((c) => c.key); // 빈 이름 방은 후보에서 빠진다(모든 #에 걸리는 사고 방지)
+      if (!top || !cands || !match) return false;
+      const fns = new Function(`${top[0]}\n${cands[0]}\n${match[0]}\nreturn { aiRefCandidates, matchAiRefName };`)();
+      const channel = {
+        roomGroups: [{ id: "g-ds" }, { id: "g-chat", parentGroupId: "g-ds" }, { id: "g-proj" }],
+        rooms: [
+          { id: "a", type: "chat", name: "자유 질문", groupId: "g-chat" }, // g-ds 그룹의 하위 그룹
+          { id: "b", type: "chat", name: "일반", groupId: "g-proj" },      // 다른 최상위 그룹
+          { id: "c", type: "chat", name: "일반 공지", groupId: "g-chat" },
+          { id: "d", type: "memo", name: "회의록", groupId: "g-proj" },
+          { id: "e", type: "voice", name: "스터디룸1", groupId: "g-ds" },
+          { id: "f", type: "memo", name: "  ", groupId: "g-ds" },
+        ],
+      };
+      const hit = (list, t) => { const h = fns.matchAiRefName(t, list); return h && h.room.name; };
+      // AI방이 g-ds 그룹(최상위) 안에 있으면: 하위 그룹(g-chat)의 방은 보이고, 다른 그룹(g-proj)의 방은 안 보인다.
+      const scoped = fns.aiRefCandidates({ channel, room: { groupId: "g-ds" } });
+      const scopedOk = hit(scoped, "자유 질문 요약해줘") === "자유 질문" && hit(scoped, "일반 공지 봐줘") === "일반 공지"
+        && hit(scoped, "일반에 정리해") === null // g-proj 소속이라 범위 밖
+        && hit(scoped, "스터디룸1") === null && hit(scoped, "없는방") === null
+        && scoped.every((c) => c.key); // 빈 이름 방은 후보에서 빠진다(모든 #에 걸리는 사고 방지)
+      // AI방이 그룹 밖(채널 루트)이면 범위 제한이 없다 — 기존 채널 전체 동작 유지.
+      const unscoped = fns.aiRefCandidates({ channel, room: { groupId: "" } });
+      const unscopedOk = hit(unscoped, "일반에 정리해") === "일반";
+      return scopedOk && unscopedOk;
     } catch { return false; }
-  })(), "AI방 #참조가 공백 포함 방 이름을 해석한다 (runtime)"],
+  })(), "AI방 #참조가 공백 포함 방 이름을 해석하고 AI방이 속한 그룹으로 범위를 좁힌다 (runtime)"],
   [
     /PRE_AUTH_TYPES = new Set\(\[[^\]]*"guest-login"/.test(server)
       && server.includes("store.createGuestUser()") && dataStore.includes("function createGuestUser()")
