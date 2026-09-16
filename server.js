@@ -766,6 +766,7 @@ function handleAuthMessage(client, message) {
         return true;
       }
       store.addMember(channel.id, result.user.id);
+      store.ensureGuestRoleAssigned(channel.id, result.user.id);
       finishAuth(client, result.user, "register");
       notifyChannelMembers(channel.id);
       logChannelEvent(channel.id, client, "member-join", {});

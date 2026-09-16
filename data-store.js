@@ -956,6 +956,15 @@ function setRoleMember(channelId, roleId, userId, value) {
   return { channel, role };
 }
 
+// 게스트 로그인 때 "게스트" 역할을 자동으로 만들고 부여한다(방별 권한은 이 역할에 걸면 게스트 전원에 적용).
+function ensureGuestRoleAssigned(channelId, userId) {
+  const channel = getChannel(channelId);
+  if (!channel) return;
+  let role = rolesOf(channel).find((r) => r.isGuestRole);
+  if (!role) { role = createRole(channelId, "게스트").role; if (!role) return; role.isGuestRole = true; }
+  setRoleMember(channelId, role.id, userId, true);
+}
+
 // 방별 권한 오버라이드를 설정한다. kind: "role" | "user", value: true(허용)/false(거부)/null(상속).
 function setRoomPerm(channelId, roomId, kind, targetId, perm, value) {
   const channel = getChannel(channelId);
@@ -2016,6 +2025,7 @@ module.exports = {
   updateRole,
   deleteRole,
   setRoleMember,
+  ensureGuestRoleAssigned,
   setRoomPerm,
   clearRoomPerm,
   setChannelPerms,
