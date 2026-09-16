@@ -2324,7 +2324,7 @@ function handleAiMessage(client, message) {
       const ctx = resolveAiRoom(client, message.roomId);
       if (!ctx) return true;
       if (!isRoomWritable(ctx, client)) { send(client, { type: "ai:error", message: "읽기 전용 방입니다." }); return true; }
-      const settings = store.setAiSettings(ctx.room.id, { model: message.model, thinking: message.thinking });
+      const settings = store.setAiSettings(ctx.room.id, { model: message.model, thinking: message.thinking, refScope: message.refScope });
       broadcastAi(ctx.room.id, { type: "ai:settings", roomId: ctx.room.id, settings });
       return true;
     }

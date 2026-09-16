@@ -548,6 +548,12 @@ const reviews = [
     } catch { return false; }
   })(), "AI방 #참조가 공백 포함 방 이름을 해석하고, 설정에 따라 AI방이 속한 그룹으로 범위를 좁힌다 (runtime)"],
   [
+    // ai:set-settings 핸들러가 refScope 를 store.setAiSettings 로 넘겨야 토글이 실제로 꺼진다.
+    // (한 번 이 줄만 있고 refScope 를 안 넘겨서 체크박스를 꺼도 서버가 무시하고 그대로 켜진 채 되돌아온 적 있음)
+    /store\.setAiSettings\(ctx\.room\.id, \{[^}]*refScope: message\.refScope[^}]*\}\)/.test(server),
+    "ai:set-settings passes refScope through to store.setAiSettings",
+  ],
+  [
     /PRE_AUTH_TYPES = new Set\(\[[^\]]*"guest-login"/.test(server)
       && server.includes("store.createGuestUser()") && dataStore.includes("function createGuestUser()")
       && server.includes("client.isGuest = Boolean(user.isGuest)"),
