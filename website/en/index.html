@@ -82,6 +82,18 @@
       <symbol id="icon-activity" viewBox="0 0 24 24">
         <path d="M3 12h4l3-9 4 18 3-9h4" />
       </symbol>
+      <symbol id="icon-sound" viewBox="0 0 24 24">
+        <path d="M4 9h4l5-5v16l-5-5H4zM17 8a5 5 0 0 1 0 8M19.5 5.5a9 9 0 0 1 0 13" />
+      </symbol>
+      <symbol id="icon-bars" viewBox="0 0 24 24">
+        <path d="M4 14v-4M8 17V7M12 20V4M16 17V7M20 14v-4" />
+      </symbol>
+      <symbol id="icon-hangup" viewBox="0 0 24 24">
+        <path d="M3.5 9.5a16 16 0 0 1 17 0v3.2c0 .9-.7 1.6-1.6 1.6h-2.3c-.8 0-1.5-.6-1.6-1.4l-.2-1.4a12 12 0 0 0-5.6 0l-.2 1.4c-.1.8-.8 1.4-1.6 1.4H5.1c-.9 0-1.6-.7-1.6-1.6z" />
+      </symbol>
+      <symbol id="icon-caret" viewBox="0 0 24 24">
+        <path d="m6 15 6-6 6 6" />
+      </symbol>
     </svg>
 
     <a class="skip-link" href="#main">Skip to content</a>
@@ -145,55 +157,51 @@
             <div class="hero-product-inner">
               <div class="product-glow" aria-hidden="true"></div>
               <div class="app-window">
-              <div class="window-bar">
-                <div class="window-dots"><span></span><span></span><span></span></div>
-                <div class="window-title"><span class="window-mark">A</span> Accord</div>
-                <div class="window-state"><span></span> Connected</div>
-              </div>
-              <div class="app-body">
-                <div class="server-rail" aria-hidden="true">
-                  <span class="server-logo">A</span>
-                  <span class="server-icon active">P</span>
-                  <span class="server-icon">D</span>
-                  <span class="server-icon add">+</span>
+                <div class="app-top">
+                  <img src="../icon.svg" alt="" width="24" height="24" />
+                  <div class="app-top-title"><small>Accord</small><b>Voice room</b></div>
+                  <span class="app-top-btn">Settings</span>
+                  <span class="app-status"><i></i>Connected</span>
                 </div>
-                <div class="room-sidebar">
-                  <div class="workspace-name">Project Aria <span>⌄</span></div>
-                  <p class="room-label">VOICE</p>
-                  <div class="room-row active"><svg><use href="#icon-mic"></use></svg>Lounge</div>
-                  <div class="voice-user"><span class="avatar mint">J</span><span>jeongwoo</span><i></i></div>
-                  <div class="voice-user"><span class="avatar purple">M</span><span>min</span><i></i></div>
-                  <p class="room-label">WORKSPACE</p>
-                  <div class="room-row"><svg><use href="#icon-chat"></use></svg>general</div>
-                  <div class="room-row"><svg><use href="#icon-note"></use></svg>meeting-notes</div>
-                  <div class="room-row"><svg><use href="#icon-brush"></use></svg>idea-board</div>
-                  <div class="sidebar-profile"><span class="avatar mint">J</span><b>jeongwoo</b><span class="mic-dot"></span></div>
-                </div>
-                <div class="call-stage">
-                  <div class="stage-head">
-                    <div><b>Lounge</b><span>2 people in the call</span></div>
-                    <span class="live-pill"><i></i> LIVE</span>
+                <div class="app-body">
+                  <div class="app-rail">
+                    <span class="rail-icon active">P</span>
+                    <span class="rail-icon">D</span>
+                    <span class="rail-icon add">+</span>
                   </div>
-                  <div class="screen-card">
-                    <div class="screen-toolbar"><span></span><span></span><span></span><b>Screen share</b></div>
-                    <div class="screen-code">
-                      <span><i class="code-purple">const</i> workspace = <i class="code-mint">"Accord"</i>;</span>
-                      <span><i class="code-purple">await</i> team.<i class="code-blue">create</i>({</span>
-                      <span>&nbsp;&nbsp;voice: <i class="code-orange">true</i>,</span>
-                      <span>&nbsp;&nbsp;notes: <i class="code-orange">true</i>,</span>
-                      <span>&nbsp;&nbsp;canvas: <i class="code-orange">true</i></span>
-                      <span>});</span>
+                  <div class="app-rooms">
+                    <div class="app-rooms-head">Project A<span>⋯</span></div>
+                    <div class="app-room active"><span>🔊</span>Lounge<em>Here</em></div>
+                    <div class="app-room-user"><i>M</i>Mina</div>
+                    <div class="app-room-user"><i>A</i>Alex</div>
+                    <div class="app-room"><span>#</span>general</div>
+                    <div class="app-room"><span>📝</span>meeting-notes</div>
+                    <div class="app-room"><span>🎨</span>idea-board</div>
+                    <div class="app-room"><span>🤖</span>AI room</div>
+                  </div>
+                  <div class="app-call">
+                    <div class="app-call-head"><b>Lounge</b><i>|</i><span>2/8 · call 12:04</span></div>
+                    <div class="app-cards">
+                      <div class="app-card">
+                        <div class="app-card-head"><i>M</i><div><b>Mina</b><small>Mic+computer</small></div></div>
+                        <div class="app-meter"><small>Mic</small><span style="--level: 68%"></span></div>
+                        <div class="app-meter"><small>Computer</small><span style="--level: 34%"></span></div>
+                      </div>
+                      <div class="app-card">
+                        <div class="app-card-head"><i>A</i><div><b>Alex</b><small>Connected</small></div><em>View screen</em></div>
+                        <div class="app-meter"><small>Mic</small><span style="--level: 14%"></span></div>
+                        <div class="app-meter"><small>Computer</small><span style="--level: 0%"></span></div>
+                      </div>
                     </div>
-                    <div class="screen-share-tag"><svg><use href="#icon-screen"></use></svg>1080p · 30fps</div>
-                  </div>
-                  <div class="participant-row">
-                    <div class="participant"><span class="avatar mint">J</span><span class="talk-ring"></span><b>jeongwoo</b></div>
-                    <div class="participant"><span class="avatar purple">M</span><b>min</b></div>
-                  </div>
-                  <div class="call-controls">
-                    <button type="button" aria-label="Microphone"><svg><use href="#icon-mic"></use></svg></button>
-                    <button type="button" aria-label="Screen share"><svg><use href="#icon-screen"></use></svg></button>
-                    <button class="hangup" type="button" aria-label="Leave call">×</button>
+                    <div class="app-dock">
+                      <span class="dock-pill"><span class="dock-btn"><svg><use href="#icon-mic"></use></svg></span></span>
+                      <span class="dock-pill"><span class="dock-btn"><svg><use href="#icon-sound"></use></svg></span><span class="dock-caret"><svg><use href="#icon-caret"></use></svg></span></span>
+                      <i class="dock-div"></i>
+                      <span class="dock-pill"><span class="dock-btn"><svg><use href="#icon-screen"></use></svg></span><span class="dock-caret"><svg><use href="#icon-caret"></use></svg></span></span>
+                      <i class="dock-div"></i>
+                      <span class="dock-pill"><span class="dock-btn"><svg><use href="#icon-bars"></use></svg></span></span>
+                      <span class="dock-leave"><svg><use href="#icon-hangup"></use></svg>Leave</span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -272,17 +280,28 @@
                 <p>Draw together with pen, eraser, fill, pasted images and layers on a shared canvas.</p>
               </div>
               <div class="canvas-visual" aria-hidden="true">
-                <div class="canvas-toolbar"><b>Idea board</b><span class="tool active">⌁</span><span class="tool">◇</span><span class="tool">✥</span><i class="color-dot"></i><small>4 px</small></div>
+                <div class="canvas-toolbar">
+                  <b>🎨 idea-board</b>
+                  <span class="tool-group"><span class="tool active">✏️</span><span class="tool">🧽</span><span class="tool">🪣</span><span class="tool">✥</span></span>
+                  <i class="color-dot"></i>
+                  <span class="size-range"><i></i>4</span>
+                  <span class="tool-group"><span class="tool">↶</span><span class="tool">↷</span></span>
+                  <span class="tool-group zoom-group"><span class="tool">－</span><span class="tool">100%</span><span class="tool">＋</span></span>
+                </div>
                 <div class="canvas-board">
-                  <svg viewBox="0 0 440 210">
-                    <defs><pattern id="dots" width="16" height="16" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#c7cbe2" opacity=".4" /></pattern></defs>
-                    <rect width="440" height="210" fill="url(#dots)" />
-                    <path class="board-path one" d="M42 143C87 33 163 38 207 116s105 49 180-45" />
-                    <path class="board-path two" d="m83 67 48-25 41 39" />
-                    <circle class="board-circle" cx="310" cy="99" r="42" />
-                    <text x="270" y="104">ACCORD</text>
-                  </svg>
-                  <div class="canvas-layers"><b>Layers</b><span><i class="thumb mint-bg"></i>Notes</span><span><i class="thumb purple-bg"></i>Sketch</span><span><i class="thumb white-bg"></i>Background</span></div>
+                  <div class="canvas-stage">
+                    <svg viewBox="0 0 400 250">
+                      <path class="ink" d="M48 40c90-3 190-2 300 1M47 40c-2 55-1 115 2 170M348 41c2 56 1 112-1 168M49 210c100 2 200 1 298-1" />
+                      <path class="ink" d="M50 72c95 1 200 0 296 1M136 108h140M136 128h96M76 166c60 1 150 0 240-1M76 186c50 0 110 1 170 0" />
+                      <circle class="ink-blue" cx="96" cy="118" r="22" />
+                      <path class="ink-red" d="M292 94c30 4 46 24 40 52M320 136l12 11 11-14" />
+                    </svg>
+                  </div>
+                  <div class="canvas-layers">
+                    <b>Layers<span>＋</span></b>
+                    <span class="active"><i class="thumb"></i>Sketch</span>
+                    <span><i class="thumb"></i>Background</span>
+                  </div>
                 </div>
               </div>
             </article>
