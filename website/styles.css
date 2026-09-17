@@ -1115,7 +1115,8 @@ svg use {
 }
 
 .feature-voice,
-.feature-canvas {
+.feature-canvas,
+.feature-ai {
   grid-column: 1 / -1;
   display: grid;
   grid-template-columns: 0.8fr 1.2fr;
@@ -1708,6 +1709,133 @@ svg use {
   height: 16px;
   background: #fff;
   border-radius: 3px;
+}
+
+/* AI방 그림 — 실제 앱 AI방(같이 보는 대화 · #참조 · 입력 중 표시)을 줄여서 옮긴 것 */
+.ai-visual {
+  overflow: hidden;
+  color: #dbdee1;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #313338;
+  border-radius: 14px;
+  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.25);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.ai-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 46px;
+  padding: 0 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.ai-head b {
+  color: #f2f3f5;
+}
+
+.ai-head span {
+  padding: 4px 9px;
+  background: #1e1f22;
+  border-radius: 6px;
+  font-size: 10px;
+}
+
+.ai-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px 16px;
+}
+
+.ai-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ai-msg small {
+  color: #949ba4;
+  font-size: 9px;
+}
+
+.ai-msg p {
+  max-width: 82%;
+  margin: 0;
+  padding: 9px 12px;
+  background: #383a40;
+  border-radius: 12px;
+}
+
+.ai-msg.user {
+  align-items: flex-end;
+}
+
+.ai-msg.user p {
+  color: #fff;
+  background: #5865f2;
+}
+
+.ai-msg em {
+  font-style: normal;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.ai-result {
+  display: block;
+  margin-top: 8px;
+  padding-left: 9px;
+  color: #949ba4;
+  border-left: 3px solid rgba(255, 255, 255, 0.12);
+}
+
+.ai-composer {
+  padding: 10px 16px 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.ai-draft,
+.ai-input span {
+  overflow: hidden;
+  color: #949ba4;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ai-draft {
+  margin-bottom: 6px;
+  font-size: 10px;
+}
+
+.ai-draft b {
+  color: #23a559;
+  font-weight: 600;
+}
+
+.ai-input {
+  display: flex;
+  gap: 8px;
+}
+
+.ai-input span,
+.ai-input b {
+  padding: 8px 12px;
+  border-radius: 8px;
+}
+
+.ai-input span {
+  flex: 1;
+  min-width: 0;
+  background: #1e1f22;
+}
+
+.ai-input b {
+  color: #fff;
+  background: #5865f2;
 }
 
 .workspace {
@@ -2310,13 +2438,15 @@ svg use {
   }
 
   .feature-voice,
-  .feature-canvas {
+  .feature-canvas,
+  .feature-ai {
     grid-template-columns: 1fr;
     gap: 38px;
   }
 
   .feature-voice .feature-copy,
-  .feature-canvas .feature-copy {
+  .feature-canvas .feature-copy,
+  .feature-ai .feature-copy {
     max-width: 650px;
   }
 
@@ -2445,7 +2575,8 @@ svg use {
   }
 
   .feature-voice,
-  .feature-canvas {
+  .feature-canvas,
+  .feature-ai {
     grid-column: auto;
   }
 

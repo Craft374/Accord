@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#080b16" />
     <meta
       name="description"
-      content="Accord는 저지연 통화, 화면 공유, 채팅, 마크다운 메모, 공동 그림판을 한곳에 담은 셀프 호스팅 협업 앱입니다."
+      content="Accord는 저지연 통화, 화면 공유, 채팅, 마크다운 메모, 공동 그림판, AI방을 한곳에 담은 셀프 호스팅 협업 앱입니다."
     />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Accord" />
@@ -91,6 +91,10 @@
       <symbol id="icon-caret" viewBox="0 0 24 24">
         <path d="m6 15 6-6 6 6" />
       </symbol>
+      <symbol id="icon-ai" viewBox="0 0 24 24">
+        <rect x="5" y="8" width="14" height="11" rx="3" />
+        <path d="M12 4v4M9.5 13h.01M14.5 13h.01" />
+      </symbol>
     </svg>
 
     <a class="skip-link" href="#main">본문으로 건너뛰기</a>
@@ -133,7 +137,7 @@
             <h1>대화와 작업이<br /><em>한곳에서 이어집니다.</em></h1>
             <p class="hero-lede">
               Accord는 저지연 음성 통화와 화면 공유에서 시작해 채팅, 마크다운 메모,
-              공동 창작 도구까지 한곳에 담은 협업 앱입니다.
+              공동 그림판, 함께 쓰는 AI방까지 한곳에 담은 협업 앱입니다.
             </p>
             <div class="hero-actions">
               <a class="button button-primary" href="https://github.com/Craft374/Accord" target="_blank" rel="noreferrer">
@@ -212,7 +216,8 @@
           <span><svg><use href="#icon-mic"></use></svg>VOICE</span><i></i>
           <span><svg><use href="#icon-chat"></use></svg>CHAT</span><i></i>
           <span><svg><use href="#icon-note"></use></svg>NOTE</span><i></i>
-          <span><svg><use href="#icon-brush"></use></svg>CANVAS</span>
+          <span><svg><use href="#icon-brush"></use></svg>CANVAS</span><i></i>
+          <span><svg><use href="#icon-ai"></use></svg>AI</span>
         </div>
       </section>
 
@@ -302,6 +307,26 @@
                 </div>
               </div>
             </article>
+
+            <article class="feature-card feature-ai reveal">
+              <div class="feature-copy compact">
+                <span class="feature-index">05 · AI</span>
+                <h3>팀이 같이 쓰는 AI방</h3>
+                <p>방 안의 AI 대화를 모두가 같이 봅니다. 질문에 #회의록처럼 방을 붙이면 그 메모장이나 채팅을 읽고 답하고, 부탁하면 메모장을 직접 고치거나 이어 씁니다.</p>
+                <ul class="feature-tags"><li>#방 참조</li><li>메모장 직접 수정</li><li>방별 메모리·파일</li><li>그림 생성</li></ul>
+              </div>
+              <div class="ai-visual" aria-hidden="true">
+                <div class="ai-head"><b>🤖 AI방</b><span>Gemini</span></div>
+                <div class="ai-messages">
+                  <div class="ai-msg user"><small>지민</small><p><em>#회의록</em> 오늘 정한 것만 추려서 맨 아래에 붙여줘</p></div>
+                  <div class="ai-msg"><small>AI</small><p>회의록에서 오늘 정한 내용 세 가지를 덧붙였습니다.<br />1. 출시일은 다음 주 목요일<br />2. 로그인 화면 문구 수정<br />3. 버그 제보는 이슈로 받기<span class="ai-result">✅ #회의록 메모장을 이어썼습니다.</span></p></div>
+                </div>
+                <div class="ai-composer">
+                  <div class="ai-draft"><b>정우 입력 중</b>: 출시 전에 확인할 것도 정리해 줄래?</div>
+                  <div class="ai-input"><span>무엇이든 물어보세요 · #로 방 참조 · 결과는 전원 공유</span><b>보내기</b></div>
+                </div>
+              </div>
+            </article>
           </div>
         </div>
       </section>
@@ -312,7 +337,7 @@
             <p class="section-kicker">ROOMS THAT FIT THE MOMENT</p>
             <h2>방을 바꾸면,<br />도구가 바뀝니다.</h2>
             <p>
-              하나의 채널 안에 통화방, 채팅방, 메모장, 그림판, 전역 로그를 원하는 만큼 구성하세요.
+              하나의 채널 안에 통화방, 채팅방, 메모장, 그림판, AI방, 전역 로그를 원하는 만큼 구성하세요.
               팀의 대화와 결과물이 같은 맥락 안에 남습니다.
             </p>
             <div class="workspace-points">
@@ -342,6 +367,11 @@
               <span class="room-card-icon"><svg><use href="#icon-brush"></use></svg></span>
               <div><small>CANVAS ROOM</small><h3>비주얼 워크숍</h3><p>레이어 · 이미지 붙여넣기 · PNG 저장</p></div>
               <span class="layer-count">3 layers</span>
+            </article>
+            <article class="room-card room-ai">
+              <span class="room-card-icon"><svg><use href="#icon-ai"></use></svg></span>
+              <div><small>AI ROOM</small><h3>같이 쓰는 AI</h3><p>Gemini · #방 참조 · 메모장 수정</p></div>
+              <span class="editing"><i></i> 답변 중</span>
             </article>
           </div>
         </div>

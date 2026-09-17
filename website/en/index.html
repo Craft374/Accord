@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#080b16" />
     <meta
       name="description"
-      content="Accord is a self-hosted collaboration app that combines low-latency voice calls, screen sharing, chat, collaborative markdown notes and a shared canvas. Open source, runs on Node.js 18+."
+      content="Accord is a self-hosted collaboration app that combines low-latency voice calls, screen sharing, chat, collaborative markdown notes, a shared canvas and a shared AI room. Open source, runs on Node.js 18+."
     />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Accord" />
@@ -94,6 +94,10 @@
       <symbol id="icon-caret" viewBox="0 0 24 24">
         <path d="m6 15 6-6 6 6" />
       </symbol>
+      <symbol id="icon-ai" viewBox="0 0 24 24">
+        <rect x="5" y="8" width="14" height="11" rx="3" />
+        <path d="M12 4v4M9.5 13h.01M14.5 13h.01" />
+      </symbol>
     </svg>
 
     <a class="skip-link" href="#main">Skip to content</a>
@@ -136,7 +140,7 @@
             <h1>Talk, write and build<br /><em>without switching apps.</em></h1>
             <p class="hero-lede">
               Accord starts with low-latency voice and screen sharing, then keeps going —
-              chat, collaborative markdown notes and a shared canvas, all in one self-hosted app.
+              chat, collaborative markdown notes, a shared canvas and an AI room the team uses together, all in one self-hosted app.
             </p>
             <div class="hero-actions">
               <a class="button button-primary" href="https://github.com/Craft374/Accord" target="_blank" rel="noreferrer">
@@ -215,7 +219,8 @@
           <span><svg><use href="#icon-mic"></use></svg>VOICE</span><i></i>
           <span><svg><use href="#icon-chat"></use></svg>CHAT</span><i></i>
           <span><svg><use href="#icon-note"></use></svg>NOTE</span><i></i>
-          <span><svg><use href="#icon-brush"></use></svg>CANVAS</span>
+          <span><svg><use href="#icon-brush"></use></svg>CANVAS</span><i></i>
+          <span><svg><use href="#icon-ai"></use></svg>AI</span>
         </div>
       </section>
 
@@ -305,6 +310,26 @@
                 </div>
               </div>
             </article>
+
+            <article class="feature-card feature-ai reveal">
+              <div class="feature-copy compact">
+                <span class="feature-index">05 · AI</span>
+                <h3>An AI room the whole team shares</h3>
+                <p>Everyone in the room sees the same AI conversation. Add a room like #meeting-notes to a question and it reads that note or chat before answering — and edits or appends to the note when you ask.</p>
+                <ul class="feature-tags"><li>#room references</li><li>Edits notes directly</li><li>Per-room memory & files</li><li>Image generation</li></ul>
+              </div>
+              <div class="ai-visual" aria-hidden="true">
+                <div class="ai-head"><b>🤖 AI room</b><span>Gemini</span></div>
+                <div class="ai-messages">
+                  <div class="ai-msg user"><small>Mina</small><p><em>#meeting-notes</em> pull out what we decided today and add it at the bottom</p></div>
+                  <div class="ai-msg"><small>AI</small><p>I added the three decisions from today.<br />1. Release next Thursday<br />2. Reword the login screen<br />3. Take bug reports as issues<span class="ai-result">✅ Appended to the #meeting-notes note.</span></p></div>
+                </div>
+                <div class="ai-composer">
+                  <div class="ai-draft"><b>Alex is typing</b>: can you also list what to check before release?</div>
+                  <div class="ai-input"><span>Ask anything · # to reference a room · everyone sees the answer</span><b>Send</b></div>
+                </div>
+              </div>
+            </article>
           </div>
         </div>
       </section>
@@ -315,7 +340,7 @@
             <p class="section-kicker">ROOMS THAT FIT THE MOMENT</p>
             <h2>Change the room,<br />change the tool.</h2>
             <p>
-              Build as many voice rooms, chat rooms, notepads, canvases and activity logs as you want inside a single channel.
+              Build as many voice rooms, chat rooms, notepads, canvases, AI rooms and activity logs as you want inside a single channel.
               Your conversations and your output stay in the same context.
             </p>
             <div class="workspace-points">
@@ -345,6 +370,11 @@
               <span class="room-card-icon"><svg><use href="#icon-brush"></use></svg></span>
               <div><small>CANVAS ROOM</small><h3>Visual workshop</h3><p>Layers · Paste images · Save as PNG</p></div>
               <span class="layer-count">3 layers</span>
+            </article>
+            <article class="room-card room-ai">
+              <span class="room-card-icon"><svg><use href="#icon-ai"></use></svg></span>
+              <div><small>AI ROOM</small><h3>Shared AI</h3><p>Gemini · #room references · Edits notes</p></div>
+              <span class="editing"><i></i> Answering</span>
             </article>
           </div>
         </div>
