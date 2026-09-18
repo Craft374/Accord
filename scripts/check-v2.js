@@ -558,6 +558,12 @@ const reviews = [
     /function updateAiRefMenu\(\) \{(?![\s\S]*?\.slice\(0, \d+\)[\s\S]*?\nfunction renderAiRefMenu)[\s\S]*?\nfunction renderAiRefMenu\(\) \{[\s\S]*?scrollIntoView\(\{ block: "nearest" \}\)/.test(app),
     "AI방 #참조 메뉴는 방 개수를 자르지 않고 선택 항목을 스크롤해 보여준다",
   ],
+  [
+    // 홈페이지 링크는 versionLabel 의 형제여야 한다 — 자식으로 넣으면 JS 의 textContent 대입에 지워진다.
+    /<p class="eyebrow" id="versionLabel">[^<]*<\/p>\s*<a class="eyebrow-link" href="https:\/\/accord\.kro\.kr\//.test(html)
+      && css.includes(".eyebrow-link"),
+    "official homepage link sits beside the version label, not inside it",
+  ],
 ];
 
 for (const [ok, label] of reviews) {
