@@ -1953,6 +1953,14 @@ const AI_ATTACH_TEXT_MAX = 8000; // 첨부 텍스트 파일에서 프롬프트�
 // 모델이 참조된 방을 고칠 때 쓰는 지시 블록: ```accord:<memo|memo-append|chat> #방이름 \n 내용 ```
 // 방 이름에 공백이 있을 수 있으므로 줄 끝까지 받고, refMap 키와 앞머리 매칭으로 실제 이름을 가려낸다.
 const AI_ACTION_RE = /```accord:(memo|memo-append|chat)[ \t]+#([^#`\n]{1,40})[^\n]*\n([\s\S]*?)```/g;
+const AI_ECHO_LINES = 12; // 적용한 내용을 채팅에 그대로 남길 줄 수 상한(문서 전체 교체면 통째로 쏟아지므로 자른다)
+
+// 지시 블록을 지우기만 하면 "다음 내용을 추가했습니다." 뒤가 비어 답변이 잘린 것처럼 보인다.
+// 실제로 쓴 내용을 그 자리에 남겨서 방 사람들이 무엇이 들어갔는지 바로 본다.
+function echoAiBody(body) {
+  const lines = String(body).split("\n");
+  return lines.length > AI_ECHO_LINES ? `${lines.slice(0, AI_ECHO_LINES).join("\n")}\n…` : body;
+}
 
 // 게스트(체험 계정)는 방 전원이 쓰는 대화·메모리·설정·방 파일을 지우거나 바꿀 수 없다(보내기·새 대화는 가능).
 const AI_GUEST_BLOCKED = new Set(["ai:delete", "ai:set-memory", "ai:set-settings", "ai:add-file", "ai:remove-file"]);
@@ -2265,8 +2273,9 @@ function applyAiActions(replyText, refMap, ctx, client) {
       }
     } catch (e) {
       notes.push(`⚠️ #${target.room.name}: 적용 실패 (${(e && e.message) || e})`);
+      return "";
     }
-    return "";
+    return echoAiBody(body);
   }).trim();
   return { display, notes };
 }
