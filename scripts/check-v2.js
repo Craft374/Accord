@@ -577,6 +577,12 @@ const reviews = [
       && server.includes('path.basename(filePath) === "index.html"');
   })(), "guest login button is unhidden while serving index.html (no websocket wait)"],
   [
+    // 홈페이지 링크는 versionLabel 의 형제여야 한다 — 자식으로 넣으면 JS 의 textContent 대입에 지워진다.
+    /<p class="eyebrow" id="versionLabel">[^<]*<\/p>\s*<a class="eyebrow-link" href="https:\/\/accord\.kro\.kr\//.test(html)
+      && css.includes(".eyebrow-link"),
+    "official homepage link sits beside the version label, not inside it",
+  ],
+  [
     /AI_GUEST_BLOCKED = new Set\(\[[^\]]*"ai:delete"[^\]]*"ai:set-memory"/.test(server)
       && server.includes("client.isGuest && AI_GUEST_BLOCKED.has(message.type)"),
     "guests cannot delete or overwrite shared AI room state",
