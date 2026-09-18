@@ -569,6 +569,13 @@ const reviews = [
       && app.includes("dom.guestLoginButton.hidden = !message.guest") && server.includes("guest: Boolean(GUEST_INVITE_CODE)"),
     "guest login button shows only when the server sets GUEST_INVITE_CODE",
   ],
+  [(() => {
+    // 게스트 버튼을 index.html 에서 바로 켜는 치환. 마크업이 바뀌어 문자열이 어긋나면 조용히 무효가 되므로 묶어둔다.
+    const hidden = server.match(/const GUEST_BUTTON_HIDDEN = '([^']+)';/);
+    const shown = server.match(/const GUEST_BUTTON_SHOWN = '([^']+)';/);
+    return Boolean(hidden && shown) && html.includes(hidden[1]) && !html.includes(shown[1])
+      && server.includes('path.basename(filePath) === "index.html"');
+  })(), "guest login button is unhidden while serving index.html (no websocket wait)"],
   [
     /AI_GUEST_BLOCKED = new Set\(\[[^\]]*"ai:delete"[^\]]*"ai:set-memory"/.test(server)
       && server.includes("client.isGuest && AI_GUEST_BLOCKED.has(message.type)"),

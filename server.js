@@ -25,6 +25,9 @@ const REQUIRE_HTTPS = process.env.VOICE_CHAT_REQUIRE_HTTPS === "1" || process.en
 const TRUST_PROXY = process.env.TRUST_PROXY === "1";
 // 게스트 체험: 로그인 화면 버튼으로 1회용 계정을 만들어 이 초대 코드의 채널에 넣는다. 비우면 버튼이 안 보인다.
 const GUEST_INVITE_CODE = String(process.env.GUEST_INVITE_CODE || "").trim();
+// index.html 을 내보낼 때 이 한 곳만 바꿔서 게스트 버튼을 첫 화면부터 보이게 한다(public/index.html 과 문자열이 같아야 한다).
+const GUEST_BUTTON_HIDDEN = '<button class="secondary" id="guestLoginButton" type="button" hidden>';
+const GUEST_BUTTON_SHOWN = '<button class="secondary" id="guestLoginButton" type="button">';
 const MAX_ROOM_LIMIT = 8;
 const PUBLIC_DIR = path.join(__dirname, "public");
 
@@ -271,11 +274,17 @@ function handleRequest(req, res) {
       return;
     }
 
+    // 게스트 버튼을 hello 메시지로만 켜면 app.js 내려받기 + WebSocket 핸드셰이크가 끝나야 보인다.
+    // index.html 을 내보낼 때 hidden 을 떼어 첫 화면부터 보이게 한다(app.js 가 나중에 다시 켜도 같은 값).
+    const body = GUEST_INVITE_CODE && path.basename(filePath) === "index.html"
+      ? Buffer.from(data.toString("utf8").replace(GUEST_BUTTON_HIDDEN, GUEST_BUTTON_SHOWN), "utf8")
+      : data;
+
     sendCors(res, 200, {
       "content-type": getContentType(filePath),
       "cache-control": "no-store, max-age=0",
     });
-    res.end(data);
+    res.end(body);
   });
 }
 
