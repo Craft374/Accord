@@ -261,20 +261,23 @@ body.in-call .app {
   gap: 10px;
 }
 
+/* 눈에 띄라고 알약 버튼 모양 — 옆의 버전 표시(.eyebrow)보다 커야 한다. */
 .eyebrow-link {
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 11px;
+  border-radius: 999px;
+  background: var(--blurple);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
   text-decoration: none;
   white-space: nowrap;
-  opacity: 0.75;
 }
 
 .eyebrow-link:hover {
-  color: var(--text);
-  opacity: 1;
-  text-decoration: underline;
+  background: var(--blurple-strong);
 }
 
 .status {
