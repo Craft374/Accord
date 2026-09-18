@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#080b16" />
     <meta
       name="description"
-      content="Accord는 저지연 통화, 화면 공유, 채팅, 마크다운 메모, 공동 그림판을 한곳에 담은 셀프 호스팅 협업 앱입니다."
+      content="Accord는 저지연 통화, 화면 공유, 채팅, 마크다운 메모, 공동 그림판, AI방을 한곳에 담은 셀프 호스팅 협업 앱입니다."
     />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Accord" />
@@ -79,6 +79,22 @@
       <symbol id="icon-activity" viewBox="0 0 24 24">
         <path d="M3 12h4l3-9 4 18 3-9h4" />
       </symbol>
+      <symbol id="icon-sound" viewBox="0 0 24 24">
+        <path d="M4 9h4l5-5v16l-5-5H4zM17 8a5 5 0 0 1 0 8M19.5 5.5a9 9 0 0 1 0 13" />
+      </symbol>
+      <symbol id="icon-bars" viewBox="0 0 24 24">
+        <path d="M4 14v-4M8 17V7M12 20V4M16 17V7M20 14v-4" />
+      </symbol>
+      <symbol id="icon-hangup" viewBox="0 0 24 24">
+        <path d="M3.5 9.5a16 16 0 0 1 17 0v3.2c0 .9-.7 1.6-1.6 1.6h-2.3c-.8 0-1.5-.6-1.6-1.4l-.2-1.4a12 12 0 0 0-5.6 0l-.2 1.4c-.1.8-.8 1.4-1.6 1.4H5.1c-.9 0-1.6-.7-1.6-1.6z" />
+      </symbol>
+      <symbol id="icon-caret" viewBox="0 0 24 24">
+        <path d="m6 15 6-6 6 6" />
+      </symbol>
+      <symbol id="icon-ai" viewBox="0 0 24 24">
+        <rect x="5" y="8" width="14" height="11" rx="3" />
+        <path d="M12 4v4M9.5 13h.01M14.5 13h.01" />
+      </symbol>
     </svg>
 
     <a class="skip-link" href="#main">본문으로 건너뛰기</a>
@@ -121,7 +137,7 @@
             <h1>대화와 작업이<br /><em>한곳에서 이어집니다.</em></h1>
             <p class="hero-lede">
               Accord는 저지연 음성 통화와 화면 공유에서 시작해 채팅, 마크다운 메모,
-              공동 창작 도구까지 한곳에 담은 협업 앱입니다.
+              공동 그림판, 함께 쓰는 AI방까지 한곳에 담은 협업 앱입니다.
             </p>
             <div class="hero-actions">
               <a class="button button-primary" href="https://github.com/Craft374/Accord" target="_blank" rel="noreferrer">
@@ -142,55 +158,51 @@
             <div class="hero-product-inner">
               <div class="product-glow" aria-hidden="true"></div>
               <div class="app-window">
-              <div class="window-bar">
-                <div class="window-dots"><span></span><span></span><span></span></div>
-                <div class="window-title"><span class="window-mark">A</span> Accord</div>
-                <div class="window-state"><span></span> 연결됨</div>
-              </div>
-              <div class="app-body">
-                <div class="server-rail" aria-hidden="true">
-                  <span class="server-logo">A</span>
-                  <span class="server-icon active">P</span>
-                  <span class="server-icon">D</span>
-                  <span class="server-icon add">+</span>
+                <div class="app-top">
+                  <img src="icon.svg" alt="" width="24" height="24" />
+                  <div class="app-top-title"><small>Accord</small><b>통화방</b></div>
+                  <span class="app-top-btn">설정</span>
+                  <span class="app-status"><i></i>연결됨</span>
                 </div>
-                <div class="room-sidebar">
-                  <div class="workspace-name">Project Aria <span>⌄</span></div>
-                  <p class="room-label">VOICE</p>
-                  <div class="room-row active"><svg><use href="#icon-mic"></use></svg>라운지</div>
-                  <div class="voice-user"><span class="avatar mint">J</span><span>jeongwoo</span><i></i></div>
-                  <div class="voice-user"><span class="avatar purple">M</span><span>min</span><i></i></div>
-                  <p class="room-label">WORKSPACE</p>
-                  <div class="room-row"><svg><use href="#icon-chat"></use></svg>general</div>
-                  <div class="room-row"><svg><use href="#icon-note"></use></svg>회의 노트</div>
-                  <div class="room-row"><svg><use href="#icon-brush"></use></svg>아이디어 보드</div>
-                  <div class="sidebar-profile"><span class="avatar mint">J</span><b>jeongwoo</b><span class="mic-dot"></span></div>
-                </div>
-                <div class="call-stage">
-                  <div class="stage-head">
-                    <div><b>라운지</b><span>2명이 함께하는 중</span></div>
-                    <span class="live-pill"><i></i> LIVE</span>
+                <div class="app-body">
+                  <div class="app-rail">
+                    <span class="rail-icon active">P</span>
+                    <span class="rail-icon">D</span>
+                    <span class="rail-icon add">+</span>
                   </div>
-                  <div class="screen-card">
-                    <div class="screen-toolbar"><span></span><span></span><span></span><b>화면 공유</b></div>
-                    <div class="screen-code">
-                      <span><i class="code-purple">const</i> workspace = <i class="code-mint">"Accord"</i>;</span>
-                      <span><i class="code-purple">await</i> team.<i class="code-blue">create</i>({</span>
-                      <span>&nbsp;&nbsp;voice: <i class="code-orange">true</i>,</span>
-                      <span>&nbsp;&nbsp;notes: <i class="code-orange">true</i>,</span>
-                      <span>&nbsp;&nbsp;canvas: <i class="code-orange">true</i></span>
-                      <span>});</span>
+                  <div class="app-rooms">
+                    <div class="app-rooms-head">프로젝트 A<span>⋯</span></div>
+                    <div class="app-room active"><span>🔊</span>라운지<em>여기</em></div>
+                    <div class="app-room-user"><i>지</i>지민</div>
+                    <div class="app-room-user"><i>정</i>정우</div>
+                    <div class="app-room"><span>#</span>잡담</div>
+                    <div class="app-room"><span>📝</span>회의록</div>
+                    <div class="app-room"><span>🎨</span>아이디어 보드</div>
+                    <div class="app-room"><span>🤖</span>AI방</div>
+                  </div>
+                  <div class="app-call">
+                    <div class="app-call-head"><b>라운지</b><i>|</i><span>2/8명 · 통화 12:04</span></div>
+                    <div class="app-cards">
+                      <div class="app-card">
+                        <div class="app-card-head"><i>지</i><div><b>지민</b><small>마이크+컴퓨터</small></div></div>
+                        <div class="app-meter"><small>마이크</small><span style="--level: 68%"></span></div>
+                        <div class="app-meter"><small>컴퓨터</small><span style="--level: 34%"></span></div>
+                      </div>
+                      <div class="app-card">
+                        <div class="app-card-head"><i>정</i><div><b>정우</b><small>연결됨</small></div><em>화면 보기</em></div>
+                        <div class="app-meter"><small>마이크</small><span style="--level: 14%"></span></div>
+                        <div class="app-meter"><small>컴퓨터</small><span style="--level: 0%"></span></div>
+                      </div>
                     </div>
-                    <div class="screen-share-tag"><svg><use href="#icon-screen"></use></svg>1080p · 30fps</div>
-                  </div>
-                  <div class="participant-row">
-                    <div class="participant"><span class="avatar mint">J</span><span class="talk-ring"></span><b>jeongwoo</b></div>
-                    <div class="participant"><span class="avatar purple">M</span><b>min</b></div>
-                  </div>
-                  <div class="call-controls">
-                    <button type="button" aria-label="마이크"><svg><use href="#icon-mic"></use></svg></button>
-                    <button type="button" aria-label="화면 공유"><svg><use href="#icon-screen"></use></svg></button>
-                    <button class="hangup" type="button" aria-label="통화 종료">×</button>
+                    <div class="app-dock">
+                      <span class="dock-pill"><span class="dock-btn"><svg><use href="#icon-mic"></use></svg></span></span>
+                      <span class="dock-pill"><span class="dock-btn"><svg><use href="#icon-sound"></use></svg></span><span class="dock-caret"><svg><use href="#icon-caret"></use></svg></span></span>
+                      <i class="dock-div"></i>
+                      <span class="dock-pill"><span class="dock-btn"><svg><use href="#icon-screen"></use></svg></span><span class="dock-caret"><svg><use href="#icon-caret"></use></svg></span></span>
+                      <i class="dock-div"></i>
+                      <span class="dock-pill"><span class="dock-btn"><svg><use href="#icon-bars"></use></svg></span></span>
+                      <span class="dock-leave"><svg><use href="#icon-hangup"></use></svg>나가기</span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -204,7 +216,8 @@
           <span><svg><use href="#icon-mic"></use></svg>VOICE</span><i></i>
           <span><svg><use href="#icon-chat"></use></svg>CHAT</span><i></i>
           <span><svg><use href="#icon-note"></use></svg>NOTE</span><i></i>
-          <span><svg><use href="#icon-brush"></use></svg>CANVAS</span>
+          <span><svg><use href="#icon-brush"></use></svg>CANVAS</span><i></i>
+          <span><svg><use href="#icon-ai"></use></svg>AI</span>
         </div>
       </section>
 
@@ -269,17 +282,48 @@
                 <p>펜, 지우개, 채우기, 이미지 붙여넣기와 레이어를 갖춘 공동 그림판에서 함께 그립니다.</p>
               </div>
               <div class="canvas-visual" aria-hidden="true">
-                <div class="canvas-toolbar"><b>아이디어 보드</b><span class="tool active">⌁</span><span class="tool">◇</span><span class="tool">✥</span><i class="color-dot"></i><small>4 px</small></div>
+                <div class="canvas-toolbar">
+                  <b>🎨 아이디어 보드</b>
+                  <span class="tool-group"><span class="tool active">✏️</span><span class="tool">🧽</span><span class="tool">🪣</span><span class="tool">✥</span></span>
+                  <i class="color-dot"></i>
+                  <span class="size-range"><i></i>4</span>
+                  <span class="tool-group"><span class="tool">↶</span><span class="tool">↷</span></span>
+                  <span class="tool-group zoom-group"><span class="tool">－</span><span class="tool">100%</span><span class="tool">＋</span></span>
+                </div>
                 <div class="canvas-board">
-                  <svg viewBox="0 0 440 210">
-                    <defs><pattern id="dots" width="16" height="16" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" fill="#c7cbe2" opacity=".4" /></pattern></defs>
-                    <rect width="440" height="210" fill="url(#dots)" />
-                    <path class="board-path one" d="M42 143C87 33 163 38 207 116s105 49 180-45" />
-                    <path class="board-path two" d="m83 67 48-25 41 39" />
-                    <circle class="board-circle" cx="310" cy="99" r="42" />
-                    <text x="270" y="104">ACCORD</text>
-                  </svg>
-                  <div class="canvas-layers"><b>레이어</b><span><i class="thumb mint-bg"></i>메모</span><span><i class="thumb purple-bg"></i>스케치</span><span><i class="thumb white-bg"></i>배경</span></div>
+                  <div class="canvas-stage">
+                    <svg viewBox="0 0 400 250">
+                      <path class="ink" d="M48 40c90-3 190-2 300 1M47 40c-2 55-1 115 2 170M348 41c2 56 1 112-1 168M49 210c100 2 200 1 298-1" />
+                      <path class="ink" d="M50 72c95 1 200 0 296 1M136 108h140M136 128h96M76 166c60 1 150 0 240-1M76 186c50 0 110 1 170 0" />
+                      <circle class="ink-blue" cx="96" cy="118" r="22" />
+                      <path class="ink-red" d="M292 94c30 4 46 24 40 52M320 136l12 11 11-14" />
+                    </svg>
+                  </div>
+                  <div class="canvas-layers">
+                    <b>레이어<span>＋</span></b>
+                    <span class="active"><i class="thumb"></i>스케치</span>
+                    <span><i class="thumb"></i>배경</span>
+                  </div>
+                </div>
+              </div>
+            </article>
+
+            <article class="feature-card feature-ai reveal">
+              <div class="feature-copy compact">
+                <span class="feature-index">05 · AI</span>
+                <h3>팀이 같이 쓰는 AI방</h3>
+                <p>방 안의 AI 대화를 모두가 같이 봅니다. 질문에 #회의록처럼 방을 붙이면 그 메모장이나 채팅을 읽고 답하고, 부탁하면 메모장을 직접 고치거나 이어 씁니다.</p>
+                <ul class="feature-tags"><li>#방 참조</li><li>메모장 직접 수정</li><li>방별 메모리·파일</li><li>그림 생성</li></ul>
+              </div>
+              <div class="ai-visual" aria-hidden="true">
+                <div class="ai-head"><b>🤖 AI방</b><span>Gemini</span></div>
+                <div class="ai-messages">
+                  <div class="ai-msg user"><small>지민</small><p><em>#회의록</em> 오늘 정한 것만 추려서 맨 아래에 붙여줘</p></div>
+                  <div class="ai-msg"><small>AI</small><p>회의록에서 오늘 정한 내용 세 가지를 덧붙였습니다.<br />1. 출시일은 다음 주 목요일<br />2. 로그인 화면 문구 수정<br />3. 버그 제보는 이슈로 받기<span class="ai-result">✅ #회의록 메모장을 이어썼습니다.</span></p></div>
+                </div>
+                <div class="ai-composer">
+                  <div class="ai-draft"><b>정우 입력 중</b>: 출시 전에 확인할 것도 정리해 줄래?</div>
+                  <div class="ai-input"><span>무엇이든 물어보세요 · #로 방 참조 · 결과는 전원 공유</span><b>보내기</b></div>
                 </div>
               </div>
             </article>
@@ -293,7 +337,7 @@
             <p class="section-kicker">ROOMS THAT FIT THE MOMENT</p>
             <h2>방을 바꾸면,<br />도구가 바뀝니다.</h2>
             <p>
-              하나의 채널 안에 통화방, 채팅방, 메모장, 그림판, 전역 로그를 원하는 만큼 구성하세요.
+              하나의 채널 안에 통화방, 채팅방, 메모장, 그림판, AI방, 전역 로그를 원하는 만큼 구성하세요.
               팀의 대화와 결과물이 같은 맥락 안에 남습니다.
             </p>
             <div class="workspace-points">
@@ -323,6 +367,11 @@
               <span class="room-card-icon"><svg><use href="#icon-brush"></use></svg></span>
               <div><small>CANVAS ROOM</small><h3>비주얼 워크숍</h3><p>레이어 · 이미지 붙여넣기 · PNG 저장</p></div>
               <span class="layer-count">3 layers</span>
+            </article>
+            <article class="room-card room-ai">
+              <span class="room-card-icon"><svg><use href="#icon-ai"></use></svg></span>
+              <div><small>AI ROOM</small><h3>같이 쓰는 AI</h3><p>Gemini · #방 참조 · 메모장 수정</p></div>
+              <span class="editing"><i></i> 답변 중</span>
             </article>
           </div>
         </div>
