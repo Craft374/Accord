@@ -492,6 +492,9 @@
             <div class="ai-head-controls">
               <select id="aiModelSelect" aria-label="AI 모델" title="모델"></select>
               <select id="aiThinkingSelect" aria-label="생각 수준" title="생각 수준"></select>
+              <label class="ai-ref-scope-toggle" title="켜면 이 AI방이 속한 그룹 안의 방만 #로 참조됩니다">
+                <input type="checkbox" id="aiRefScopeToggle" /> #참조 그룹 안으로 제한
+              </label>
             </div>
             <button class="focus-btn" id="aiMemoryButton" type="button" title="이 AI방 메모리" aria-label="이 AI방 메모리" aria-pressed="false">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a9 9 0 0 0-9 9c0 4 3 7 5 8v-3M12 3a9 9 0 0 1 9 9c0 4-3 7-5 8v-3M9 21h6"/></svg>

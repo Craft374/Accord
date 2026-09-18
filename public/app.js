@@ -582,6 +582,7 @@ const dom = {
   aiSubtitle: document.querySelector("#aiSubtitle"),
   aiModelSelect: document.querySelector("#aiModelSelect"),
   aiThinkingSelect: document.querySelector("#aiThinkingSelect"),
+  aiRefScopeToggle: document.querySelector("#aiRefScopeToggle"),
   aiMemoryButton: document.querySelector("#aiMemoryButton"),
   aiHistoryButton: document.querySelector("#aiHistoryButton"),
   aiNewButton: document.querySelector("#aiNewButton"),
@@ -9381,7 +9382,7 @@ function applyAiState(msg) {
 
 function renderAiControls() {
   if (!state.ai || !dom.aiModelSelect || !dom.aiThinkingSelect) return;
-  const st = state.ai.settings || { model: "", thinking: "auto" };
+  const st = state.ai.settings || { model: "", thinking: "auto", refScope: true };
   const chDefault = state.ai.config?.model || "?";
   dom.aiModelSelect.innerHTML = "";
   for (const [v, l] of AI_MODEL_CHOICES) dom.aiModelSelect.append(new Option(v ? l : `모델: 채널 기본 (${chDefault})`, v, false, v === st.model));
@@ -9398,6 +9399,10 @@ function renderAiControls() {
   const thinkable = /2\.5/.test(eff) && !/image/i.test(eff);
   dom.aiThinkingSelect.disabled = ro || !thinkable;
   dom.aiThinkingSelect.title = thinkable ? "생각 수준" : "이 모델은 생각 수준 조절을 지원하지 않습니다";
+  if (dom.aiRefScopeToggle) {
+    dom.aiRefScopeToggle.checked = st.refScope !== false;
+    dom.aiRefScopeToggle.disabled = ro;
+  }
 }
 
 function renderAiSessions() {
@@ -9740,7 +9745,7 @@ function renderAiDrafts() {
 }
 
 // ----- #방이름 자동완성: 같은 채널의 메모장·채팅방을 골라 넣는다(서버가 canAccessRoom 재확인) -----
-// 서버는 /#[^\s#]{1,40}/ 로 토큰을 뽑고 방 이름과 정확히(대소문자 무시) 매칭하므로, 공백/# 없는 이름만 제시한다.
+// 서버는 아는 방 이름을 #뒤 문자열 앞머리와 대조하므로 공백 있는 이름도 된다. #이 든 이름만 제외(accord: 블록 문법과 충돌).
 const aiRefState = { items: [], index: 0, start: -1, end: -1 };
 
 function closeAiRefMenu() {
@@ -9751,21 +9756,45 @@ function closeAiRefMenu() {
   if (dom.aiRefMenu) { dom.aiRefMenu.hidden = true; dom.aiRefMenu.innerHTML = ""; }
 }
 
+// groupId 가 속한 최상위(맨 바깥) 그룹 id. 그룹 밖(채널 루트)이면 "". server.js topRoomGroupId 와 동일 규칙.
+function topRoomGroupId(channel, groupId) {
+  const groups = channel?.roomGroups || [];
+  const byId = new Map(groups.map((g) => [g.id, g]));
+  const seen = new Set();
+  let cur = String(groupId || "");
+  while (cur) {
+    if (seen.has(cur)) return "";
+    seen.add(cur);
+    const g = byId.get(cur);
+    if (!g) return "";
+    const parent = String(g.parentGroupId || "");
+    if (!parent) return cur;
+    cur = parent;
+  }
+  return "";
+}
+
 function updateAiRefMenu() {
   const input = dom.aiInput;
   const menu = dom.aiRefMenu;
-  if (!input || !menu || input.disabled || !state.ai || state.ai.composing) { closeAiRefMenu(); return; }
+  // composing 중에도 목록은 계속 갱신한다 — 여기서 닫으면 한글 입력 중(글자 조합 중) 메뉴가 깜빡이며 사라진다.
+  // Enter/Tab으로 실제 삽입하는 쪽(handleAiRefKeydown)에서만 composing 을 막으면 충분하다.
+  if (!input || !menu || input.disabled || !state.ai) { closeAiRefMenu(); return; }
   const caret = input.selectionStart ?? input.value.length;
   if (caret !== (input.selectionEnd ?? caret)) { closeAiRefMenu(); return; }
-  const match = input.value.slice(0, caret).match(/(?:^|\s)#([^\s#]{0,40})$/u);
+  // 공백 있는 방 이름을 이어 칠 수 있게 줄 끝까지 받는다(매칭되는 방이 없으면 아래에서 메뉴가 닫힌다).
+  const match = input.value.slice(0, caret).match(/(?:^|\s)#([^#\n]{0,40})$/u);
   if (!match) { closeAiRefMenu(); return; }
   const query = (match[1] || "").toLocaleLowerCase("ko");
   const channel = state.channels.find((c) => c.id === state.ai.channelId);
+  const aiRoom = channel?.rooms?.find((r) => r.id === state.ai.roomId);
+  const scopeRoot = state.ai.settings?.refScope === false ? "" : topRoomGroupId(channel, aiRoom?.groupId);
   const rooms = (channel?.rooms || []).filter((r) => {
     if (r.type !== "memo" && r.type !== "chat") return false;
-    if (/[\s#]/.test(r.name || "")) return false; // 공백 있는 이름은 #참조가 안 됨
+    if (String(r.name || "").includes("#")) return false; // #이 든 이름은 참조 문법과 충돌
+    if (scopeRoot && topRoomGroupId(channel, r.groupId) !== scopeRoot) return false; // AI방이 그룹 안이면 그 그룹 밖 방은 제외
     return !query || String(r.name).toLocaleLowerCase("ko").includes(query);
-  }).slice(0, 8);
+  }); // 개수 제한 없음 — 메뉴가 스크롤된다(자르면 뒤쪽 방은 이름을 쳐야만 보였다)
   if (!rooms.length) { closeAiRefMenu(); return; }
   aiRefState.items = rooms;
   aiRefState.index = Math.min(aiRefState.index, rooms.length - 1);
@@ -9798,6 +9827,7 @@ function renderAiRefMenu() {
     menu.append(button);
   });
   menu.hidden = false;
+  menu.querySelector(".active")?.scrollIntoView({ block: "nearest" });
 }
 
 function insertAiRef(index = aiRefState.index) {
@@ -9891,6 +9921,9 @@ function bindAiEvents() {
   });
   dom.aiThinkingSelect?.addEventListener("change", () => {
     if (state.ai) sendSocket({ type: "ai:set-settings", roomId: state.ai.roomId, thinking: dom.aiThinkingSelect.value });
+  });
+  dom.aiRefScopeToggle?.addEventListener("change", () => {
+    if (state.ai) sendSocket({ type: "ai:set-settings", roomId: state.ai.roomId, refScope: dom.aiRefScopeToggle.checked });
   });
   dom.aiSessions?.addEventListener("click", (e) => {
     if (!state.ai) return;

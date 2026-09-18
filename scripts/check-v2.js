@@ -512,6 +512,52 @@ const reviews = [
         && out.includes("```accord:memo #방이름") && out.includes("```accord:chat #방이름");
     } catch { return false; }
   })(), "AI방 buildAiReferenceBlock injects referenced room content + edit-directive help (runtime)"],
+  [(() => {
+    // AI방: #방 참조는 아는 방 이름을 긴 것부터 대조한다 — 공백 있는 이름("자유 질문")·조사("회의록에")도 잡혀야 한다.
+    // scoped=true(방 설정 기본값)면 AI방이 속한 최상위 그룹(+하위 그룹) 밖의 동명이인 방은 후보에서 빠지고,
+    // scoped=false(설정에서 끔) 또는 AI방이 그룹 밖이면 채널 전체가 대상이어야 한다.
+    try {
+      const top = server.match(/function topRoomGroupId\(channel, groupId\) \{[\s\S]*?\n\}/);
+      const cands = server.match(/function aiRefCandidates\(ctx, scoped\) \{[\s\S]*?\n\}/);
+      const match = server.match(/function matchAiRefName\(str, cands\) \{[\s\S]*?\n\}/);
+      if (!top || !cands || !match) return false;
+      const fns = new Function(`${top[0]}\n${cands[0]}\n${match[0]}\nreturn { aiRefCandidates, matchAiRefName };`)();
+      const channel = {
+        roomGroups: [{ id: "g-ds" }, { id: "g-chat", parentGroupId: "g-ds" }, { id: "g-proj" }],
+        rooms: [
+          { id: "a", type: "chat", name: "자유 질문", groupId: "g-chat" }, // g-ds 그룹의 하위 그룹
+          { id: "b", type: "chat", name: "일반", groupId: "g-proj" },      // 다른 최상위 그룹
+          { id: "c", type: "chat", name: "일반 공지", groupId: "g-chat" },
+          { id: "d", type: "memo", name: "회의록", groupId: "g-proj" },
+          { id: "e", type: "voice", name: "스터디룸1", groupId: "g-ds" },
+          { id: "f", type: "memo", name: "  ", groupId: "g-ds" },
+        ],
+      };
+      const hit = (list, t) => { const h = fns.matchAiRefName(t, list); return h && h.room.name; };
+      // scoped on + AI방이 g-ds 그룹(최상위) 안: 하위 그룹(g-chat)의 방은 보이고, 다른 그룹(g-proj)의 방은 안 보인다.
+      const scoped = fns.aiRefCandidates({ channel, room: { groupId: "g-ds" } }, true);
+      const scopedOk = hit(scoped, "자유 질문 요약해줘") === "자유 질문" && hit(scoped, "일반 공지 봐줘") === "일반 공지"
+        && hit(scoped, "일반에 정리해") === null // g-proj 소속이라 범위 밖
+        && hit(scoped, "스터디룸1") === null && hit(scoped, "없는방") === null
+        && scoped.every((c) => c.key); // 빈 이름 방은 후보에서 빠진다(모든 #에 걸리는 사고 방지)
+      // scoped on + AI방이 그룹 밖(채널 루트)이면 범위 제한이 없다 — 기존 채널 전체 동작 유지.
+      const rootOk = hit(fns.aiRefCandidates({ channel, room: { groupId: "" } }, true), "일반에 정리해") === "일반";
+      // scoped off: AI방이 그룹 안에 있어도 방 설정에서 끄면 채널 전체가 대상.
+      const offOk = hit(fns.aiRefCandidates({ channel, room: { groupId: "g-ds" } }, false), "일반에 정리해") === "일반";
+      return scopedOk && rootOk && offOk;
+    } catch { return false; }
+  })(), "AI방 #참조가 공백 포함 방 이름을 해석하고, 설정에 따라 AI방이 속한 그룹으로 범위를 좁힌다 (runtime)"],
+  [
+    // ai:set-settings 핸들러가 refScope 를 store.setAiSettings 로 넘겨야 토글이 실제로 꺼진다.
+    // (한 번 이 줄만 있고 refScope 를 안 넘겨서 체크박스를 꺼도 서버가 무시하고 그대로 켜진 채 되돌아온 적 있음)
+    /store\.setAiSettings\(ctx\.room\.id, \{[^}]*refScope: message\.refScope[^}]*\}\)/.test(server),
+    "ai:set-settings passes refScope through to store.setAiSettings",
+  ],
+  [
+    // #참조 메뉴를 개수로 자르면 그룹 뒤쪽 방이 목록에서 사라진다(메뉴는 스크롤로 전부 보여준다).
+    /function updateAiRefMenu\(\) \{(?![\s\S]*?\.slice\(0, \d+\)[\s\S]*?\nfunction renderAiRefMenu)[\s\S]*?\nfunction renderAiRefMenu\(\) \{[\s\S]*?scrollIntoView\(\{ block: "nearest" \}\)/.test(app),
+    "AI방 #참조 메뉴는 방 개수를 자르지 않고 선택 항목을 스크롤해 보여준다",
+  ],
 ];
 
 for (const [ok, label] of reviews) {
