@@ -15,7 +15,7 @@ seedAdminAccount();
 // 서버 버전. 클라이언트(앱) 버전은 package.json 의 version 이며 따로 관리한다.
 // 규칙: 클라 코드가 바뀌면 서버가 그 코드를 배포하므로 서버·클라 둘 다 올리고,
 //       서버만 바뀌면 서버 버전만 올린다.
-const VERSION = "3.2.0";
+const VERSION = "3.2.1";
 const PORT = Number(process.env.PORT || 25565);
 const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_HOST = cleanHost(process.env.PUBLIC_HOST || "");
@@ -1914,6 +1914,14 @@ const AI_ATTACH_IMG_MAX = 4 * 1024 * 1024; // 이미지 첨부 원본 용량 상
 const AI_ATTACH_TEXT_MAX = 8000; // 첨부 텍스트 파일에서 프롬프트에 끼워 넣는 글자 수 상한
 // 모델이 참조된 방을 고칠 때 쓰는 지시 블록: ```accord:<memo|memo-append|chat> #방이름 \n 내용 ```
 const AI_ACTION_RE = /```accord:(memo|memo-append|chat)[ \t]+#([^\s#`]{1,40})[^\n]*\n([\s\S]*?)```/g;
+const AI_ECHO_LINES = 12; // 적용한 내용을 채팅에 그대로 남길 줄 수 상한(문서 전체 교체면 통째로 쏟아지므로 자른다)
+
+// 지시 블록을 지우기만 하면 "다음 내용을 추가했습니다." 뒤가 비어 답변이 잘린 것처럼 보인다.
+// 실제로 쓴 내용을 그 자리에 남겨서 방 사람들이 무엇이 들어갔는지 바로 본다.
+function echoAiBody(body) {
+  const lines = String(body).split("\n");
+  return lines.length > AI_ECHO_LINES ? `${lines.slice(0, AI_ECHO_LINES).join("\n")}\n…` : body;
+}
 
 const aiDrafts = new Map(); // roomId -> Map(userId -> { text, name, at })
 const aiBusy = new Set();   // 응답 생성 중인 roomId (동시 요청/비용 방어)
@@ -2181,8 +2189,9 @@ function applyAiActions(replyText, refMap, ctx, client) {
       }
     } catch (e) {
       notes.push(`⚠️ #${target.room.name}: 적용 실패 (${(e && e.message) || e})`);
+      return "";
     }
-    return "";
+    return echoAiBody(body);
   }).trim();
   return { display, notes };
 }
