@@ -1,4 +1,4 @@
-const { app, BrowserWindow, desktopCapturer, ipcMain, session, Menu, Tray, nativeImage, clipboard, MessageChannelMain, powerSaveBlocker, screen: electronScreen, net, shell } = require("electron");
+const { app, BrowserWindow, desktopCapturer, dialog, ipcMain, session, Menu, Tray, nativeImage, clipboard, MessageChannelMain, powerSaveBlocker, screen: electronScreen, net, shell } = require("electron");
 const { spawn, execFile } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -58,6 +58,8 @@ let programAudioPort = null;
 let systemAudioSessionWatcher = null;
 let screenSharePowerBlockerId = null;
 let screenCaptureConfig = {};
+let serverOrigin = ""; // 런처에서 고른 서버 오리진(권한·창 이동 허용 대상)
+let serverHost = ""; // 그 서버의 호스트(자체서명 인증서 첫 접속 기억 대상)
 
 // 트레이에 상주 중(창 닫아도 종료 안 함)일 때 작업표시줄 아이콘을 다시 실행하면 새 프로세스가 뜨는 대신
 // 이미 떠 있는 창을 앞으로 가져온다. 락을 못 얻은 이 프로세스는 whenReady/createWindow를 아예 등록하지
@@ -80,16 +82,6 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on("second-instance", () => {
     showMainWindow();
-  });
-
-  app.on("certificate-error", (event, webContents, url, error, certificate, callback) => {
-    const host = safeHost(url);
-    if (isVoiceServerHost(host) || url.startsWith("https://")) {
-      event.preventDefault();
-      callback(true);
-      return;
-    }
-    callback(false);
   });
 
   app.whenReady().then(() => {
@@ -172,6 +164,20 @@ function createWindow() {
     if (/^https?:\/\//i.test(url)) shell.openExternal(url);
     return { action: "deny" };
   });
+  // 창 자체가 다른 사이트로 넘어가면 그 페이지도 preload(voiceDesktop: 화면·오디오 캡처 등)와 권한을 얻는다.
+  // 접속한 서버 안에서의 이동만 허용하고, 바깥 http(s) 링크는 기본 브라우저로 연다.
+  const guardNavigation = (event) => {
+    const next = safeUrl(event.url);
+    // 같은 서버 호스트의 http→https 리다이렉트 등은 허용하고 허용 오리진을 따라 옮긴다.
+    if (serverHost && next && /^https?:$/.test(next.protocol) && next.hostname === serverHost) {
+      serverOrigin = next.origin;
+      return;
+    }
+    event.preventDefault();
+    if (next && /^https?:$/.test(next.protocol)) shell.openExternal(next.href);
+  };
+  mainWindow.webContents.on("will-navigate", guardNavigation);
+  mainWindow.webContents.on("will-redirect", guardNavigation);
   mainWindow.setMenuBarVisibility(false);
   mainWindow.setAutoHideMenuBar(true);
   // 창 닫기(X) = 트레이로 최소화. 실제 종료는 트레이 메뉴에서.
@@ -212,8 +218,72 @@ function stopScreenSharePowerBlocker() {
   screenSharePowerBlockerId = null;
 }
 
+// 서버는 자체서명 인증서를 쓰는 경우가 많아(server.js 가 .cert/ 자동 생성) 정상 체인 검증에 실패한다.
+// 모든 인증서를 통과시키면 공용 와이파이 등에서 중간자 공격(MITM)이 그대로 성공하므로, SSH 처럼
+// 사용자가 입력한 서버 호스트만 첫 접속 때 인증서 지문을 기억(TOFU)하고 이후엔 같은 지문만 받는다.
+// 지문이 바뀌면 사용자에게 묻는다. 정식 인증서(체인 검증 통과)는 Chromium 기본 검증을 그대로 쓴다.
+const certPinPrompts = new Map(); // `${host}|${fingerprint}` -> Promise<boolean>(중복 확인창 방지)
+
+function certPinFile() {
+  return path.join(app.getPath("userData"), "server-cert-pins.json");
+}
+
+function readCertPins() {
+  try {
+    const pins = JSON.parse(fs.readFileSync(certPinFile(), "utf8"));
+    return pins && typeof pins === "object" ? pins : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveCertPin(host, fingerprint) {
+  const pins = readCertPins();
+  pins[host] = fingerprint;
+  try {
+    fs.writeFileSync(certPinFile(), JSON.stringify(pins, null, 2));
+  } catch {}
+}
+
+function confirmChangedCert(host, fingerprint) {
+  const key = `${host}|${fingerprint}`;
+  if (!certPinPrompts.has(key)) {
+    const options = {
+      type: "warning",
+      buttons: ["연결 안 함", "새 인증서 신뢰"],
+      defaultId: 0,
+      cancelId: 0,
+      title: "서버 인증서가 바뀌었습니다",
+      message: `${host} 서버의 인증서가 이전 접속 때와 다릅니다.`,
+      detail: "서버 인증서를 새로 만든 게 아니라면 누군가 연결을 가로채고 있을 수 있습니다.\n확실할 때만 신뢰하세요.",
+    };
+    const prompt = (mainWindow ? dialog.showMessageBox(mainWindow, options) : dialog.showMessageBox(options))
+      .then(({ response }) => {
+        if (response === 1) saveCertPin(host, fingerprint);
+        return response === 1;
+      })
+      .catch(() => false);
+    certPinPrompts.set(key, prompt);
+  }
+  return certPinPrompts.get(key);
+}
+
 function setupCertificates() {
-  session.defaultSession.setCertificateVerifyProc((request, callback) => callback(0));
+  session.defaultSession.setCertificateVerifyProc((request, callback) => {
+    if (request.errorCode === 0) return callback(-3); // 정상 인증서 → Chromium 판정 그대로
+    const host = request.hostname;
+    const fingerprint = request.certificate?.fingerprint || "";
+    const pinned = readCertPins()[host];
+    if (!fingerprint) return callback(-2);
+    if (pinned === fingerprint) return callback(0);
+    if (!pinned) {
+      // 처음 보는 호스트는 사용자가 런처에서 직접 고른 서버일 때만 기억한다.
+      if (host !== serverHost) return callback(-2);
+      saveCertPin(host, fingerprint);
+      return callback(0);
+    }
+    confirmChangedCert(host, fingerprint).then((ok) => callback(ok ? 0 : -2));
+  });
 }
 
 function setupPermissions() {
@@ -224,18 +294,25 @@ function setupPermissions() {
     "fullscreen",
   ]);
 
-  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
-    callback(allowed.has(permission));
+  // 마이크·화면 권한은 접속한 서버 페이지에만 준다(다른 오리진 iframe·이동한 페이지는 거부).
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    callback(allowed.has(permission) && isTrustedPage(details?.requestingUrl || webContents.getURL()));
   });
 
   if (!session.defaultSession.setPermissionCheckHandler) return;
-  session.defaultSession.setPermissionCheckHandler((webContents, permission) => allowed.has(permission));
+  session.defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => (
+    allowed.has(permission) && isTrustedPage(details?.requestingUrl || requestingOrigin)
+  ));
 }
 
 function setupDisplayMedia() {
   if (!session.defaultSession.setDisplayMediaRequestHandler) return;
 
   session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
+    if (!isTrustedPage(request.frame?.url || request.securityOrigin)) {
+      callback({});
+      return;
+    }
     const sources = await desktopCapturer.getSources({
       types: ["screen"],
       thumbnailSize: { width: 0, height: 0 },
@@ -349,8 +426,15 @@ function setupNavigation() {
   });
 
   ipcMain.handle("load-voice-url", async (event, rawUrl) => {
+    // 서버 선택은 로컬 런처 화면만 할 수 있다(서버 페이지가 XSS 등으로 창을 다른 서버로 돌리는 것 차단).
+    if (safeUrl(event.senderFrame?.url)?.protocol !== "file:") return { ok: false, error: "허용되지 않은 요청입니다." };
     const target = normalizeServerUrl(rawUrl);
     if (!target || !mainWindow) return { ok: false, error: "서버 주소가 올바르지 않습니다." };
+    serverOrigin = new URL(target).origin;
+    serverHost = new URL(target).hostname;
+    // 인증서 판정은 네트워크 서비스에 캐시된다. 런처가 서버를 고르기 전에 이 호스트를 거부한 결과(버전 조회 등)가
+    // 남아 있으면 첫 접속이 막히므로, 검증 함수를 다시 등록해 캐시를 비운다.
+    setupCertificates();
     // 서버가 살아 있는지 먼저 확인한다. 죽어 있으면 런처에 그대로 머문다(앱 재시작 불필요).
     const reachable = await checkServerReachable(target);
     if (!reachable) {
@@ -911,22 +995,18 @@ function checkServerReachable(target) {
   });
 }
 
-function safeHost(rawUrl) {
+function safeUrl(rawUrl) {
   try {
-    return new URL(rawUrl).hostname;
+    return new URL(rawUrl);
   } catch {
-    return "";
+    return null;
   }
 }
 
-function isVoiceServerHost(host) {
-  return (
-    host === "localhost" ||
-    host === "127.0.0.1" ||
-    host === "::1" ||
-    /^192\.168\./.test(host) ||
-    /^10\./.test(host) ||
-    /^172\.(1[6-9]|2\d|3[0-1])\./.test(host) ||
-    /^\d{1,3}(\.\d{1,3}){3}$/.test(host)
-  );
+// 권한(마이크·화면)을 줄 페이지인지: 앱에 들어 있는 로컬 화면(런처·화면 테스트) 또는
+// 지금 접속한 서버(런처에서 사용자가 고른 주소)의 페이지만. 원격 페이지는 file:// 로 이동할 수 없다.
+function isTrustedPage(rawUrl) {
+  const url = safeUrl(rawUrl);
+  if (url?.protocol === "file:") return true;
+  return Boolean(serverOrigin) && url?.origin === serverOrigin;
 }

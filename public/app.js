@@ -4,7 +4,7 @@ const serverUrl = location.origin;
 // 클라이언트(앱) 버전. 서버 버전(server.js VERSION, n.n.n)과 헷갈리지 않도록 **그냥 정수**(1, 2, 3 …)로 올린다.
 // package.json 의 version 은 electron-builder 가 semver 를 요구해 "N.0.0" 형태로 두고, 그 major 가 이 값과 같아야 한다.
 // (scripts/check-v2.js 가 둘이 어긋나지 않는지 검사한다)
-const CLIENT_VERSION = "10";
+const CLIENT_VERSION = "11";
 
 function getClientVersion() {
   // 표시는 항상 단일 정수 CLIENT_VERSION 을 쓴다(package.json 의 semver appVersion 대신).
@@ -2548,7 +2548,7 @@ async function getProgramSystemAudioStream({ allPrograms = false } = {}) {
     // 렌더러 메인 스레드가 바빠도(화면공유 등) PCM 전달이 밀리지 않는다.
     const workletNode = node;
     portListener = (event) => {
-      if (!event.data?.accordProgramAudioPort) return;
+      if (event.source !== window || !event.data?.accordProgramAudioPort) return;
       const port = event.ports?.[0];
       if (port) workletNode.port.postMessage({ type: "port", port }, [port]);
     };
@@ -11529,7 +11529,9 @@ function uploadChatFile(file, onProgress) {
     const token = state.auth.token;
     if (!token) { reject(new Error("로그인이 필요합니다.")); return; }
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", `${serverUrl}/upload?token=${encodeURIComponent(token)}`);
+    // 토큰은 URL(프록시 접속 로그에 남음) 대신 헤더로 보낸다.
+    xhr.open("POST", `${serverUrl}/upload`);
+    xhr.setRequestHeader("x-auth-token", token);
     xhr.setRequestHeader("content-type", file.type || "application/octet-stream");
     xhr.setRequestHeader("x-file-name", encodeURIComponent(file.name));
     xhr.upload.onprogress = (event) => {
@@ -15368,7 +15370,8 @@ function renderMarkdown(src) {
   // 참조 링크 정의([ref]: url "title")는 화면에 안 보이고 링크 해석에만 쓰인다 — 본문에서 걷어낸다.
   const refMap = {};
   const lines = text.split("\n").filter((line) => {
-    const ref = line.match(/^[ \t]{0,3}\[([^\]]+)\]:[ \t]*(\S+)(?:[ \t]+&quot;([^&]*)&quot;)?[ \t]*$/);
+    // 주소는 다른 링크 문법과 같이 http(s)만 받는다(javascript: 링크로 스크립트 실행 차단).
+    const ref = line.match(/^[ \t]{0,3}\[([^\]]+)\]:[ \t]*(https?:\/\/\S+)(?:[ \t]+&quot;([^&]*)&quot;)?[ \t]*$/);
     if (!ref) return true;
     refMap[ref[1].toLowerCase()] = { url: ref[2], title: ref[3] || "" };
     return false;
@@ -15699,7 +15702,7 @@ function inlineMarkdown(str) {
     });
   // 이미지 ![alt](url "title")
   out = out.replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)(?:\s+&quot;([^&]*)&quot;)?\)/g, (m, alt, url, title) => {
-    links.push(`<img src="${url}" alt="${alt}"${title ? ` title="${title}"` : ""} loading="lazy" />`);
+    links.push(`<img src="${url}" alt="${alt}"${title ? ` title="${title}"` : ""} loading="lazy" referrerpolicy="no-referrer" />`);
     return `\u0001L${links.length - 1}\u0001`;
   });
   // 명시적 링크 [text](url "title")
@@ -15715,14 +15718,15 @@ function inlineMarkdown(str) {
     return `\u0001L${links.length - 1}\u0001`;
   });
   // 명시적 자동 링크 <https://...>
-  out = out.replace(/&lt;(https?:\/\/[^\s<>]+)&gt;/g, (m, url) => {
+  out = out.replace(/&lt;(https?:\/\/[^\s<>\u0001\u0002]+)&gt;/g, (m, url) => {
     links.push(`<a href="${url}" target="_blank" rel="noopener">${url}</a>`);
     return `\u0001L${links.length - 1}\u0001`;
   });
   // 맨 URL 자동 링크. 이미지/gif 확장자로 끝나면 링크 텍스트 대신 그림으로 보여준다(디스코드식 임베드).
   // 확장자가 없는 gif 사이트 페이지 링크(klipy/tenor/giphy)는 og:image를 못 미리 알아서, 일단 평범한
   // 링크로 렌더링해두고 hydrateLinkImagePreviews()가 렌더 후 비동기로 이미지로 바꿔치기한다.
-  out = out.replace(/(https?:\/\/[^\s<]+)/g, (m, url) => {
+  // 자리표시자(\u0001 링크·색, \u0002 멘션)는 URL 에 삼키지 않는다(속성값 안에 태그가 끼어 마크업이 깨짐).
+  out = out.replace(/(https?:\/\/[^\s<\u0001\u0002]+)/g, (m, url) => {
     if (isDirectImageUrl(url)) {
       links.push(`<a class="chat-image-link" href="${url}" target="_blank" rel="noopener"><img class="chat-image" src="${url}" alt="" loading="lazy" referrerpolicy="no-referrer" /></a>`);
     } else if (isLinkPreviewHost(url)) {

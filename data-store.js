@@ -11,6 +11,7 @@ const SESSIONS_FILE = path.join(DATA_DIR, "sessions.json");
 const CHANNELS_FILE = path.join(DATA_DIR, "channels.json");
 const MESSAGES_DIR = path.join(DATA_DIR, "messages");
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
+const UPLOAD_OWNERS_FILE = path.join(DATA_DIR, "upload-owners.json"); // { [파일명]: userId } — 첨부 시 본인 파일인지 확인용
 const MEMO_DIR = path.join(DATA_DIR, "memo");
 const AI_DIR = path.join(DATA_DIR, "ai");
 const AI_KEYS_FILE = path.join(DATA_DIR, "ai-keys.json"); // { [channelId]: { key, model } } — 클라이언트로 절대 나가지 않음
@@ -44,6 +45,7 @@ let db = { users: [], codeCounter: 0 };
 let sessions = {}; // token -> { userId, createdAt }
 let channelsDb = { channels: [] };
 let dmThreads = []; // [{ id, users:[a,b], lastAt, lastText, lastFrom }]
+let uploadOwners = {}; // 파일명 -> 올린 userId
 
 function init() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -56,6 +58,8 @@ function init() {
   if (!Array.isArray(channelsDb.channels)) channelsDb.channels = [];
   const dm = readJson(DM_INDEX_FILE, []);
   dmThreads = Array.isArray(dm) ? dm : [];
+  uploadOwners = readJson(UPLOAD_OWNERS_FILE, {});
+  if (!uploadOwners || typeof uploadOwners !== "object") uploadOwners = {};
 }
 
 function readJson(file, fallback) {
@@ -228,7 +232,7 @@ function authenticate(username, password) {
   return { user };
 }
 
-function changePassword(userId, oldPassword, newPassword) {
+function changePassword(userId, oldPassword, newPassword, keepToken = "") {
   const user = findById(userId);
   if (!user) return { error: "계정을 찾을 수 없습니다." };
   if (!verifyPassword(oldPassword, user.passwordHash)) {
@@ -238,6 +242,8 @@ function changePassword(userId, oldPassword, newPassword) {
   if (pwError) return { error: pwError };
   user.passwordHash = hashPassword(newPassword);
   persistUsers();
+  // 비밀번호를 바꾸면 지금 쓰는 세션만 남기고 다른 기기(탈취됐을 수 있는) 로그인은 끊는다.
+  destroyUserSessions(userId, keepToken);
   return { user };
 }
 
@@ -285,6 +291,16 @@ function destroySession(token) {
   }
 }
 
+function destroyUserSessions(userId, keepToken = "") {
+  let changed = false;
+  for (const [token, s] of Object.entries(sessions)) {
+    if (s.userId !== userId || token === keepToken) continue;
+    delete sessions[token];
+    changed = true;
+  }
+  if (changed) persistSessions();
+}
+
 // ---- 관리자 기능 ----
 function seedAdmin({ username, password, displayName }) {
   if (!password) return { skipped: "no-password" };
@@ -292,11 +308,14 @@ function seedAdmin({ username, password, displayName }) {
   if (findByCode("0000")) return { skipped: "exists" };
   const uname = normalizeUsername(username || "admin");
   if (findByUsername(uname)) {
-    // 같은 아이디가 있으면 관리자/코드만 승격
+    // 같은 아이디가 있으면 관리자로 승격한다. 시드 비밀번호가 없던 동안 누군가 이 아이디로 먼저 가입해 뒀을 수
+    // 있으므로, 비밀번호를 시드 비밀번호로 바꾸고 기존 로그인을 모두 끊는다(그 사람은 관리자 권한을 못 얻음).
     const existing = findByUsername(uname);
     existing.isAdmin = true;
     existing.code = "0000";
+    existing.passwordHash = hashPassword(password);
     persistUsers();
+    destroyUserSessions(existing.id);
     return { user: existing, promoted: true };
   }
   const user = {
@@ -945,6 +964,11 @@ function setRoomPerm(channelId, roomId, kind, targetId, perm, value) {
   if (!room) return { error: "방을 찾을 수 없습니다." };
   if (!ROOM_PERM_KEYS.includes(perm)) return { error: "알 수 없는 권한입니다." };
   const bucket = kind === "user" ? "users" : "roles";
+  // 대상은 실제 채널 멤버/역할만 허용한다("__proto__" 같은 키로 Object.prototype 을 오염시키는 것 차단).
+  const validTarget = kind === "user"
+    ? channel.members.includes(targetId)
+    : rolesOf(channel).some((r) => r.id === targetId);
+  if (!validTarget) return { error: "대상을 찾을 수 없습니다." };
   if (!room.perms) room.perms = {};
   if (!room.perms[bucket]) room.perms[bucket] = {};
   if (!room.perms[bucket][targetId]) room.perms[bucket][targetId] = {};
@@ -963,7 +987,7 @@ function clearRoomPerm(channelId, roomId, kind, targetId) {
   const room = channel.rooms.find((r) => r.id === roomId);
   if (!room) return { error: "방을 찾을 수 없습니다." };
   const bucket = kind === "user" ? "users" : "roles";
-  if (room.perms && room.perms[bucket]) delete room.perms[bucket][targetId];
+  if (room.perms && room.perms[bucket] && Object.hasOwn(room.perms[bucket], targetId)) delete room.perms[bucket][targetId];
   persistChannels();
   return { channel, room };
 }
@@ -1635,12 +1659,16 @@ function sanitizeUploadName(name) {
   return base || "file";
 }
 
-function saveUpload({ buffer, name, mime }) {
+function saveUpload({ buffer, name, mime, ownerId }) {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
   const id = crypto.randomBytes(12).toString("hex"); // 24 hex chars
   const safe = sanitizeUploadName(name);
   const fileName = `${id}_${safe}`;
   fs.writeFileSync(path.join(UPLOADS_DIR, fileName), buffer);
+  if (ownerId) {
+    uploadOwners[fileName] = ownerId;
+    writeJsonAtomic(UPLOAD_OWNERS_FILE, uploadOwners);
+  }
   return {
     id,
     fileName,
@@ -1660,13 +1688,25 @@ function getUploadPath(fileName) {
   return filePath;
 }
 
+// 이 사용자가 직접 올린 업로드인지. 첨부(채팅·AI·이모지·글꼴)는 본인 파일만 받는다 —
+// 남의 파일 URL 을 첨부했다가 지워서 원본 파일을 삭제시키는 것을 막는다(삭제 시 첨부 파일도 지우므로).
+function isUploadOwner(url, userId) {
+  const name = String(url || "").replace(/^\/uploads\//, "");
+  return Boolean(userId) && Object.hasOwn(uploadOwners, name) && uploadOwners[name] === userId;
+}
+
 // 업로드 파일 삭제(용량 확보). /uploads/<파일명> URL 을 받아 실제 파일을 지운다.
 // 우리 업로드 엔드포인트가 발급한 경로만 지우고, 없는 파일은 조용히 무시한다.
 function deleteUpload(url) {
   const raw = String(url || "");
   if (!raw.startsWith("/uploads/")) return false;
-  const filePath = getUploadPath(raw.slice("/uploads/".length));
+  const fileName = raw.slice("/uploads/".length);
+  const filePath = getUploadPath(fileName);
   if (!filePath) return false;
+  if (Object.hasOwn(uploadOwners, fileName)) {
+    delete uploadOwners[fileName];
+    writeJsonAtomic(UPLOAD_OWNERS_FILE, uploadOwners);
+  }
   try {
     fs.unlinkSync(filePath);
     return true;
@@ -2030,6 +2070,7 @@ module.exports = {
   saveUpload,
   getUploadPath,
   deleteUpload,
+  isUploadOwner,
   UPLOAD_MAX_BYTES,
   // 메모장
   getMemo,

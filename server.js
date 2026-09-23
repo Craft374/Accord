@@ -3,6 +3,7 @@ const http = require("node:http");
 const https = require("node:https");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const vm = require("node:vm");
 const { spawnSync } = require("node:child_process");
 const os = require("node:os");
 const store = require("./data-store");
@@ -15,18 +16,23 @@ seedAdminAccount();
 // 서버 버전. 클라이언트(앱) 버전은 package.json 의 version 이며 따로 관리한다.
 // 규칙: 클라 코드가 바뀌면 서버가 그 코드를 배포하므로 서버·클라 둘 다 올리고,
 //       서버만 바뀌면 서버 버전만 올린다.
-const VERSION = "3.2.1";
+const VERSION = "3.3.0";
 const PORT = Number(process.env.PORT || 25565);
 const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_HOST = cleanHost(process.env.PUBLIC_HOST || "");
 const PUBLIC_URL = cleanPublicUrl(process.env.PUBLIC_URL || "", PUBLIC_HOST, PORT);
 const REQUIRE_HTTPS = process.env.VOICE_CHAT_REQUIRE_HTTPS === "1" || process.env.HTTPS === "1";
+// nginx 같은 리버스 프록시 뒤에서만 1 로 둔다: 루프백 연결의 X-Real-IP 를 실제 접속 IP로 쓴다(IP별 제한용).
+const TRUST_PROXY = process.env.TRUST_PROXY === "1";
 const MAX_ROOM_LIMIT = 8;
 const PUBLIC_DIR = path.join(__dirname, "public");
 
 // ─── 보안/남용 방지 상한 ─────────────────────────────────
 // 외부 공격(메모리 고갈·연결/메시지 폭주·브루트포스)에 대한 서버측 방어값.
 const MAX_MESSAGE_BYTES = 12 * 1024 * 1024; // WebSocket 단일 메시지 최대 크기(그림판 문서 8MB 여유 포함)
+const MAX_PRE_AUTH_MESSAGE_BYTES = 512 * 1024; // 로그인 전 메시지 최대 크기(가입 시 프로필 이미지 400KB 포함)
+const MAX_SEND_BUFFER_BYTES = 64 * 1024 * 1024; // 안 읽고 쌓아두는 클라이언트의 송신 대기 상한(메모리 고갈 방어, 멤버 프로필 이미지가 큰 채널 목록 여유 포함)
+const MAX_UPLOADS_PER_USER = 3;             // 사용자당 동시 업로드 수(업로드는 메모리에 모았다 저장한다)
 const MAX_CONN_PER_IP = 24;                 // 같은 IP 동시 연결 상한(여러 탭/기기 허용, 폭주는 차단)
 const MAX_TOTAL_CLIENTS = 500;              // 전체 동시 연결 상한(백스톱)
 const MSG_BUCKET_CAP = 600;                 // 메시지 토큰버킷 용량(순간 폭주 허용치)
@@ -51,6 +57,7 @@ const EXTRA_WS_ORIGINS = new Set(
 );
 const ipConnCounts = new Map(); // ip -> 동시 연결 수
 const authAttempts = new Map(); // ip -> { count, resetAt }
+const activeUploads = new Map(); // userId -> 진행 중인 업로드 수
 const CERT_FILE = path.resolve(process.env.SSL_CERT_FILE || path.join(__dirname, ".cert", "cert.pem"));
 const KEY_FILE = path.resolve(process.env.SSL_KEY_FILE || path.join(__dirname, ".cert", "key.pem"));
 const CERT_DIR = path.dirname(CERT_FILE);
@@ -172,10 +179,10 @@ if (!tlsOptions && REQUIRE_HTTPS) {
   process.exit(1);
 }
 const server = tlsOptions
-  ? https.createServer(tlsOptions, handleRequest)
-  : http.createServer(handleRequest);
+  ? https.createServer(tlsOptions, safeHandleRequest)
+  : http.createServer(safeHandleRequest);
 
-server.on("upgrade", handleUpgrade);
+server.on("upgrade", safeHandleUpgrade);
 server.on("clientError", handleClientError);
 server.listen(PORT, HOST, () => {
   const protocol = tlsOptions ? "https" : "http";
@@ -193,6 +200,25 @@ server.listen(PORT, HOST, () => {
   printTurnStatus();
   console.log("");
 });
+
+// 잘못된 URL 인코딩(%C0)·Host 헤더·널 바이트 경로 등은 URL/decodeURIComponent/fs 에서 동기 예외를 던진다.
+// 여기서 잡지 않으면 요청 하나로 서버 프로세스 전체가 죽는다.
+function safeHandleRequest(req, res) {
+  try {
+    handleRequest(req, res);
+  } catch {
+    if (!res.headersSent) sendText(res, 400, "Bad request");
+    else res.destroy();
+  }
+}
+
+function safeHandleUpgrade(req, socket) {
+  try {
+    handleUpgrade(req, socket);
+  } catch {
+    socket.destroy();
+  }
+}
 
 function handleRequest(req, res) {
   if (req.method === "OPTIONS") {
@@ -283,6 +309,18 @@ function handleUpload(req, res, url) {
     sendJson(res, 401, { error: "인증이 필요합니다." });
     return;
   }
+  // 업로드는 본문 전체를 메모리에 모으므로 한 사용자가 동시에 여러 개(50MB씩)를 밀어 넣지 못하게 한다.
+  const active = activeUploads.get(user.id) || 0;
+  if (active >= MAX_UPLOADS_PER_USER) {
+    sendJson(res, 429, { error: "이전 업로드가 끝난 뒤 다시 시도해 주세요." });
+    return;
+  }
+  activeUploads.set(user.id, active + 1);
+  res.once("close", () => {
+    const left = (activeUploads.get(user.id) || 1) - 1;
+    if (left > 0) activeUploads.set(user.id, left);
+    else activeUploads.delete(user.id);
+  });
   const mime = String(req.headers["content-type"] || "application/octet-stream").split(";")[0].trim();
   let rawName = "file";
   try {
@@ -312,7 +350,7 @@ function handleUpload(req, res, url) {
       return;
     }
     try {
-      const saved = store.saveUpload({ buffer: Buffer.concat(chunks), name: rawName, mime });
+      const saved = store.saveUpload({ buffer: Buffer.concat(chunks), name: rawName, mime, ownerId: user.id });
       logServer(`upload file=${saved.fileName} size=${saved.size} by=${user.username}`);
       sendJson(res, 200, { url: `/uploads/${saved.fileName}`, name: saved.name, size: saved.size, mime: saved.mime });
     } catch (error) {
@@ -409,7 +447,7 @@ function handleUpgrade(req, socket) {
   }
 
   // 연결 폭주 방어: IP당 · 전체 동시 연결 상한.
-  const ip = cleanIp(req.socket.remoteAddress);
+  const ip = clientIpOf(req);
   if (clients.size >= MAX_TOTAL_CLIENTS) {
     logServer(`ws upgrade rejected: server full (${clients.size})`);
     socket.destroy();
@@ -457,6 +495,7 @@ function handleUpgrade(req, socket) {
     msgTokenTs: Date.now(),
     floodStrikes: 0,
     userId: "",
+    authToken: "", // 이 연결이 쓰는 세션 토큰(비밀번호 변경 시 이 세션만 남기려고 보관)
     isAdmin: false,
     chatRoomId: "", // 현재 보고 있는 채팅방(입력중 표시 대상 판별용)
     aiRoomId: "", // 현재 보고 있는 AI방(브로드캐스트 대상 판별용)
@@ -534,21 +573,20 @@ function readFrames(client, chunk) {
     }
 
     // 메모리 고갈 방어: 상한을 넘는 프레임을 선언하면 버퍼링하지 않고 즉시 끊는다.
-    if (length > MAX_MESSAGE_BYTES) {
+    // 로그인 전에는 작은 상한만 허용한다(인증 없이 연결마다 12MB씩 쌓는 공격 차단).
+    const maxBytes = client.userId ? MAX_MESSAGE_BYTES : MAX_PRE_AUTH_MESSAGE_BYTES;
+    if (length > maxBytes) {
       logServer(`frame too large: ${length} bytes`, client);
       closeClient(client);
       return;
     }
 
-    const maskLength = masked ? 4 : 0;
-    const frameLength = offset + maskLength + length;
+    const frameLength = offset + 4 + length; // 마스킹 키 4바이트(마스킹 안 된 프레임은 위에서 끊었다)
     if (client.buffer.length < frameLength) return;
 
-    let payload = client.buffer.slice(offset + maskLength, frameLength);
-    if (masked) {
-      const mask = client.buffer.slice(offset, offset + 4);
-      payload = Buffer.from(payload.map((byte, index) => byte ^ mask[index % 4]));
-    }
+    const payload = Buffer.from(client.buffer.subarray(offset + 4, frameLength));
+    const mask = client.buffer.subarray(offset, offset + 4);
+    for (let i = 0; i < payload.length; i += 1) payload[i] ^= mask[i & 3];
     client.buffer = client.buffer.slice(frameLength);
     const fin = (first & 0x80) === 0x80;
 
@@ -573,7 +611,7 @@ function readFrames(client, chunk) {
     }
 
     // 연속 프레임 누적이 상한을 넘으면(조각내어 우회하는 메모리 고갈 시도) 끊는다.
-    if (client.fragmentBytes > MAX_MESSAGE_BYTES) {
+    if (client.fragmentBytes > maxBytes) {
       logServer(`message too large: ${client.fragmentBytes} bytes`, client);
       client.fragments = null;
       client.fragmentBytes = 0;
@@ -632,12 +670,6 @@ function handleMessage(client, message) {
   if (handleLogMessage(client, message)) return;
   if (handleDmMessage(client, message)) return;
 
-  if (message.type === "set-name") {
-    client.name = cleanName(message.name);
-    broadcastPresence();
-    return;
-  }
-
   if (message.type === "join-room") {
     joinVoiceRoom(client, String(message.roomId || ""));
     return;
@@ -685,7 +717,7 @@ function handleMessage(client, message) {
   if (message.type === "signal") {
     const target = clients.get(String(message.target || ""));
     const signalKind = getSignalKind(message.data);
-    if (!target || target.roomId !== client.roomId) {
+    if (!target || !client.roomId || target.roomId !== client.roomId) {
       logServer(`signal target missing kind=${signalKind} target=${String(message.target || "")}`, client);
       return;
     }
@@ -758,8 +790,11 @@ function handleAuthMessage(client, message) {
       if (message.token) store.destroySession(message.token);
       leaveRoom(client, false);
       client.userId = "";
+      client.authToken = "";
       client.isAdmin = false;
       client.name = "Guest";
+      client.dmUserId = "";
+      dropLostViews(client);
       broadcastPresence();
       return true;
     }
@@ -768,10 +803,14 @@ function handleAuthMessage(client, message) {
         send(client, { type: "auth-error", action: "change-password", message: "로그인이 필요합니다." });
         return true;
       }
-      const result = store.changePassword(client.userId, message.oldPassword, message.newPassword);
+      const result = store.changePassword(client.userId, message.oldPassword, message.newPassword, client.authToken);
       if (result.error) {
         send(client, { type: "auth-error", action: "change-password", message: result.error });
         return true;
+      }
+      // 다른 세션으로 접속해 있던 연결도 끊는다(재접속하면 토큰이 없어져 로그인 화면으로 간다).
+      for (const c of clients.values()) {
+        if (c !== client && c.userId === client.userId && c.authToken !== client.authToken) closeClient(c);
       }
       send(client, { type: "auth-ok", action: "change-password", user: store.sanitizeUser(result.user) });
       return true;
@@ -806,6 +845,7 @@ function handleAuthMessage(client, message) {
 
 function finishAuth(client, user, action, existingToken) {
   const token = existingToken || store.createSession(user.id);
+  client.authToken = token;
   client.userId = user.id;
   client.isAdmin = Boolean(user.isAdmin);
   client.name = user.displayName;
@@ -878,6 +918,7 @@ function notifyUserUpdate(userId) {
     if (c.userId !== userId) continue;
     c.name = user.displayName;
     c.isAdmin = Boolean(user.isAdmin);
+    dropLostViews(c);
     send(c, payload);
     // 관리자 승격/해제 시 볼 수 있는 채널이 달라지므로 목록도 갱신한다.
     sendChannels(c);
@@ -891,7 +932,7 @@ function seedAdminAccount() {
   const displayName = process.env.ADMIN_SEED_DISPLAYNAME || username;
   const result = store.seedAdmin({ username, password, displayName });
   if (result.created) console.log(`관리자 계정 생성됨: ${username} (#0000)`);
-  else if (result.promoted) console.log(`기존 계정을 관리자(#0000)로 승격: ${username}`);
+  else if (result.promoted) console.log(`기존 계정을 관리자(#0000)로 승격: ${username} (비밀번호는 ADMIN_SEED_PASSWORD 로 재설정)`);
   else if (result.skipped === "no-password") {
     console.log("관리자 시드 건너뜀: ADMIN_SEED_PASSWORD 미설정. server.env에 추가하면 첫 실행 시 생성됩니다.");
   }
@@ -899,6 +940,12 @@ function seedAdminAccount() {
 
 function cleanIp(value) {
   return String(value || "").replace(/^::ffff:/, "");
+}
+
+function clientIpOf(req) {
+  const ip = cleanIp(req.socket.remoteAddress);
+  if (!TRUST_PROXY || (ip !== "127.0.0.1" && ip !== "::1")) return ip;
+  return cleanIp(String(req.headers["x-real-ip"] || "").trim()) || ip;
 }
 
 function getSignalKind(data) {
@@ -1085,8 +1132,8 @@ function logServer(message, client = null) {
 }
 
 function logClientEvent(client, message) {
-  const event = String(message.event || "").slice(0, 80);
-  const session = String(message.session || "").slice(0, 32);
+  const event = String(message.event || "").slice(0, 80).replace(/\s+/g, " ");
+  const session = String(message.session || "").slice(0, 32).replace(/\s+/g, " ");
   const detail = String(message.detail || "").slice(0, 500).replace(/\s+/g, " ");
   const room = client.roomId ? ` room=${client.roomId}` : "";
   const sessionText = session ? ` sid=${session}` : "";
@@ -1095,6 +1142,12 @@ function logClientEvent(client, message) {
 
 function send(client, data) {
   if (!client || client.closed || !client.socket.writable) return;
+  // 소켓을 읽지 않으면서 큰 응답(그림판 문서 등)을 반복 요청하면 송신 버퍼가 끝없이 쌓인다.
+  if (client.socket.writableLength > MAX_SEND_BUFFER_BYTES) {
+    logServer(`send buffer overflow: ${client.socket.writableLength} bytes`, client);
+    closeClient(client);
+    return;
+  }
   const payload = Buffer.from(JSON.stringify(data));
   const header = makeFrameHeader(payload.length);
   client.socket.write(Buffer.concat([header, payload]));
@@ -1160,8 +1213,13 @@ function broadcastPresence() {
     }
   }
   const online = onlineUserIds();
-  const payload = { type: "presence", rooms: presence, roomsMeta, online };
-  for (const client of clients.values()) if (client.userId) send(client, payload);
+  // 누가 어느 방에 있는지는 그 방을 볼 수 있는 사람에게만 알린다(다른 채널의 접속 현황·clientId 유출 방지).
+  for (const client of clients.values()) {
+    if (!client.userId) continue;
+    const visible = {};
+    for (const [rid, list] of Object.entries(presence)) if (canViewRoom(client, rid)) visible[rid] = list;
+    send(client, { type: "presence", rooms: visible, roomsMeta, online });
+  }
 }
 
 function liveRoomInfo(room) {
@@ -1205,6 +1263,8 @@ function handleChannelMessage(client, message) {
       return true;
     }
     case "channel:join": {
+      // 초대 코드(6자리) 무차별 대입 방어: 로그인 시도와 같은 IP당 시도 상한을 쓴다.
+      if (authRateLimited(client)) return channelError(client, "시도가 너무 많습니다. 잠시 후 다시 시도해 주세요.");
       // 새로 들어온 경우에만 로그를 남기기 위해 참가 전 멤버 여부를 확인한다.
       const target = store.getChannelByInvite(message.code);
       const wasMember = target ? store.isChannelMember(target.id, client.userId) : false;
@@ -1440,6 +1500,7 @@ function handleChannelMessage(client, message) {
       });
     case "channel:add-emoji":
       return emojiAddAction(client, message.channelId, () => {
+        if (!store.isUploadOwner(message.url, client.userId)) return channelError(client, "직접 올린 이미지만 이모지로 등록할 수 있습니다.");
         const r = store.addEmoji(message.channelId, message.name, message.url);
         if (r.error) return channelError(client, r.error);
         logServer(`emoji add name=:${r.emoji.name}: channel=${message.channelId}`, client);
@@ -1455,6 +1516,7 @@ function handleChannelMessage(client, message) {
       });
     case "channel:add-font":
       return fontManageAction(client, message.channelId, () => {
+        if (!store.isUploadOwner(message.url, client.userId)) return channelError(client, "직접 올린 파일만 글꼴로 등록할 수 있습니다.");
         const r = store.addFont(message.channelId, message.name, message.url);
         if (r.error) return channelError(client, r.error);
         logServer(`font add name=${r.font.name} channel=${message.channelId}`, client);
@@ -1572,11 +1634,34 @@ function refreshChannelsForAll() {
 
 // 채널 멤버(및 관리자) 중 접속자에게 채널 목록을 다시 보낸다.
 function notifyChannelMembers(channelId) {
+  // 멤버·권한이 바뀌었으니 강퇴되거나 권한을 잃은 연결이 보던 방의 실시간 전달부터 끊는다.
+  for (const c of clients.values()) dropLostViews(c);
   const channel = store.getChannel(channelId);
   if (!channel) return;
   for (const c of clients.values()) {
     if (!c.userId) continue;
     if (c.isAdmin || channel.members.includes(c.userId)) sendChannels(c);
+  }
+}
+
+function canViewRoom(client, roomId) {
+  const found = client.userId ? store.findRoom(roomId) : null;
+  return Boolean(found) &&
+    store.isChannelMember(found.channel.id, client.userId, client.isAdmin) &&
+    store.canAccessRoom(found.channel.id, roomId, client.userId, client.isAdmin);
+}
+
+// 메모·그림판·AI·채팅·로그 실시간 전달은 "지금 보고 있는 방" 기준이라, 강퇴·권한 회수·로그아웃 뒤에도
+// 그 상태가 남아 있으면 계속 받게 된다. 볼 권한이 없어진 방에서는 내보낸다.
+function dropLostViews(client) {
+  const lost = (roomId) => Boolean(roomId) && !canViewRoom(client, roomId);
+  if (lost(client.chatRoomId)) leaveChatView(client);
+  if (lost(client.aiRoomId)) leaveAiView(client);
+  if (lost(client.memoRoomId)) leaveMemo(client);
+  if (lost(client.drawRoomId)) leaveDraw(client);
+  if (lost(client.logRoomId)) {
+    client.logRoomId = "";
+    client.logChannelId = "";
   }
 }
 
@@ -1614,6 +1699,12 @@ function forceLeaveChannelRooms(client, channelId) {
 const CHAT_TEXT_MAX = 4000;
 const CHAT_FILES_MAX = 10;
 const CHAT_SEARCH_QUERY_MAX = 200;
+// 정규식 검색은 사용자가 준 패턴을 서버에서 돌리므로 ^(a+)+$ 같은 패턴 하나로 이벤트 루프가 몇 초~무한정 멈춘다(ReDoS).
+// vm 타임아웃으로 실행을 끊고, 사용자당 간격을 둬 연속 요청으로 서버를 붙잡지 못하게 한다.
+// ponytail: 계정을 여러 개 만들면 계정 수 × 100ms/초까지는 여전히 막을 수 있다. 문제되면 worker_threads 로 옮긴다.
+const CHAT_REGEX_TIMEOUT_MS = 100;
+const CHAT_REGEX_INTERVAL_MS = 1000;
+const lastRegexSearchAt = new Map(); // userId -> 마지막 정규식 검색 시각
 const CHAT_SEARCH_RESULT_MAX = 200;
 
 // 방에 쓰기(채팅·메모편집·그리기)가 가능한지. 읽기 전용 방은 대표자만,
@@ -1669,7 +1760,7 @@ function handleChatMessage(client, message) {
         return true;
       }
       const text = String(message.text || "").slice(0, CHAT_TEXT_MAX).replace(/\s+$/, "");
-      const files = cleanChatFiles(message.files);
+      const files = cleanChatFiles(message.files, client.userId);
       const mentions = cleanChatMentions(ctx.channel, message.mentions, text);
       if (!text && !files.length) {
         send(client, { type: "chat-error", message: "빈 메시지는 보낼 수 없습니다." });
@@ -1701,7 +1792,7 @@ function handleChatMessage(client, message) {
         at: Date.now(),
       };
       store.addMessage(ctx.room.id, msg);
-      broadcastChat(ctx.channel, { type: "chat:message", message: msg });
+      broadcastChat(ctx.channel, ctx.room.id, { type: "chat:message", message: msg });
       if (text.length) addStat(ctx.room.id, client.userId, client.name, "charsTyped", text.length);
       addStat(ctx.room.id, client.userId, client.name, "messages", 1);
       const emojiCount = (text.match(/:[a-z0-9_]{2,32}:/gi) || []).length;
@@ -1734,7 +1825,7 @@ function handleChatMessage(client, message) {
         return true;
       }
       store.deleteMessage(ctx.room.id, message.msgId);
-      broadcastChat(ctx.channel, { type: "chat:deleted", roomId: ctx.room.id, msgId: message.msgId });
+      broadcastChat(ctx.channel, ctx.room.id, { type: "chat:deleted", roomId: ctx.room.id, msgId: message.msgId });
       return true;
     }
     case "chat:edit": {
@@ -1760,7 +1851,7 @@ function handleChatMessage(client, message) {
       }
       const r = store.editMessage(ctx.room.id, message.msgId, client.userId, text, mentions);
       if (r.error) { send(client, { type: "chat-error", message: r.error }); return true; }
-      broadcastChat(ctx.channel, {
+      broadcastChat(ctx.channel, ctx.room.id, {
         type: "chat:edited",
         roomId: ctx.room.id,
         msgId: message.msgId,
@@ -1775,10 +1866,17 @@ function handleChatMessage(client, message) {
       if (!ctx) return true;
       const q = String(message.q || "").slice(0, CHAT_SEARCH_QUERY_MAX);
       let matcher = null;
+      let regex = null;
       if (q) {
         if (message.regex) {
+          const now = Date.now();
+          if (now - (lastRegexSearchAt.get(client.userId) || 0) < CHAT_REGEX_INTERVAL_MS) {
+            send(client, { type: "chat-error", message: "정규식 검색은 잠시 후 다시 시도해 주세요." });
+            return true;
+          }
+          lastRegexSearchAt.set(client.userId, now);
           try {
-            matcher = new RegExp(q, "iu");
+            regex = new RegExp(q, "iu");
           } catch {
             send(client, { type: "chat-error", message: "정규식이 올바르지 않습니다." });
             return true;
@@ -1801,7 +1899,7 @@ function handleChatMessage(client, message) {
         (!targetRoomId || r.id === targetRoomId) &&
         store.canAccessRoom(ctx.channel.id, r.id, client.userId, client.isAdmin)
       );
-      const results = [];
+      let results = [];
       for (const room of targetRooms) {
         for (const msg of store.getMessages(room.id)) {
           if (matcher && !matcher.test(msg.text || "")) continue;
@@ -1810,6 +1908,19 @@ function handleChatMessage(client, message) {
           if (to && msg.at > to) continue;
           results.push({ ...msg, roomId: room.id, roomName: room.name });
         }
+      }
+      if (regex) {
+        let hits;
+        try {
+          hits = vm.runInNewContext("texts.map((t) => re.test(t))", {
+            texts: results.map((msg) => String(msg.text || "")),
+            re: regex,
+          }, { timeout: CHAT_REGEX_TIMEOUT_MS });
+        } catch {
+          send(client, { type: "chat-error", message: "정규식이 너무 복잡해 검색을 멈췄습니다." });
+          return true;
+        }
+        results = results.filter((msg, index) => hits[index]);
       }
       results.sort((a, b) => b.at - a.at);
       send(client, {
@@ -1874,13 +1985,14 @@ function resolveChatRoom(client, roomId) {
   return found;
 }
 
-function cleanChatFiles(files) {
+function cleanChatFiles(files, userId) {
   if (!Array.isArray(files)) return [];
   const out = [];
   for (const file of files.slice(0, CHAT_FILES_MAX)) {
     const url = String(file?.url || "");
-    // 우리 업로드 엔드포인트가 발급한 경로만 허용한다.
+    // 우리 업로드 엔드포인트가 발급한 경로 중 보낸 사람이 직접 올린 파일만 허용한다.
     if (!/^\/uploads\/[a-f0-9]{24}_[A-Za-z0-9._-]+$/.test(url)) continue;
+    if (!store.isUploadOwner(url, userId)) continue;
     out.push({
       url,
       name: String(file?.name || "file").slice(0, 200),
@@ -1893,10 +2005,11 @@ function cleanChatFiles(files) {
 }
 
 // 채널의 온라인 멤버(관리자 포함) 전원에게 채팅 이벤트를 보낸다.
-function broadcastChat(channel, payload) {
+// 채널 멤버 중 그 채팅방 접근 권한이 있는 사람에게만 보낸다(제한된 방 메시지가 다른 멤버에게 새지 않게).
+function broadcastChat(channel, roomId, payload) {
   for (const c of clients.values()) {
     if (!c.userId) continue;
-    if (store.isChannelMember(channel.id, c.userId, c.isAdmin)) send(c, payload);
+    if (store.isChannelMember(channel.id, c.userId, c.isAdmin) && store.canAccessRoom(channel.id, roomId, c.userId, c.isAdmin)) send(c, payload);
   }
 }
 
@@ -1926,6 +2039,8 @@ function echoAiBody(body) {
 
 const aiDrafts = new Map(); // roomId -> Map(userId -> { text, name, at })
 const aiBusy = new Set();   // 응답 생성 중인 roomId (동시 요청/비용 방어)
+const aiBusyUsers = new Set(); // 응답을 기다리는 요청자 userId (사용자당 동시 1건)
+const AI_SESSIONS_MAX = 100; // AI방 하나에 만들 수 있는 대화 수(요청마다 파일 전체를 읽고 쓰므로 상한)
 
 // 이 방에서 나(byId 제외) 말고 입력 중인 사람들의 미리보기 목록.
 function aiDraftList(roomId, exceptId) {
@@ -1970,14 +2085,14 @@ function resolveAiRoom(client, roomId) {
 
 function broadcastAi(roomId, payload) {
   for (const c of clients.values()) {
-    if (c.userId && c.aiRoomId === roomId) send(c, payload);
+    if (c.aiRoomId === roomId && canViewRoom(c, roomId)) send(c, payload);
   }
 }
 
 // ai:state 를 방 전원에게, 각자 관점(writable·본인 제외 draft 목록)으로 보낸다.
 function broadcastAiState(ctx, doc, messages) {
   for (const c of clients.values()) {
-    if (c.userId && c.aiRoomId === ctx.room.id) send(c, aiStatePayload(ctx, c, doc, messages));
+    if (c.aiRoomId === ctx.room.id && canViewRoom(c, ctx.room.id)) send(c, aiStatePayload(ctx, c, doc, messages));
   }
 }
 
@@ -2027,7 +2142,8 @@ function aiEnsureSession(doc) {
 //           전용 토글이 필요해지면 그때 만든다.
 async function callGemini({ apiKey, model, contents, system, thinking }) {
   if (typeof fetch !== "function") throw new Error("이 서버의 Node 버전이 낮습니다. Node 18 이상이 필요합니다.");
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  // 키는 URL(프록시·에러 로그에 남기 쉬움) 대신 헤더로 보낸다.
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
   const body = { contents };
   if (system) body.systemInstruction = { parts: [{ text: system }] };
   const gen = {};
@@ -2050,7 +2166,7 @@ async function callGemini({ apiKey, model, contents, system, thinking }) {
     try {
       res = await fetch(url, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
         body: payload,
         signal: ctrl.signal,
       });
@@ -2061,8 +2177,10 @@ async function callGemini({ apiKey, model, contents, system, thinking }) {
       console.error("[ai] fetch 실패:", detail, err?.cause || err);
       throw new Error(`AI 서버에 연결하지 못했습니다 (${detail})`);
     }
-    clearTimeout(timer);
+    // 본문을 받는 동안에도 타임아웃이 걸려 있어야 업스트림이 멈췄을 때 방이 aiBusy 로 영영 잠기지 않는다.
     data = await res.json().catch(() => ({}));
+    clearTimeout(timer);
+    if (ctrl.signal.aborted) throw new Error("AI 응답이 시간 내에 오지 않았습니다.");
     if (res.ok) break;
     const msg = data?.error?.message ? `Gemini 오류: ${data.error.message}` : `Gemini 오류 (HTTP ${res.status})`;
     if ((res.status >= 500 || res.status === 429) && attempt < 2) {
@@ -2105,8 +2223,8 @@ function buildAiAttachmentParts(files) {
     if (!filePath) continue;
     if (/^image\//i.test(f.mime || "")) {
       try {
-        const buf = fs.readFileSync(filePath);
-        if (buf.length <= AI_ATTACH_IMG_MAX) imageParts.push({ inlineData: { mimeType: f.mime, data: buf.toString("base64") } });
+        // 크기부터 보고 읽는다(50MB 업로드를 통째로 메모리에 올리지 않게).
+        if (fs.statSync(filePath).size <= AI_ATTACH_IMG_MAX) imageParts.push({ inlineData: { mimeType: f.mime, data: fs.readFileSync(filePath).toString("base64") } });
         else extraText += `\n[첨부 이미지 "${f.name}"는 용량이 커서 전달하지 못했습니다]`;
       } catch { /* 무시 */ }
     } else if (store.isAiTextyFile(f.mime, f.name)) {
@@ -2223,7 +2341,7 @@ function applyAiActions(replyText, refMap, ctx, client) {
           text: `🤖 (AI방 요청) ${body}`.slice(0, 4000), mentions: [], files: [], at: Date.now(),
         };
         store.addMessage(target.room.id, cmsg);
-        broadcastChat(ctx.channel, { type: "chat:message", message: cmsg });
+        broadcastChat(ctx.channel, target.room.id, { type: "chat:message", message: cmsg });
         notes.push(`✅ #${target.room.name} 채팅에 메시지를 보냈습니다.`);
       } else {
         if (target.type !== "memo") { notes.push(`⚠️ #${target.room.name}: 메모장이 아님`); return ""; }
@@ -2314,6 +2432,10 @@ function handleAiMessage(client, message) {
       if (!ctx) return true;
       if (!isRoomWritable(ctx, client)) { send(client, { type: "ai:error", message: "읽기 전용 방입니다." }); return true; }
       const doc = store.getAiDoc(ctx.room.id);
+      if (doc.sessions.length >= AI_SESSIONS_MAX) {
+        send(client, { type: "ai:error", message: `대화는 최대 ${AI_SESSIONS_MAX}개까지 만들 수 있습니다. 안 쓰는 대화를 지워주세요.` });
+        return true;
+      }
       const s = { id: crypto.randomBytes(8).toString("hex"), title: "새 대화", createdAt: Date.now(), messages: [] };
       doc.sessions.push(s);
       doc.activeSessionId = s.id;
@@ -2324,6 +2446,8 @@ function handleAiMessage(client, message) {
     case "ai:switch": {
       const ctx = resolveAiRoom(client, message.roomId);
       if (!ctx) return true;
+      // 활성 대화는 방 전원이 공유하므로 읽기 전용 사용자가 바꾸지 못하게 한다.
+      if (!isRoomWritable(ctx, client)) { send(client, { type: "ai:error", message: "읽기 전용 방입니다." }); return true; }
       const doc = store.getAiDoc(ctx.room.id);
       const target = doc.sessions.find((s) => s.id === String(message.sessionId || ""));
       if (!target) { send(client, { type: "ai:error", message: "대화를 찾지 못했습니다." }); return true; }
@@ -2336,8 +2460,12 @@ function handleAiMessage(client, message) {
       const ctx = resolveAiRoom(client, message.roomId);
       if (!ctx) return true;
       if (!isRoomWritable(ctx, client)) { send(client, { type: "ai:error", message: "읽기 전용 방입니다." }); return true; }
+      if (!store.canAttach(ctx.channel.id, client.userId, client.isAdmin)) {
+        send(client, { type: "ai:error", message: "파일을 첨부할 권한이 없습니다." });
+        return true;
+      }
       const url = String(message.url || "");
-      if (!/^\/uploads\/[a-f0-9]{24}_[A-Za-z0-9._-]+$/.test(url)) {
+      if (!/^\/uploads\/[a-f0-9]{24}_[A-Za-z0-9._-]+$/.test(url) || !store.isUploadOwner(url, client.userId)) {
         send(client, { type: "ai:error", message: "잘못된 파일입니다." });
         return true;
       }
@@ -2369,7 +2497,7 @@ function handleAiMessage(client, message) {
       if (!ctx) return true;
       if (!isRoomWritable(ctx, client)) { send(client, { type: "ai:error", message: "읽기 전용 방입니다." }); return true; }
       const text = String(message.text || "").replace(/\s+$/, "").slice(0, AI_TEXT_MAX);
-      const files = cleanChatFiles(message.files).slice(0, AI_ATTACH_MAX);
+      const files = cleanChatFiles(message.files, client.userId).slice(0, AI_ATTACH_MAX);
       if (!text && !files.length) { send(client, { type: "ai:error", message: "빈 메시지는 보낼 수 없습니다." }); return true; }
       const secret = store.getAiSecret(ctx.channel.id);
       if (!secret || !secret.key) {
@@ -2381,6 +2509,8 @@ function handleAiMessage(client, message) {
         return true;
       }
       if (aiBusy.has(ctx.room.id)) { send(client, { type: "ai:error", message: "AI가 이미 응답 중입니다. 잠시 후 다시 시도하세요." }); return true; }
+      // 한 사람이 여러 AI방에 동시에 요청을 걸어 채널 키 비용을 불리지 못하게 사용자당 1건만 허용한다.
+      if (aiBusyUsers.has(client.userId)) { send(client, { type: "ai:error", message: "보낸 요청의 응답이 끝난 뒤 다시 시도하세요." }); return true; }
 
       const doc = store.getAiDoc(ctx.room.id);
       const session = aiEnsureSession(doc);
@@ -2400,6 +2530,7 @@ function handleAiMessage(client, message) {
       const { map: refMap, refs } = resolveAiRefs(text, ctx, client, doc.settings.refScope);
 
       aiBusy.add(ctx.room.id);
+      aiBusyUsers.add(client.userId);
       broadcastAi(ctx.room.id, { type: "ai:thinking", roomId: ctx.room.id, on: true });
       let model = doc.settings.model || secret.model || store.DEFAULT_AI_MODEL;
       // 자동 모델 선택: 그림 요청 같으면 이번 턴만 이미지 모델로. 방 설정(doc.settings.model)은 그대로 둔다.
@@ -2451,6 +2582,7 @@ function handleAiMessage(client, message) {
         })
         .finally(() => {
           aiBusy.delete(ctx.room.id);
+          aiBusyUsers.delete(client.userId);
           broadcastAi(ctx.room.id, { type: "ai:thinking", roomId: ctx.room.id, on: false });
         });
       return true;
@@ -3197,10 +3329,6 @@ function handleDmMessage(client, message) {
   }
 }
 
-function cleanName(value) {
-  return String(value || "Guest").trim().slice(0, 24) || "Guest";
-}
-
 // klipy/tenor/giphy 같은 gif 페이지 링크의 og:image를 대신 가져와 클라이언트에 알려준다.
 // 리다이렉트는 SSRF 우회에 쓰일 수 있어 따라가지 않고, 응답 크기·시간도 제한한다.
 function fetchLinkPreviewImage(res, rawUrl) {
@@ -3211,7 +3339,7 @@ function fetchLinkPreviewImage(res, rawUrl) {
     sendJson(res, 400, { error: "invalid url" });
     return;
   }
-  if (target.protocol !== "https:" || !LINK_PREVIEW_HOSTS.has(target.hostname.toLowerCase())) {
+  if (target.protocol !== "https:" || target.port || !LINK_PREVIEW_HOSTS.has(target.hostname.toLowerCase())) {
     sendJson(res, 400, { error: "unsupported host" });
     return;
   }
@@ -3285,6 +3413,8 @@ function sendCors(res, status, headers = {}) {
     "x-content-type-options": "nosniff",
     "x-frame-options": "DENY",
     "referrer-policy": "no-referrer",
+    // 스크립트는 우리 서버 파일만 실행한다(렌더러에 XSS 구멍이 생겨도 인라인 스크립트·javascript: 링크는 막힘).
+    "content-security-policy": "script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
     ...headers,
   });
 }
