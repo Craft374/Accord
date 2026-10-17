@@ -3796,8 +3796,70 @@ summary:hover {
 }
 
 .screen-share-pill:hover,
+.screen-share-pill.active,
 .participant-screen-button:hover {
   background: var(--blurple);
+}
+
+/* 화면 공유 모두 보기: 공유자 수에 맞춰 √n 열 격자(4명이면 2×2). 타일을 누르면 그 사람만 크게 본다. */
+.screen-tile-grid {
+  display: none;
+}
+
+.screen-stage.is-grid #screenViewer {
+  display: none;
+}
+
+.screen-stage.is-grid .screen-tile-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--cols, 1), minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr);
+  gap: 4px;
+  height: clamp(320px, 62vh, 720px);
+  padding: 4px;
+}
+
+.screen-stage.is-grid:fullscreen .screen-tile-grid {
+  height: 100vh;
+}
+
+.screen-tile {
+  position: relative;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #111;
+  cursor: pointer;
+}
+
+.screen-tile:hover {
+  outline: 2px solid var(--blurple);
+  outline-offset: -2px;
+}
+
+.screen-tile video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.screen-stage[data-fit="cover"] .screen-tile video {
+  object-fit: cover;
+}
+
+.screen-tile span {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 /* ─── 참가자 카드 ─────────────────────────── */

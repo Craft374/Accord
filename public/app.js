@@ -424,6 +424,7 @@ const dom = {
   openScreenTestButton: document.querySelector("#openScreenTestButton"),
   screenStage: document.querySelector("#screenStage"),
   screenViewer: document.querySelector("#screenViewer"),
+  screenTileGrid: document.querySelector("#screenTileGrid"),
   screenStatsOverlay: document.querySelector("#screenStatsOverlay"),
   screenEndedNotice: document.querySelector("#screenEndedNotice"),
   screenViewerTitle: document.querySelector("#screenViewerTitle"),
@@ -806,7 +807,8 @@ function bindEvents() {
     renderScreenStage();
     renderParticipants();
   });
-  dom.screenShareList.addEventListener("click", (event) => {
+  // 이름 버튼(screenShareList)과 모두 보기 격자 타일(screenTileGrid) 클릭을 함께 받는다.
+  dom.screenStage.addEventListener("click", (event) => {
     const button = event.target?.closest?.("[data-screen-peer-id]");
     if (!button) return;
     state.selectedScreenPeerId = button.dataset.screenPeerId || "";
@@ -16346,7 +16348,7 @@ function toggleScreenPip() {
 function updateScreenPipButton() {
   if (!dom.screenPipButton) return;
   const active = document.pictureInPictureElement === dom.screenViewer;
-  dom.screenPipButton.hidden = !document.pictureInPictureEnabled;
+  dom.screenPipButton.hidden = !document.pictureInPictureEnabled || dom.screenStage.classList.contains("is-grid");
   dom.screenPipButton.classList.toggle("active", active);
   dom.screenPipButton.textContent = active ? "원위치" : "PIP";
   dom.screenPipButton.title = active ? "원래 위치로 되돌리기" : "작은 창으로 띄우기 (프로그램 밖으로도 이동 가능)";
@@ -16380,11 +16382,16 @@ function updateScreenFullscreenButton() {
 
 function renderScreenStage() {
   const shares = getActiveScreenShares();
-  const selected = shares.find((item) => item.id === state.selectedScreenPeerId) || null;
+  // "grid" = 켜진 화면 공유를 한 번에 모두 보기(디스코드처럼). 타일을 누르면 그 사람만 크게 본다.
+  const grid = state.selectedScreenPeerId === "grid" && shares.length > 0;
+  const selected = grid ? null : shares.find((item) => item.id === state.selectedScreenPeerId) || null;
   // 보던 사람이 공유를 끄면 창을 바로 닫지 않고 알린다(디스코드처럼). 보는 사람이 직접 닫으면 되고, 그 사람이 다시 공유하면 바로 이어서 보인다.
-  const endedPeer = selected ? null : state.peers.get(state.selectedScreenPeerId);
+  const endedPeer = selected || grid ? null : state.peers.get(state.selectedScreenPeerId);
   dom.screenEndedNotice.hidden = !endedPeer;
-  if (!selected && !endedPeer) {
+  dom.screenStage.classList.toggle("is-grid", grid);
+  renderScreenGrid(grid ? shares : []);
+  updateScreenPipButton();
+  if (!selected && !endedPeer && !grid) {
     // 보던 공유가 사라져도 다른 공유로 자동 전환하지 않는다 — 잘못된 "보고 있음" 표시의 원인.
     // 내 미리보기("local")는 공유 재시작 중 잠깐 사라질 수 있으니 선택을 유지한다.
     if (state.selectedScreenPeerId && state.selectedScreenPeerId !== "local") {
@@ -16408,25 +16415,61 @@ function renderScreenStage() {
   dom.screenStage.hidden = false;
   applyScreenFitMode();
   updateScreenFullscreenButton();
-  const viewing = selected || { name: endedPeer.name, kind: "screen", stream: null };
-  dom.screenViewerTitle.textContent = `${viewing.name} ${viewing.kind === "camera" ? "카메라" : "화면 공유"}`;
+  const viewing = selected || (endedPeer ? { name: endedPeer.name, kind: "screen", stream: null } : null);
+  dom.screenViewerTitle.textContent = viewing
+    ? `${viewing.name} ${viewing.kind === "camera" ? "카메라" : "화면 공유"}`
+    : `화면 공유 ${shares.length}개 모두 보기`;
   dom.screenEndedNotice.textContent = endedPeer ? `${endedPeer.name}님이 화면 공유를 껐습니다` : "";
-  if (dom.screenViewer.srcObject !== viewing.stream) {
+  if (viewing && dom.screenViewer.srcObject !== viewing.stream) {
     dom.screenViewer.srcObject = viewing.stream;
     dom.screenViewer.play?.().catch(() => {});
   }
   revealScreenControls();
 
   dom.screenShareList.innerHTML = "";
-  for (const share of shares) {
+  const pills = shares.length >= 2 ? [{ id: "grid", name: "모두 보기" }, ...shares] : shares;
+  for (const share of pills) {
     const button = document.createElement("button");
     button.className = "screen-share-pill";
     button.type = "button";
     button.dataset.screenPeerId = share.id;
-    button.textContent = share.id === state.selectedScreenPeerId ? `${share.name} 보는 중` : share.name;
+    button.textContent = share.id === state.selectedScreenPeerId && share.id !== "grid" ? `${share.name} 보는 중` : share.name;
+    button.classList.toggle("active", share.id === state.selectedScreenPeerId);
     dom.screenShareList.append(button);
   }
   updateScreenStatsOverlay();
+}
+
+// 모두 보기 격자. 다시 그릴 때마다 video 를 새로 만들면 깜빡이므로 공유자별 타일을 재사용한다.
+function renderScreenGrid(shares) {
+  const gridEl = dom.screenTileGrid;
+  const ids = new Set(shares.map((share) => share.id));
+  for (const tile of [...gridEl.children]) {
+    if (!ids.has(tile.dataset.screenPeerId)) tile.remove();
+  }
+  gridEl.style.setProperty("--cols", String(Math.ceil(Math.sqrt(shares.length)) || 1));
+  for (const share of shares) {
+    let tile = gridEl.querySelector(`[data-screen-peer-id="${cssEscape(share.id)}"]`);
+    if (!tile) {
+      tile = document.createElement("button");
+      tile.type = "button";
+      tile.className = "screen-tile";
+      tile.dataset.screenPeerId = share.id;
+      tile.title = "크게 보기";
+      const video = document.createElement("video");
+      video.autoplay = true;
+      video.playsInline = true;
+      video.muted = true;
+      tile.append(video, document.createElement("span"));
+      gridEl.append(tile);
+    }
+    tile.lastChild.textContent = share.name;
+    const video = tile.firstChild;
+    if (video.srcObject !== share.stream) {
+      video.srcObject = share.stream;
+      video.play?.().catch(() => {});
+    }
+  }
 }
 
 // 화면공유 보기 왼쪽 위 해상도·fps 표시. 받은 프레임 수와, 그중 그림이 실제로 바뀐 프레임 수를 따로 센다 —
@@ -16435,7 +16478,8 @@ function updateScreenStatsOverlay() {
   const overlay = dom.screenStatsOverlay;
   const video = dom.screenViewer;
   const probe = state.screenStatsOverlay;
-  const on = Boolean(overlay) && state.screenStatsOverlayEnabled && !dom.screenStage.hidden && dom.screenEndedNotice.hidden;
+  const on = Boolean(overlay) && state.screenStatsOverlayEnabled && !dom.screenStage.hidden && dom.screenEndedNotice.hidden
+    && !dom.screenStage.classList.contains("is-grid");
   if (overlay) overlay.hidden = !on;
   if (!on) {
     window.clearInterval(probe.timer);
