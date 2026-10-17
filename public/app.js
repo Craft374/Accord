@@ -2185,10 +2185,19 @@ async function openMic() {
   if (!navigator.mediaDevices?.getUserMedia) {
     throw new Error("이 브라우저에서는 마이크를 사용할 수 없습니다. HTTPS 주소로 접속했는지 확인해 주세요.");
   }
-  state.rawMicStream = await navigator.mediaDevices.getUserMedia({
-    video: false,
-    audio: getMicConstraints(),
-  });
+  try {
+    state.rawMicStream = await navigator.mediaDevices.getUserMedia({
+      video: false,
+      audio: getMicConstraints(),
+    });
+  } catch (error) {
+    // 마이크가 없는 PC(행사장 데스크탑 등)도 듣기 전용으로 들어갈 수 있게 무음 트랙으로 대신한다.
+    if (error?.name !== "NotFoundError") throw error;
+    state.silentMicContext ||= new (window.AudioContext || window.webkitAudioContext)();
+    state.rawMicStream = state.silentMicContext.createMediaStreamDestination().stream;
+    state.muted = true; // 저장하지 않는다(퇴장 시 resetRoomState 가 선호값으로 되돌린다)
+    setMessage("마이크가 없어 듣기 전용으로 들어갑니다.");
+  }
 
   state.rawMicTrack = state.rawMicStream.getAudioTracks()[0] || null;
   if (!state.rawMicTrack) throw new Error("마이크 트랙이 없습니다.");
@@ -5608,6 +5617,7 @@ async function ensureDeviceLabels() {
   if (!navigator.mediaDevices?.enumerateDevices || !navigator.mediaDevices?.getUserMedia) return;
   const devices = await navigator.mediaDevices.enumerateDevices().catch(() => []);
   if (devices.some((device) => device.kind === "audioinput" && device.label)) return;
+  if (!devices.some((device) => device.kind === "audioinput")) return; // 마이크 없음 → openMic 이 무음으로 대신한다
 
   let stream = null;
   try {
