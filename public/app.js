@@ -3402,10 +3402,28 @@ async function getNativeScreenShareStream() {
   const firstFrame = new Promise((resolve, reject) => {
     started = { resolve, reject };
   });
+  // WGC는 화면이 바뀔 때만 프레임을 준다. 정지 화면이면 새로 들어온 시청자·키프레임 요청에 줄 프레임이 없으니
+  // 1초 넘게 조용하면 마지막 프레임을 새 타임스탬프로 다시 넣는다(디스코드의 stale frame repaint와 같은 역할).
+  let lastFrame = null;
+  let lastFrameAt = 0;
+  const repeatTimer = setInterval(() => {
+    if (state.nativeScreenCapture !== onMessage) {
+      clearInterval(repeatTimer);
+      lastFrame?.close();
+      lastFrame = null;
+      return;
+    }
+    if (!lastFrame || performance.now() - lastFrameAt < 1000 || writer.desiredSize <= 0) return;
+    const repeated = new VideoFrame(lastFrame, { timestamp: lastFrame.timestamp + Math.round((performance.now() - lastFrameAt) * 1000) });
+    writer.write(repeated).catch(() => repeated.close());
+  }, 1000);
   const onMessage = (event) => {
     if (event.source !== window) return;
     const frame = event.data?.accordNativeScreenFrame;
     if (frame) {
+      lastFrame?.close();
+      lastFrame = frame.clone();
+      lastFrameAt = performance.now();
       // 인코더 쪽이 밀려 있으면 쌓지 않고 버린다. 버린 프레임은 직접 닫아야 메모리가 새지 않는다.
       if (writer.desiredSize > 0) writer.write(frame).catch(() => frame.close());
       else frame.close();
