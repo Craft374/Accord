@@ -2366,6 +2366,9 @@ async function createAudioWorkletNoiseGateNode(context) {
     return new AudioWorkletNode(context, "voice-noise-gate", {
       numberOfInputs: 1,
       numberOfOutputs: 1,
+      // 스테레오 마이크는 첫 채널만 보지 않고 브라우저가 (L+R)/2로 모노로 섞어서 넣게 한다.
+      channelCount: 1,
+      channelCountMode: "explicit",
       outputChannelCount: [1],
       processorOptions: getNoiseGateSettings(),
     });
@@ -2381,6 +2384,8 @@ function createScriptNoiseGateNode(context) {
   const settings = getNoiseGateSettings();
   let noiseFloor = settings.noiseFloor;
   let gateGain = 1;
+  let level = 0;
+  let holdLeftMs = 0;
 
   node.onaudioprocess = (event) => {
     const input = event.inputBuffer.getChannelData(0);
@@ -2393,9 +2398,13 @@ function createScriptNoiseGateNode(context) {
       noiseFloor = Math.min(settings.maxNoiseFloor, Math.max(settings.minNoiseFloor, noiseFloor * 0.985 + rms * 0.015));
     }
 
+    // 판단은 평활화한 레벨로 하고 열린 뒤엔 holdMs 동안 유지한다(noise-gate-worklet.js와 같은 로직).
+    const blockMs = input.length / context.sampleRate * 1000;
+    level += (rms - level) * (1 - Math.exp(-blockMs / settings.levelMs));
     const threshold = Math.max(settings.minThreshold, noiseFloor * settings.thresholdScale);
     const openThreshold = threshold * settings.openScale;
-    const target = rms < threshold ? settings.closedGain : rms < openThreshold ? settings.holdGain : 1;
+    holdLeftMs = level >= openThreshold ? settings.holdMs : holdLeftMs - blockMs;
+    const target = holdLeftMs > 0 ? 1 : level < threshold ? settings.closedGain : settings.holdGain;
     gateGain += (target - gateGain) * (target > gateGain ? settings.attack : settings.release);
 
     for (let index = 0; index < input.length; index += 1) {
@@ -7026,6 +7035,8 @@ function getNoiseGateSettings() {
     holdGain: Math.max(0.22, 0.76 - strength * 0.54),
     attack: 0.22 + strength * 0.23,
     release: 0.22 - strength * 0.1,
+    holdMs: 150,
+    levelMs: 10,
   };
 }
 
