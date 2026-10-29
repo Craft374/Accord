@@ -16,7 +16,7 @@ seedAdminAccount();
 // 서버 버전. 클라이언트(앱) 버전은 package.json 의 version 이며 따로 관리한다.
 // 규칙: 클라 코드가 바뀌면 서버가 그 코드를 배포하므로 서버·클라 둘 다 올리고,
 //       서버만 바뀌면 서버 버전만 올린다.
-const VERSION = "3.3.0";
+const VERSION = "3.3.1";
 const PORT = Number(process.env.PORT || 25565);
 const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_HOST = cleanHost(process.env.PUBLIC_HOST || "");
@@ -886,6 +886,57 @@ function handleAdminMessage(client, message) {
       sendAdminUsers(client);
       return true;
     }
+    case "admin:create-user": {
+      const result = store.createUser({ username: message.username, password: message.password, displayName: message.displayName });
+      if (result.error) {
+        send(client, { type: "admin-error", message: result.error });
+        return true;
+      }
+      // 만들면서 미리 채널에 넣어 둔다.
+      for (const id of Array.isArray(message.channelIds) ? message.channelIds : []) {
+        if (!store.addMember(String(id), result.user.id).error) notifyChannelMembers(String(id));
+      }
+      sendAdminUsers(client);
+      return true;
+    }
+    case "admin:delete-user": {
+      const userId = String(message.userId || "");
+      const result = store.deleteUser(userId);
+      if (result.error) {
+        send(client, { type: "admin-error", message: result.error });
+        return true;
+      }
+      for (const c of [...clients.values()]) {
+        if (c.userId !== userId) continue;
+        send(c, { type: "auth-expired" });
+        closeClient(c);
+      }
+      for (const id of result.channelIds) notifyChannelMembers(id);
+      sendAdminUsers(client);
+      return true;
+    }
+    case "admin:set-member": {
+      const channelId = String(message.channelId || "");
+      const userId = String(message.userId || "");
+      if (!store.findById(userId)) {
+        send(client, { type: "admin-error", message: "유저를 찾을 수 없습니다." });
+        return true;
+      }
+      const result = message.value ? store.addMember(channelId, userId) : store.removeMember(channelId, userId);
+      if (result.error) {
+        send(client, { type: "admin-error", message: result.error });
+        return true;
+      }
+      // channel:kick 과 같이, 빠진 유저는 채널 방에서 내보내고 목록을 갱신한다.
+      for (const c of clients.values()) {
+        if (c.userId !== userId) continue;
+        if (!message.value) forceLeaveChannelRooms(c, channelId);
+        sendChannels(c);
+      }
+      notifyChannelMembers(channelId);
+      sendAdminUsers(client);
+      return true;
+    }
     case "admin:get-ai-prompt":
       send(client, { type: "admin-ai-prompt", prompt: store.getAiGlobalPrompt() });
       return true;
@@ -900,7 +951,8 @@ function handleAdminMessage(client, message) {
 }
 
 function sendAdminUsers(client) {
-  send(client, { type: "admin-users", users: store.listUsers(), online: onlineUserIds() });
+  const channels = store.listChannelsForUser("", true).map(({ id, name, ownerId, memberIds }) => ({ id, name, ownerId, memberIds }));
+  send(client, { type: "admin-users", users: store.listUsers(), online: onlineUserIds(), channels });
 }
 
 function onlineUserIds() {

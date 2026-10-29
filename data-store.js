@@ -364,6 +364,21 @@ function setUserCode(userId, newCode) {
   return { user };
 }
 
+// 계정 삭제. 관리자·채널 창설자는 막는다(채널이 주인을 잃음). 남은 메시지·DM은 "(삭제된 계정)"으로 보인다.
+function deleteUser(userId) {
+  const user = findById(userId);
+  if (!user) return { error: "유저를 찾을 수 없습니다." };
+  if (user.isAdmin) return { error: "관리자 계정은 삭제할 수 없습니다." };
+  const owned = channelsDb.channels.filter((c) => c.ownerId === userId);
+  if (owned.length) return { error: `창설한 채널이 있어 삭제할 수 없습니다: ${owned.map((c) => c.name).join(", ")}` };
+  const channelIds = channelsDb.channels.filter((c) => c.members.includes(userId)).map((c) => c.id);
+  for (const id of channelIds) removeMember(id, userId);
+  destroyUserSessions(userId);
+  db.users = db.users.filter((u) => u.id !== userId);
+  persistUsers();
+  return { channelIds };
+}
+
 // ---- 직렬화(비밀번호 해시 제거) ----
 function sanitizeUser(user) {
   if (!user) return null;
@@ -1987,6 +2002,7 @@ module.exports = {
   listUsers,
   setAdmin,
   setUserCode,
+  deleteUser,
   sanitizeUser,
   sanitizeUserAdmin,
   // 채널 · 방
