@@ -111,6 +111,20 @@
     return op;
   }
 
+  // CodeMirror ChangeSet 을 op로. fromDiff 와 달리 실제로 바뀐 자리만 담는다(같은 글자가 이어져도 위치가 정확하고,
+  // 번호 고치기처럼 떨어진 변경 여러 개가 사이 글자까지 지웠다 다시 쓰는 하나의 큰 op로 뭉치지 않는다).
+  function fromChanges(changes) {
+    const op = [];
+    let at = 0;
+    changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+      appendComp(op, fromA - at);
+      appendComp(op, -(toA - fromA));
+      appendComp(op, inserted.toString());
+      at = toA;
+    });
+    return op;
+  }
+
   // 커서 위치 pos를 op 이후 위치로 변환.
   function transformCursor(pos, op, side) {
     let idx = 0;
@@ -129,7 +143,7 @@
     return result;
   }
 
-  const OT = { apply, transform, fromDiff, transformCursor };
+  const OT = { apply, transform, fromDiff, fromChanges, transformCursor };
   if (typeof module !== "undefined" && module.exports) module.exports = OT;
   if (root) root.OTText = OT;
 })(typeof window !== "undefined" ? window : null);

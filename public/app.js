@@ -39,6 +39,7 @@ const ROOM_TYPE_META = {
   chat: { icon: "#", label: "채팅방" },
   memo: { icon: "📝", label: "메모장" },
   draw: { icon: "🎨", label: "그림판" },
+  table: { icon: "🗂️", label: "테이블" },
   log: { icon: "📜", label: "전역 로그" },
   ai: { icon: "🤖", label: "AI방" },
 };
@@ -204,6 +205,7 @@ const state = {
   collapsedRoomGroups: readCollapsedRoomGroups(), // channelId:groupId 형태의 사용자별 접기 상태
   // 메모장
   memo: null, // { roomId, channelId, name, rev, remotePending, saveTimer, view }
+  table: null, // 열어 둔 테이블 방
   memoTabs: [], // 열어둔 메모방 roomId 목록(파일 탭). 패널을 완전히 닫으면 함께 비워짐
   // 전역 로그
   activeLog: null, // { roomId, channelId, name, entries: [] }
@@ -290,9 +292,18 @@ const dom = {
   memoRoomName: document.querySelector("#memoRoomName"),
   memoStatus: document.querySelector("#memoStatus"),
   memoTabs: document.querySelector("#memoTabs"),
-  memoBody: document.querySelector("#memoBody"),
-  memoEditor: document.querySelector("#memoEditor"),
-  memoPreview: document.querySelector("#memoPreview"),
+  memoPanes: document.querySelector("#memoPanes"),
+  memoSplitButton: document.querySelector("#memoSplitButton"),
+  memoSplitClose: document.querySelector("#memoSplitClose"),
+  tableRoomName: document.querySelector("#tableRoomName"),
+  tableStatus: document.querySelector("#tableStatus"),
+  tableZoomIn: document.querySelector("#tableZoomIn"),
+  tableZoomOut: document.querySelector("#tableZoomOut"),
+  tableZoomLabel: document.querySelector("#tableZoomLabel"),
+  tableAddButton: document.querySelector("#tableAddButton"),
+  tableFileInput: document.querySelector("#tableFileInput"),
+  tableScroll: document.querySelector("#tableScroll"),
+  tableStage: document.querySelector("#tableStage"),
   memoViewSplit: document.querySelector("#memoViewSplit"),
   memoViewEdit: document.querySelector("#memoViewEdit"),
   memoViewPreview: document.querySelector("#memoViewPreview"),
@@ -616,7 +627,8 @@ const dom = {
   adminAiPromptSave: document.querySelector("#adminAiPromptSave"),
   adminAiPromptState: document.querySelector("#adminAiPromptState"),
 };
-var memoEditorController = null;
+var memoPanes = []; // 메모 창(분할보기면 2개). { root, body, editorHost, preview, controller, session, ... }
+var activeMemoPane = null; // 입력·툴바가 향하는 창. state.memo 는 항상 이 창의 세션이다.
 
 init().catch((error) => {
   setStatus("오류", "bad");
@@ -723,6 +735,7 @@ function bindEvents() {
   bindAiEvents();
   bindMemoEvents();
   bindDrawEvents();
+  bindTableEvents();
   bindDmEvents();
   bindLogEvents();
   bindCallDockPopovers();
@@ -1835,6 +1848,7 @@ async function handleSocketMessage(message) {
     verifyActiveAi();
     verifyActiveMemo();
     verifyActiveDraw();
+    verifyActiveTable();
     verifyActiveLog();
     enforceCurrentRoomMediaPerms(); // 통화 중 권한 회수 시 소리/화면 공유 강제 종료
     updateControls();               // 발언·공유 버튼 상태를 최신 권한으로 갱신
@@ -1992,6 +2006,16 @@ async function handleSocketMessage(message) {
 
   if (message.type === "memo-error") {
     if (state.memo) setMemoStatus(message.message || "메모 오류", "bad");
+    return;
+  }
+
+  if (message.type === "table-error") {
+    setTableStatus(message.message || "테이블 오류", "bad");
+    return;
+  }
+
+  if (message.type && message.type.startsWith("table:")) {
+    handleTableSocketMessage(message);
     return;
   }
 
@@ -7194,6 +7218,8 @@ function markRoomNameClickable(el, channel) {
   el.classList.toggle("room-name-clickable", clickable);
   el.title = clickable ? "클릭해서 방 설정 열기" : "";
 }
+// 방·그룹 추가/삭제/순서 변경 권한(대표·개별허용·역할).
+function canManageRooms(channel) { return memberHasCap(channel, "manageRooms"); }
 // 공유 글꼴 업로드·삭제 권한(대표·개별허용·역할).
 function canManageFont(channel) { return memberHasCap(channel, "manageFont"); }
 
@@ -7393,8 +7419,8 @@ function renderRooms() {
   if (!dom.roomList) return;
   dom.roomList.innerHTML = "";
   const channel = currentChannel();
-  // 미리보기 중에는 대표 전용 버튼(방 추가/삭제)도 숨겨 실제 유저 화면처럼 보여준다.
-  const owner = Boolean(channel) && isChannelOwner(channel) && !rolePreview.active;
+  // 미리보기 중에는 방 관리 버튼(추가/삭제)도 숨겨 실제 유저 화면처럼 보여준다.
+  const owner = Boolean(channel) && canManageRooms(channel) && !rolePreview.active;
   // '+ 방 / + 그룹' 은 스크롤러 밖(.channel-panel 바닥)에 고정된 정적 요소라 보이기만 토글한다.
   if (dom.roomListActions) dom.roomListActions.hidden = !owner;
   if (!channel) return;
@@ -7610,8 +7636,9 @@ function buildRoomItem(channel, room, owner) {
   if (owner) item.classList.add("room-draggable");
   if (state.currentRoom?.id === room.id) item.classList.add("active");
   if (state.activeChat?.roomId === room.id) item.classList.add("active");
-  if (state.memo?.roomId === room.id) item.classList.add("active");
+  if (memoPaneOf(room.id)) item.classList.add("active");
   if (state.draw?.roomId === room.id) item.classList.add("active");
+  if (state.table?.roomId === room.id) item.classList.add("active");
   if (state.activeLog?.roomId === room.id) item.classList.add("active");
 
   const head = document.createElement("button");
@@ -8068,8 +8095,9 @@ const CAP_META = {
   attachFile: { icon: "📎", name: "파일·이미지 첨부", short: "파일 첨부", desc: "채팅에 파일·이미지를 올릴 수 있어요.", gate: "attachRestricted" },
   renameRoom: { icon: "✏️", name: "방 이름 변경", short: "방 이름", desc: "채널의 방 이름을 바꿀 수 있어요." },
   manageFont: { icon: "🅰", name: "공유 글꼴 관리", short: "글꼴 관리", desc: "메모장 공유 글꼴을 올리고 지울 수 있어요." },
+  manageRooms: { icon: "🗄", name: "방·그룹 관리", short: "방 관리", desc: "방과 그룹을 추가·삭제하고 순서를 바꿀 수 있어요. 방을 지우면 저장된 내용도 함께 사라져요." },
 };
-const CAP_KEYS = ["addEmoji", "removeEmoji", "useEmoji", "attachFile", "renameRoom", "manageFont"];
+const CAP_KEYS = ["addEmoji", "removeEmoji", "useEmoji", "attachFile", "renameRoom", "manageFont", "manageRooms"];
 
 // 스위치형 권한 카드(제목 + 설명 + 오른쪽 토글). data 속성은 호출부에서 지정한다.
 function buildPermCard({ title, desc, checked, badge, dim, dataset }) {
@@ -8494,7 +8522,7 @@ function buildPreviewPane(channel) {
       line.className = "perms-preview-line" + (p.access ? "" : " no-access");
       const ic = (ROOM_TYPE_META[room.type] || {}).icon || "";
       let caps = p.access ? "접근 O" : "접근 X (숨김)";
-      if (p.access && (room.type === "chat" || room.type === "draw" || room.type === "memo" || room.type === "ai")) {
+      if (p.access && (room.type === "chat" || room.type === "draw" || room.type === "table" || room.type === "memo" || room.type === "ai")) {
         caps += ` · ${useLabelFor(room.type)} ${p.use ? "O" : "X"}`;
       }
       line.innerHTML = `<span>${ic} ${escapeHtml(room.name)}</span><span class="perms-caps">${caps}</span>`;
@@ -8627,7 +8655,7 @@ function closeRoomGroupModal() {
 
 function openRoomGroupModal(groupId = "", parentGroupId = "") {
   const channel = currentChannel();
-  if (!channel || !isChannelOwner(channel)) return;
+  if (!channel || !canManageRooms(channel)) return;
   closeRoomGroupModal();
   const group = (channel.roomGroups || []).find((g) => g.id === groupId) || null;
   roomGroupEditId = group?.id || "";
@@ -8858,11 +8886,14 @@ function finishRoomPointerDrag(event, commit) {
     event?.stopPropagation?.();
     suppressRoomClickUntil = Date.now() + 400;
     const channel = currentChannel();
-    if (commit && drag.hasTarget && channel && isChannelOwner(channel)) {
+    if (commit && drag.hasTarget && channel && canManageRooms(channel)) {
       const root = dom.roomList.querySelector(".room-tree-root");
       const layout = serializeRoomTreeContainer(root, drag);
       if (roomLayoutContainsEveryNode(layout, channel)) {
         sendSocket({ type: "channel:reorder-room-layout", channelId: channel.id, layout });
+      } else {
+        // 내게 숨겨진 방은 목록에 없어 전체 순서를 만들 수 없다.
+        setMessage("볼 수 없는 방이 있어 순서를 바꿀 수 없습니다.");
       }
     }
   }
@@ -8873,7 +8904,7 @@ function bindRoomDragEvents() {
   dom.roomList?.addEventListener("pointerdown", (event) => {
     if (event.button !== 0 || roomPointerDrag) return;
     const channel = currentChannel();
-    if (!channel || !isChannelOwner(channel) || rolePreview.active) return;
+    if (!channel || !canManageRooms(channel) || rolePreview.active) return;
     const item = event.target?.closest?.('.room-item.room-draggable[data-room-node-kind="room"]');
     if (item && !event.target?.closest?.("[data-room-delete]")) {
       roomPointerDrag = { kind: "room", id: item.dataset.roomNodeId, source: item, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, active: false, hasTarget: false };
@@ -9168,8 +9199,9 @@ function selectChannel(channelId) {
   if (!channelId || channelId === state.currentChannelId) return;
   // 다른 채널의 방을 보고 있었다면 닫는다(방 목록이 새 채널로 바뀌므로).
   if (state.activeChat && state.activeChat.channelId !== channelId) closeChatView();
-  if (state.memo && state.memo.channelId !== channelId) closeMemoView();
+  if (memoSessions().some((m) => m.channelId !== channelId)) closeMemoView();
   if (state.draw && state.draw.channelId !== channelId) closeDrawView();
+  if (state.table && state.table.channelId !== channelId) closeTableView();
   if (state.activeLog && state.activeLog.channelId !== channelId) closeLogView();
   state.currentChannelId = channelId;
   renderChannels();
@@ -9182,43 +9214,57 @@ function openRoom(roomId, roomType) {
     closeChatView();
     closeMemoView();
     closeDrawView();
+    closeTableView();
     closeLogView();
     closeAiView();
     joinRoom(roomId);
   } else if (roomType === "chat") {
     closeMemoView();
     closeDrawView();
+    closeTableView();
     closeLogView();
     closeAiView();
     openChatRoom(roomId);
   } else if (roomType === "memo") {
     closeChatView();
     closeDrawView();
+    closeTableView();
     closeLogView();
     closeAiView();
     openMemoRoom(roomId);
   } else if (roomType === "draw") {
     closeChatView();
     closeMemoView();
+    closeTableView();
     closeLogView();
     closeAiView();
     openDrawRoom(roomId);
+  } else if (roomType === "table") {
+    closeChatView();
+    closeMemoView();
+    closeDrawView();
+    closeLogView();
+    closeAiView();
+    openTableRoom(roomId);
   } else if (roomType === "log") {
     closeChatView();
     closeMemoView();
     closeDrawView();
+    closeTableView();
     closeAiView();
     openLogRoom(roomId);
   } else if (roomType === "ai") {
     closeChatView();
     closeMemoView();
     closeDrawView();
+    closeTableView();
     closeLogView();
     openAiRoom(roomId);
   } else {
     closeChatView();
     closeMemoView();
     closeDrawView();
+    closeTableView();
     closeLogView();
     closeAiView();
     const meta = ROOM_TYPE_META[roomType] || {};
@@ -12207,7 +12253,7 @@ function memoFontStack(key) {
 
 // 현재 메모방이 속한 채널의 업로드 글꼴 목록.
 function memoChannelFonts() {
-  const chId = state.memo?.channelId;
+  const chId = (state.memo || memoSessions()[0])?.channelId;
   const ch = state.channels.find((c) => c.id === chId);
   return Array.isArray(ch?.fonts) ? ch.fonts : [];
 }
@@ -12256,7 +12302,7 @@ function registerCustomFonts(channel) {
           document.fonts.add(loaded);
           // 지금 이 글꼴을 쓰는 메모가 열려 있으면 로드 완료 후 다시 렌더.
           const activeKey = grouped ? `custom-family:${group.slug}` : `custom:${font.id}`;
-          if (state.memo && state.memo.font === activeKey) applyMemoFont(state.memo.font);
+          for (const m of memoSessions()) if (m.font === activeKey) applyMemoFont(m.font, m);
         }).catch(() => {});
       } catch { /* 잘못된 폰트 URL 무시 */ }
     }
@@ -12297,14 +12343,15 @@ function clampMemoFont(px) {
 }
 
 // 편집기·미리보기의 공유 글꼴을 바꾼다(공유 속성이므로 로컬 저장은 하지 않음).
-function applyMemoFont(key) {
+function applyMemoFont(key, m = state.memo) {
   const stack = memoFontStack(key);
   const { base, weight } = parseMemoFontKey(key);
-  if (dom.memoPreview) {
-    dom.memoPreview.style.fontFamily = stack;
-    dom.memoPreview.style.fontWeight = weight || "";
+  if (m) {
+    m.pane.preview.style.fontFamily = stack;
+    m.pane.preview.style.fontWeight = weight || "";
+    m.pane.controller?.setTypography({ fontFamily: stack, fontWeight: weight || "400", fontSize: memoFontSize });
   }
-  memoEditorController?.setTypography({ fontFamily: stack, fontWeight: weight || "400", fontSize: memoFontSize });
+  if (m !== state.memo) return; // 툴바는 입력 중인 창의 글꼴만 보여준다
   if (dom.memoFontSelect && dom.memoFontSelect.value !== base) {
     dom.memoFontSelect.value = memoFontExists(base) ? base : MEMO_FONT_DEFAULT_KEY;
   }
@@ -12335,24 +12382,26 @@ function populateMemoFontWeight(key) {
 // 마크업은 문서 텍스트에 그대로 들어가 OT 로 동기화되고, 미리보기에서 색으로 렌더된다.
 function applyMemoColor(color) {
   const m = state.memo;
-  if (!m || !m.writable || !memoEditorController) return;
+  if (!m || !m.writable || !m.pane.controller) return;
   const hex = /^#[0-9a-fA-F]{3,8}$/.test(String(color || "")) ? color : "#f0b232";
-  memoEditorController.wrapSelection(`{색:${hex}}`, "{/색}", "색 글자");
+  m.pane.controller.wrapSelection(`{색:${hex}}`, "{/색}", "색 글자");
 }
 
 // 편집기·미리보기 글자 크기를 함께 조절한다(Ctrl/Cmd+휠).
 function applyMemoFontSize(px) {
   memoFontSize = clampMemoFont(px);
   localStorage.setItem("accordMemoFontSize", String(memoFontSize));
-  if (dom.memoPreview) dom.memoPreview.style.fontSize = `${memoFontSize}px`;
-  const key = state.memo?.font || MEMO_FONT_DEFAULT_KEY;
-  const { weight } = parseMemoFontKey(key);
-  memoEditorController?.setTypography({ fontFamily: memoFontStack(key), fontWeight: weight || "400", fontSize: memoFontSize });
+  for (const pane of memoPanes) {
+    pane.preview.style.fontSize = `${memoFontSize}px`;
+    const key = pane.session?.font || MEMO_FONT_DEFAULT_KEY;
+    const { weight } = parseMemoFontKey(key);
+    pane.controller?.setTypography({ fontFamily: memoFontStack(key), fontWeight: weight || "400", fontSize: memoFontSize });
+  }
 }
 
 // 설정 > 메모장 탭의 색 선택값을 편집기(CSS 변수)에 반영.
 function applyMemoLiveColors() {
-  memoEditorController?.setPalette(memoLiveColors);
+  for (const pane of memoPanes) pane.controller?.setPalette(memoLiveColors);
   if (dom.memoColorEm) dom.memoColorEm.value = memoLiveColors.em;
   if (dom.memoColorStrong) dom.memoColorStrong.value = memoLiveColors.strong;
   if (dom.memoColorStrongEm) dom.memoColorStrongEm.value = memoLiveColors.strongem;
@@ -12370,7 +12419,7 @@ function bindMemoColorSettings() {
     input?.addEventListener("input", () => {
       memoLiveColors = { ...memoLiveColors, [key]: input.value };
       localStorage.setItem("accordMemoLiveColors", JSON.stringify(memoLiveColors));
-      memoEditorController?.setPalette(memoLiveColors);
+      for (const pane of memoPanes) pane.controller?.setPalette(memoLiveColors);
     });
   }
   dom.resetMemoColorsButton?.addEventListener("click", () => {
@@ -12381,22 +12430,90 @@ function bindMemoColorSettings() {
 }
 
 // 메모방을 다시 열면 마지막으로 있던 커서 자리와 스크롤(휠) 위치를 그대로 되살린다(방별로 localStorage 보관).
-function saveMemoPos() {
-  const m = state.memo;
-  if (!m || !memoEditorController) return;
+function saveMemoPos(m) {
+  const controller = m?.pane.controller;
+  if (!controller) return;
   localStorage.setItem(`accordMemoPos:${m.roomId}`, JSON.stringify({
-    anchor: memoEditorController.getSelection().anchor,
-    scroll: memoEditorController.getScrollTop(),
+    anchor: controller.getSelection().anchor,
+    scroll: controller.getScrollTop(),
   }));
 }
 
-function restoreMemoPos(roomId) {
-  if (!memoEditorController) return;
+function restoreMemoPos(m) {
+  const controller = m.pane.controller;
+  if (!controller) return;
   let saved = null;
-  try { saved = JSON.parse(localStorage.getItem(`accordMemoPos:${roomId}`) || "null"); } catch {}
+  try { saved = JSON.parse(localStorage.getItem(`accordMemoPos:${m.roomId}`) || "null"); } catch {}
   if (!saved) return;
-  memoEditorController.setSelection(Number(saved.anchor) || 0); // 문서 길이는 setSelection 이 알아서 자름
-  memoEditorController.setScrollTop(Number(saved.scroll) || 0);
+  controller.setSelection(Number(saved.anchor) || 0); // 문서 길이는 setSelection 이 알아서 자름
+  controller.setScrollTop(Number(saved.scroll) || 0);
+}
+
+function memoPaneOf(roomId) {
+  return memoPanes.find((pane) => pane.session?.roomId === roomId) || null;
+}
+function memoSessions() {
+  return memoPanes.map((pane) => pane.session).filter(Boolean);
+}
+
+// 창에 떠 있던 메모를 내린다(서버에 보기 중단을 알리고 커서 자리를 저장).
+function releaseMemoSession(pane) {
+  const m = pane.session;
+  if (!m) return;
+  saveMemoPos(m);
+  if (m.cursorTimer) clearTimeout(m.cursorTimer);
+  sendSocket({ type: "memo:close", roomId: m.roomId });
+  pane.session = null;
+  if (state.memo === m) state.memo = null;
+}
+
+// 입력·툴바가 향할 창을 바꾸고, 머리글(제목·글꼴·보기 방식·상태)을 그 창 기준으로 맞춘다.
+function setActiveMemoPane(pane) {
+  activeMemoPane = pane;
+  state.memo = pane.session;
+  renderMemoPaneChrome();
+  const m = state.memo;
+  if (!m) {
+    setMemoStatus("왼쪽 방 목록이나 탭에서 메모를 고르세요", "muted");
+    return;
+  }
+  populateMemoFonts();
+  applyMemoFont(m.font);
+  updateMemoFontManageButton();
+  applyMemoView(m.view);
+  setMemoStatus(m.statusText, m.statusTone);
+}
+
+function renderMemoPaneChrome() {
+  const m = state.memo;
+  if (dom.memoRoomName) dom.memoRoomName.textContent = m?.name || "메모장";
+  markRoomNameClickable(dom.memoRoomName, m ? state.channels.find((c) => c.id === m.channelId) : null);
+  const split = !memoPanes[1]?.root.hidden;
+  dom.memoPanes?.classList.toggle("split", split);
+  dom.memoSplitButton?.classList.toggle("active", split);
+  dom.memoSplitButton?.setAttribute("aria-pressed", String(split));
+  for (const pane of memoPanes) {
+    pane.root.classList.toggle("active", split && pane === activeMemoPane);
+    pane.name.textContent = pane.session?.name || "메모 선택";
+    pane.body.hidden = !pane.session;
+    pane.empty.hidden = Boolean(pane.session);
+  }
+  updateMemoToolsEnabled();
+}
+
+function openMemoSplit() {
+  const right = memoPanes[1];
+  if (!right) return;
+  right.root.hidden = false;
+  ensureMemoEditor(right);
+  setActiveMemoPane(right);
+}
+
+function closeMemoSplit() {
+  const [left, right] = memoPanes;
+  releaseMemoSession(right);
+  right.root.hidden = true;
+  setActiveMemoPane(left);
 }
 
 function openMemoRoom(roomId, { background = false } = {}) {
@@ -12408,18 +12525,24 @@ function openMemoRoom(roomId, { background = false } = {}) {
     renderMemoTabs();
     return;
   }
-  saveMemoPos(); // 다른 메모방으로 바로 갈아탈 때 지금 방 위치부터 저장
-  if (state.memo?.roomId === roomId) {
+  // 같은 메모를 두 창에 띄우지 않는다: 이미 떠 있으면 그 창으로 옮겨 간다.
+  const shown = memoPaneOf(roomId);
+  if (shown) {
     document.body.classList.add("memo-open");
-    memoEditorController?.focus();
+    setActiveMemoPane(shown);
+    shown.controller?.focus();
     renderMemoTabs();
     return;
   }
-  state.memo = {
+  const pane = activeMemoPane;
+  const view = pane.session?.view || memoViewPref;
+  releaseMemoSession(pane);
+  const m = {
     roomId,
+    pane,
     channelId: found.channel.id,
     name: found.room.name,
-    view: state.memo?.view || memoViewPref,
+    view,
     doc: "",
     font: MEMO_FONT_DEFAULT_KEY, // 공유 글꼴(memo:state 로 갱신됨)
     serverRev: 0,
@@ -12432,19 +12555,15 @@ function openMemoRoom(roomId, { background = false } = {}) {
     folds: new Set(), // 미리보기에서 접어둔 목록 항목(문서 순서 기준 인덱스)
     writable: canWriteRoom(found.channel, found.room),
   };
+  pane.session = m;
+  state.memo = m;
   document.body.classList.add("memo-open");
-  if (dom.memoRoomName) dom.memoRoomName.textContent = found.room.name;
-  markRoomNameClickable(dom.memoRoomName, found.channel);
-  memoEditorController?.reset("");
-  memoEditorController?.setReadOnly(true);
-  if (dom.memoPreview) dom.memoPreview.innerHTML = "";
+  pane.controller?.reset("");
+  pane.controller?.setReadOnly(true);
+  pane.preview.innerHTML = "";
   applyMemoFontSize(memoFontSize); // 저장된 글자 크기 반영
-  populateMemoFonts();
-  applyMemoFont(state.memo.font);
-  updateMemoFontManageButton();
-  updateMemoToolsEnabled();
-  clearMemoCursors();
-  applyMemoView(state.memo.view);
+  clearMemoCursors(m);
+  setActiveMemoPane(pane);
   setMemoStatus("불러오는 중…", "muted");
   sendSocket({ type: "memo:open", roomId });
   renderMemoTabs();
@@ -12452,13 +12571,15 @@ function openMemoRoom(roomId, { background = false } = {}) {
 }
 
 function closeMemoView() {
-  if (!state.memo) return;
-  saveMemoPos();
-  if (state.memo.cursorTimer) clearTimeout(state.memo.cursorTimer);
-  sendSocket({ type: "memo:close" });
-  state.memo = null;
+  if (!memoPanes.some((pane) => pane.session)) return;
+  for (const m of memoSessions()) {
+    clearMemoCursors(m);
+    releaseMemoSession(m.pane);
+  }
   state.memoTabs = [];
-  clearMemoCursors();
+  memoPanes[1].root.hidden = true;
+  activeMemoPane = memoPanes[0];
+  renderMemoPaneChrome();
   closeFontManager();
   document.body.classList.remove("memo-open");
   exitFocusMode();
@@ -12466,15 +12587,26 @@ function closeMemoView() {
   renderRooms();
 }
 
-// 탭 하나만 닫는다. 지금 보던 탭이면 옆 탭으로 넘어가고, 마지막 탭이면 패널 전체를 닫는다.
+// 탭 하나만 닫는다. 창에 떠 있던 탭이면 그 창은 옆 탭으로 넘어가고, 넘어갈 탭이 없으면 창을 줄이거나 패널을 닫는다.
 function closeMemoTab(roomId) {
   const idx = state.memoTabs.indexOf(roomId);
   if (idx === -1) return;
   state.memoTabs.splice(idx, 1);
-  if (state.memo?.roomId !== roomId) { renderMemoTabs(); return; }
-  const next = state.memoTabs[idx] ?? state.memoTabs[idx - 1];
+  const pane = memoPaneOf(roomId);
+  if (!pane) { renderMemoTabs(); return; }
+  const next = [state.memoTabs[idx], state.memoTabs[idx - 1], ...state.memoTabs].find((id) => id && !memoPaneOf(id));
+  const other = memoPanes.find((p) => p !== pane && p.session);
+  setActiveMemoPane(pane);
   if (next) openMemoRoom(next);
-  else closeMemoView();
+  else if (pane.index === 1) closeMemoSplit();
+  else if (other) {
+    // 왼쪽 창이 비면 오른쪽 메모를 왼쪽으로 옮겨 분할을 푼다.
+    const moved = other.session.roomId;
+    closeMemoSplit();
+    openMemoRoom(moved);
+  } else closeMemoView();
+  renderMemoTabs();
+  renderRooms();
 }
 
 function cycleMemoTab(direction) {
@@ -12493,7 +12625,7 @@ function renderMemoTabs() {
   for (const roomId of state.memoTabs) {
     const found = findRoomInChannels(roomId);
     const tab = document.createElement("div");
-    tab.className = `memo-tab${roomId === state.memo?.roomId ? " active" : ""}`;
+    tab.className = `memo-tab${memoPaneOf(roomId) ? " active" : ""}`;
     tab.dataset.memoTabRoom = roomId;
     tab.setAttribute("role", "tab");
     tab.append(el("span", "memo-tab-name", found?.room.name || "(삭제된 방)"));
@@ -12511,51 +12643,52 @@ function renderMemoTabs() {
 
 // 채널 목록 갱신 후, 보고 있던 메모방이 사라졌거나 이름이 바뀌었는지 확인.
 function verifyActiveMemo() {
-  if (!state.memo) return;
-  const found = findRoomInChannels(state.memo.roomId);
-  if (!found || found.room.type !== "memo") { closeMemoView(); return; }
+  const isMemoRoom = (roomId) => findRoomInChannels(roomId)?.room.type === "memo";
+  for (const m of memoSessions()) {
+    if (!isMemoRoom(m.roomId)) closeMemoTab(m.roomId);
+  }
+  if (!memoSessions().length) return;
   // 다른 탭으로 열어둔 방이 그 사이 삭제됐으면 탭 목록에서도 뗀다.
   const before = state.memoTabs.length;
-  state.memoTabs = state.memoTabs.filter((roomId) => {
-    const r = findRoomInChannels(roomId);
-    return r && r.room.type === "memo";
-  });
+  state.memoTabs = state.memoTabs.filter(isMemoRoom);
   if (state.memoTabs.length !== before) renderMemoTabs();
-  state.memo.name = found.room.name;
-  state.memo.channelId = found.channel.id;
-  state.memo.writable = canWriteRoom(found.channel, found.room);
-  if (dom.memoRoomName) dom.memoRoomName.textContent = found.room.name;
-  markRoomNameClickable(dom.memoRoomName, found.channel);
-  memoEditorController?.setReadOnly(!state.memo.writable);
+  for (const m of memoSessions()) {
+    const found = findRoomInChannels(m.roomId);
+    m.name = found.room.name;
+    m.channelId = found.channel.id;
+    m.writable = canWriteRoom(found.channel, found.room);
+    m.pane.controller?.setReadOnly(!m.writable);
+  }
+  renderMemoPaneChrome();
 }
 
 function handleMemoState(message) {
-  const m = state.memo;
-  if (!m || m.roomId !== message.roomId) return;
+  const m = memoPaneOf(message.roomId)?.session;
+  if (!m) return;
   m.doc = message.text || "";
   m.serverRev = message.rev || 0;
   m.inflight = null;
   m.buffer = [];
   m.font = acceptMemoFont(message.font);
-  memoEditorController?.reset(m.doc);
-  restoreMemoPos(m.roomId);
-  memoEditorController?.setReadOnly(!m.writable);
-  applyMemoFont(m.font);
+  m.pane.controller?.reset(m.doc);
+  restoreMemoPos(m);
+  m.pane.controller?.setReadOnly(!m.writable);
+  applyMemoFont(m.font, m);
   updateMemoToolsEnabled();
-  renderMemoPreview();
+  renderMemoPreview(m);
   m.cursors.clear();
-  for (const cur of message.cursors || []) setMemoCursor(cur);
-  renderMemoCursors();
-  if (!m.writable) setMemoStatus("읽기 전용 — 대표자만 편집", "muted");
-  else setMemoStatus(m.doc ? "실시간 편집 중" : "빈 메모 — 함께 편집됩니다", "muted");
+  for (const cur of message.cursors || []) setMemoCursor(m, cur);
+  renderMemoCursors(m);
+  if (!m.writable) setMemoStatus("읽기 전용 — 대표자만 편집", "muted", m);
+  else setMemoStatus(m.doc ? "실시간 편집 중" : "빈 메모 — 함께 편집됩니다", "muted", m);
 }
 
 // 다른 참가자가 글꼴을 바꾸면 반영한다.
 function handleMemoFont(message) {
-  const m = state.memo;
-  if (!m || m.roomId !== message.roomId) return;
+  const m = memoPaneOf(message.roomId)?.session;
+  if (!m) return;
   m.font = acceptMemoFont(message.font);
-  applyMemoFont(m.font);
+  applyMemoFont(m.font, m);
 }
 
 // 글꼴/색 도구는 편집 권한이 있을 때만 활성화(읽기 전용이면 잠금).
@@ -12571,14 +12704,15 @@ function updateMemoToolsEnabled() {
 // ===== 메모장 공유 글꼴 관리 =====
 // 채널 데이터가 갱신될 때마다 글꼴 선택/관리버튼/열려있는 관리창을 최신 채널 글꼴로 맞춘다.
 function syncMemoFontUi() {
-  if (!state.memo) return;
+  if (!memoSessions().length) return;
   populateMemoFonts();
-  applyMemoFont(state.memo.font);
+  for (const m of memoSessions()) applyMemoFont(m.font, m);
   updateMemoFontManageButton();
   if (fontManagerEl) renderFontManagerList();
 }
 function memoChannel() {
-  return state.channels.find((c) => c.id === state.memo?.channelId) || null;
+  const channelId = (state.memo || memoSessions()[0])?.channelId;
+  return state.channels.find((c) => c.id === channelId) || null;
 }
 function updateMemoFontManageButton() {
   const btn = dom.memoFontManageButton;
@@ -12849,17 +12983,18 @@ function deleteFont(fontId) {
 }
 
 // CodeMirror 로컬 변경을 기존 OT op으로 바꿔 서버에 보낸다.
-function pushMemoDoc(newDoc) {
-  const m = state.memo;
-  if (!m) return;
-  const op = window.OTText.fromDiff(m.doc, newDoc);
+function pushMemoDoc(m, newDoc, changes) {
+  const OT = window.OTText;
+  let op = OT.fromChanges(changes);
+  // 안전장치: 문서 좌표가 어긋나 있으면 글자를 잃지 않도록 전체 비교로 되돌아간다.
+  if (OT.apply(m.doc, op) !== newDoc) op = OT.fromDiff(m.doc, newDoc);
   if (!op.length) return;
   m.doc = newDoc;
   // 내 편집으로 문서가 밀린 만큼 원격 커서도 함께 이동시켜 제자리에 고정한다.
   // (안 하면 내가 앞에 글자를 넣어도 상대 커서가 옛 위치에 묶여 뒤로 밀려 보임)
   for (const cur of m.cursors.values()) {
-    cur.pos = window.OTText.transformCursor(cur.pos, op, "left");
-    cur.sel = window.OTText.transformCursor(cur.sel, op, "left");
+    cur.pos = OT.transformCursor(cur.pos, op, "left");
+    cur.sel = OT.transformCursor(cur.sel, op, "left");
   }
   if (m.inflight === null) {
     m.inflight = op;
@@ -12869,17 +13004,17 @@ function pushMemoDoc(newDoc) {
   }
 }
 
-function onMemoInput(newDoc) {
-  if (!state.memo) return;
-  pushMemoDoc(newDoc);
-  renderMemoPreview();
-  sendMemoCursor();
+function onMemoInput(m, newDoc, changes) {
+  pushMemoDoc(m, newDoc, changes);
+  renderMemoPreview(m);
+  sendMemoCursor(m);
 }
 
 function handleMemoOp(message) {
-  const m = state.memo;
-  if (!m || m.roomId !== message.roomId) return;
+  const m = memoPaneOf(message.roomId)?.session;
+  if (!m) return;
   const OT = window.OTText;
+  const controller = m.pane.controller;
   m.serverRev = message.rev;
   if (message.by === state.clientId) {
     // 내 op의 ack → 버퍼에 쌓인 다음 op를 보낸다.
@@ -12888,6 +13023,7 @@ function handleMemoOp(message) {
       sendSocket({ type: "memo:op", roomId: m.roomId, rev: m.serverRev, ops: m.inflight });
     } else {
       m.inflight = null;
+      sendMemoCursor(m); // 글자가 다 도착했으니 미뤄 둔 커서를 보낸다
     }
     return;
   }
@@ -12906,13 +13042,15 @@ function handleMemoOp(message) {
   }
   m.buffer = nb;
 
-  const selection = memoEditorController?.getSelection() || { anchor: 0, head: 0 };
+  // 다른 사람이 내 커서 자리에 쓴 글자는 내 커서를 밀지 않는다("left"). 그래서 상대가 같은 자리에서
+  // 엔터를 쳐도 내 커서는 제자리에 남는다.
+  const selection = controller?.getSelection() || { anchor: 0, head: 0 };
   const nextSelection = {
-    anchor: OT.transformCursor(selection.anchor, r, "right"),
-    head: OT.transformCursor(selection.head, r, "right"),
+    anchor: OT.transformCursor(selection.anchor, r, "left"),
+    head: OT.transformCursor(selection.head, r, "left"),
   };
   m.doc = OT.apply(m.doc, r);
-  memoEditorController?.applyOperations(r, nextSelection);
+  controller?.applyOperations(r, nextSelection);
   // 원격 커서들도 이번 op만큼 이동.
   // 작성자 본인 커서는 삽입 위치에서 함께 앞으로 밀려야 하므로 side "right"
   // (side "left"면 삽입 텍스트만 앞으로 나가고 커서가 제자리에 묶여 뒤로 밀리는 것처럼 보임).
@@ -12921,28 +13059,27 @@ function handleMemoOp(message) {
     cur.pos = OT.transformCursor(cur.pos, r, side);
     cur.sel = OT.transformCursor(cur.sel, r, side);
   }
-  renderMemoPreview();
-  renderMemoCursors();
+  renderMemoPreview(m);
+  renderMemoCursors(m);
 }
 
 function handleMemoCursor(message) {
-  const m = state.memo;
-  if (!m || m.roomId !== message.roomId) return;
-  setMemoCursor(message);
-  renderMemoCursors();
+  const m = memoPaneOf(message.roomId)?.session;
+  if (!m) return;
+  setMemoCursor(m, message);
+  renderMemoCursors(m);
 }
 
 function handleMemoCursorLeave(message) {
-  const m = state.memo;
-  if (!m || m.roomId !== message.roomId) return;
+  const m = memoPaneOf(message.roomId)?.session;
+  if (!m) return;
   m.cursors.delete(message.clientId);
-  renderMemoCursors();
+  renderMemoCursors(m);
 }
 
-// 상대가 보내온 커서 위치는 상대 문서 기준이라, 아직 상대가 못 받은 내 미확정 op(inflight+buffer)만큼
+// 서버가 보내 준 커서는 서버 문서 기준이라, 서버가 아직 못 받은 내 미확정 op(inflight+buffer)만큼
 // 앞으로 당겨 내 로컬 문서 좌표계로 옮긴다. 안 하면 내가 편집 중일 때 상대 커서가 옛 위치로 튄다.
-function memoLocalizeCursorPos(pos) {
-  const m = state.memo;
+function memoLocalizeCursorPos(m, pos) {
   const OT = window.OTText;
   let p = pos | 0;
   if (m.inflight) p = OT.transformCursor(p, m.inflight, "left");
@@ -12950,30 +13087,31 @@ function memoLocalizeCursorPos(pos) {
   return p;
 }
 
-function setMemoCursor(cur) {
-  const m = state.memo;
-  if (!m || !cur.clientId) return;
+function setMemoCursor(m, cur) {
+  if (!cur.clientId) return;
   const existing = m.cursors.get(cur.clientId);
   const color = existing?.color || MEMO_CURSOR_COLORS[m.cursors.size % MEMO_CURSOR_COLORS.length];
   m.cursors.set(cur.clientId, {
     clientId: cur.clientId,
     userId: cur.userId,
     name: cur.name || "익명",
-    pos: memoLocalizeCursorPos(cur.pos),
-    sel: memoLocalizeCursorPos(cur.sel ?? cur.pos),
+    pos: memoLocalizeCursorPos(m, cur.pos),
+    sel: memoLocalizeCursorPos(m, cur.sel ?? cur.pos),
     color,
   });
 }
 
-function clearMemoCursors() {
-  if (state.memo) state.memo.cursors.clear();
-  memoEditorController?.setRemoteCursors([]);
+function clearMemoCursors(m) {
+  m.cursors.clear();
+  m.pane.controller?.setRemoteCursors([]);
 }
 
-function sendMemoCursor() {
-  const m = state.memo;
-  if (!m || !memoEditorController) return;
-  const selection = memoEditorController.getSelection();
+function sendMemoCursor(m) {
+  const controller = m.pane.controller;
+  // 서버에 아직 안 간 내 글자가 있으면 미룬다. 커서가 글자보다 먼저 도착하면 상대가 그 글자만큼 두 번
+  // 밀어 실제 입력 위치와 다른 곳에 내 커서를 보게 된다. 마지막 ack 때 handleMemoOp 이 다시 부른다.
+  if (m.pane.session !== m || !controller || m.inflight !== null || m.buffer.length) return;
+  const selection = controller.getSelection();
   const now = Date.now();
   const key = `${selection.anchor}:${selection.head}`;
   if (key === m.lastCursor) return;
@@ -12981,36 +13119,34 @@ function sendMemoCursor() {
   if (elapsed < MEMO_CURSOR_THROTTLE) {
     if (m.cursorTimer) clearTimeout(m.cursorTimer);
     m.cursorTimer = setTimeout(() => {
-      if (state.memo !== m) return;
       m.cursorTimer = null;
-      sendMemoCursor();
+      sendMemoCursor(m);
     }, MEMO_CURSOR_THROTTLE - elapsed);
     return;
   }
   if (m.cursorTimer) { clearTimeout(m.cursorTimer); m.cursorTimer = null; }
   m.cursorSentAt = now;
   m.lastCursor = key;
-  sendSocket({ type: "memo:cursor", roomId: m.roomId, pos: selection.anchor, sel: selection.head });
+  sendSocket({ type: "memo:cursor", roomId: m.roomId, rev: m.serverRev, pos: selection.anchor, sel: selection.head });
 }
 
-function renderMemoCursors() {
-  const m = state.memo;
-  if (!m || !memoEditorController) return;
-  memoEditorController.setRemoteCursors([...m.cursors.values()]);
+function renderMemoCursors(m) {
+  m.pane.controller?.setRemoteCursors([...m.cursors.values()]);
 }
 
-function renderMemoPreview() {
-  if (!dom.memoPreview) return;
-  dom.memoPreview.innerHTML = renderMarkdown(memoEditorController?.getText() || "");
-  hydrateLinkImagePreviews(dom.memoPreview);
+function renderMemoPreview(m = state.memo) {
+  if (!m) return;
+  m.pane.preview.innerHTML = renderMarkdown(m.pane.controller?.getText() || "", m.folds);
+  hydrateLinkImagePreviews(m.pane.preview);
 }
 
 // 미리보기의 체크박스를 눌렀을 때 원문에서 해당 항목을 찾아 [ ]↔[x] 로 토글한다.
 // index 는 문서 순서상 몇 번째 체크박스인지(코드펜스 안쪽은 세지 않음).
 function toggleMemoCheckbox(index) {
   const m = state.memo;
-  if (!m || !m.writable || !memoEditorController) return;
-  const lines = memoEditorController.getText().split("\n");
+  const controller = m?.pane.controller;
+  if (!m || !m.writable || !controller) return;
+  const lines = controller.getText().split("\n");
   let fenced = false;
   let count = -1;
   let offset = 0;
@@ -13028,9 +13164,9 @@ function toggleMemoCheckbox(index) {
     break;
   }
   if (markAt < 0) return;
-  const previewScroll = dom.memoPreview ? dom.memoPreview.scrollTop : 0;
-  memoEditorController.replaceRange(markAt, markAt + 1, nextMark);
-  if (dom.memoPreview) dom.memoPreview.scrollTop = previewScroll;
+  const previewScroll = m.pane.preview.scrollTop;
+  controller.replaceRange(markAt, markAt + 1, nextMark);
+  m.pane.preview.scrollTop = previewScroll;
 }
 
 // 접기/펼치기: 문서 변경이 아니라 미리보기 표시 상태만 바꾼다(m.folds 에 인덱스 저장).
@@ -13040,40 +13176,45 @@ function toggleMemoFold(id) {
   if (!m.folds) m.folds = new Set();
   if (m.folds.has(id)) m.folds.delete(id);
   else m.folds.add(id);
-  const scroll = dom.memoPreview ? dom.memoPreview.scrollTop : 0;
+  const scroll = m.pane.preview.scrollTop;
   renderMemoPreview();
-  if (dom.memoPreview) dom.memoPreview.scrollTop = scroll;
+  m.pane.preview.scrollTop = scroll;
 }
 
-function setMemoStatus(text, tone) {
-  if (!dom.memoStatus) return;
+// 창마다 상태 문구를 기억해 두고, 머리글에는 입력 중인 창의 문구만 보여준다.
+function setMemoStatus(text, tone, m = state.memo) {
+  if (m) { m.statusText = text; m.statusTone = tone; }
+  if (m !== state.memo || !dom.memoStatus) return;
   dom.memoStatus.textContent = text || "";
   dom.memoStatus.className = "memo-status" + (tone ? ` ${tone}` : "");
 }
 
 function applyMemoView(view) {
   const v = MEMO_VIEWS.includes(view) ? view : "split";
-  if (state.memo) state.memo.view = v;
+  const m = state.memo;
+  if (m) m.view = v;
   if (memoViewPref !== v) { memoViewPref = v; localStorage.setItem("accordMemoView", v); }
-  if (dom.memoBody) dom.memoBody.className = `memo-body view-${v}`;
   dom.memoViewSplit?.classList.toggle("active", v === "split");
   dom.memoViewEdit?.classList.toggle("active", v === "edit");
   dom.memoViewPreview?.classList.toggle("active", v === "preview");
   dom.memoViewLive?.classList.toggle("active", v === "live");
-  memoEditorController?.setMode(v === "live" ? "live" : "source");
-  if (v !== "edit") renderMemoPreview();
   updateMemoToolsEnabled();
-  renderMemoCursors();
+  if (!m) return;
+  m.pane.body.className = `memo-body view-${v}`;
+  m.pane.controller?.setMode(v === "live" ? "live" : "source");
+  if (v !== "edit") renderMemoPreview(m);
+  renderMemoCursors(m);
 }
 
-function ensureMemoEditor() {
-  if (memoEditorController || !dom.memoEditor || !window.AccordMemoEditor) return;
-  memoEditorController = window.AccordMemoEditor.create({
-    parent: dom.memoEditor,
-    onChange: onMemoInput,
-    onSelectionChange: sendMemoCursor,
+function ensureMemoEditor(pane) {
+  if (pane.controller || !window.AccordMemoEditor) return;
+  pane.controller = window.AccordMemoEditor.create({
+    parent: pane.editorHost,
+    onChange: (newDoc, changes) => { if (pane.session) onMemoInput(pane.session, newDoc, changes); },
+    onSelectionChange: () => { if (pane.session) sendMemoCursor(pane.session); },
     onOpenLink: (href) => window.open(href, "_blank", "noopener"),
   });
+  pane.controller.setPalette(memoLiveColors);
   applyMemoAutocompletePref();
 }
 
@@ -13085,7 +13226,19 @@ function applyMemoAutocompletePref() {
 }
 
 function bindMemoEvents() {
-  ensureMemoEditor();
+  memoPanes = [...document.querySelectorAll(".memo-pane")].map((root, index) => ({
+    index,
+    root,
+    name: root.querySelector(".memo-pane-name"),
+    body: root.querySelector(".memo-body"),
+    editorHost: root.querySelector(".memo-editor"),
+    preview: root.querySelector(".memo-preview"),
+    empty: root.querySelector(".memo-pane-empty"),
+    controller: null,
+    session: null,
+  }));
+  activeMemoPane = memoPanes[0];
+  ensureMemoEditor(memoPanes[0]);
   bindMemoColorSettings();
   applyMemoLiveColors();
   dom.memoAutocompleteToggle?.addEventListener("change", () => {
@@ -13147,8 +13300,28 @@ function bindMemoEvents() {
     const id = Number(fold.dataset.fold);
     if (Number.isInteger(id)) toggleMemoFold(id);
   };
-  dom.memoPreview?.addEventListener("click", handleMemoRenderedClick);
-  dom.memoPreview?.addEventListener("keydown", handleMemoRenderedFoldKey);
+  for (const pane of memoPanes) {
+    // 눌린 창을 먼저 활성화해야 체크박스·색 도구가 그 창의 메모에 적용된다.
+    const activate = () => { if (activeMemoPane !== pane) setActiveMemoPane(pane); };
+    pane.root.addEventListener("pointerdown", activate, true);
+    pane.root.addEventListener("focusin", activate);
+    pane.preview.addEventListener("click", handleMemoRenderedClick);
+    pane.preview.addEventListener("keydown", handleMemoRenderedFoldKey);
+    // Ctrl(⌘)+휠 로 글자 크기 조절 — 편집기/미리보기 어느 쪽 위에서든 동작.
+    pane.body.addEventListener("wheel", (event) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      applyMemoFontSize(memoFontSize + (event.deltaY < 0 ? 1 : -1));
+    }, { passive: false });
+  }
+  const toggleMemoSplit = () => {
+    if (memoPanes[1].root.hidden) openMemoSplit();
+    else closeMemoSplit();
+    renderMemoTabs();
+    renderRooms();
+  };
+  dom.memoSplitButton?.addEventListener("click", toggleMemoSplit);
+  dom.memoSplitClose?.addEventListener("click", toggleMemoSplit);
   // 탭 클릭 = 전환, × = 닫기, 휠클릭 = 닫기(브라우저 탭과 동일한 관례).
   dom.memoTabs?.addEventListener("click", (event) => {
     const close = event.target?.closest?.("[data-memo-tab-close]");
@@ -13168,13 +13341,7 @@ function bindMemoEvents() {
     event.preventDefault();
     cycleMemoTab(event.shiftKey ? -1 : 1);
   }, true);
-  // Ctrl(⌘)+휠 로 글자 크기 조절 — 편집기/미리보기 어느 쪽 위에서든 동작.
-  dom.memoBody?.addEventListener("wheel", (event) => {
-    if (!event.ctrlKey && !event.metaKey) return;
-    event.preventDefault();
-    applyMemoFontSize(memoFontSize + (event.deltaY < 0 ? 1 : -1));
-  }, { passive: false });
-  window.addEventListener("pagehide", saveMemoPos); // 메모방을 연 채로 앱을 닫아도 위치가 남게
+  window.addEventListener("pagehide", () => memoSessions().forEach(saveMemoPos)); // 메모방을 연 채로 앱을 닫아도 위치가 남게
 }
 
 // ===== 공동 그림판 (draw) =====
@@ -13249,6 +13416,405 @@ function verifyActiveDraw() {
   state.draw.writable = canWriteRoom(found.channel, found.room);
   if (dom.drawRoomName) dom.drawRoomName.textContent = found.room.name;
   markRoomNameClickable(dom.drawRoomName, found.channel);
+}
+
+// ===== 테이블 방 =====
+// PDF·이미지·파일 카드를 올려 같이 보는 공유 작업대. 위치·크기·PDF 페이지가 모두에게 동기화된다.
+const TABLE_ZOOM_MIN = 0.25;
+const TABLE_ZOOM_MAX = 3;
+const TABLE_SEND_THROTTLE = 60;
+const TABLE_CARD_WIDTH = 480;
+const TABLE_CARD_MIN = 80;
+const TABLE_HEAD_HEIGHT = 32;
+const TABLE_PDF_RENDER_DELAY = 120;
+const TABLE_PDF_MAX_SCALE = 4;
+let tablePdfLibPromise = null;
+
+function setTableStatus(text, tone) {
+  if (!dom.tableStatus) return;
+  dom.tableStatus.textContent = text || "";
+  dom.tableStatus.className = "memo-status" + (tone ? ` ${tone}` : "");
+}
+
+// 화면 설정의 UI 배율(.app 의 CSS zoom)까지 곱해야 마우스 이동량이 카드 좌표와 맞는다.
+function tableScreenScale(t) {
+  const ui = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--ui-scale")) || 1;
+  return t.zoom * ui;
+}
+
+function openTableRoom(roomId) {
+  const found = findRoomInChannels(roomId);
+  if (!found) return;
+  if (state.table?.roomId === roomId) {
+    document.body.classList.add("table-open");
+    return;
+  }
+  closeTableView();
+  state.table = {
+    roomId,
+    channelId: found.channel.id,
+    name: found.room.name,
+    writable: canWriteRoom(found.channel, found.room),
+    zoom: 1,
+    cards: new Map(), // itemId -> { el, item, body, pageLabel, pageCount, renderTimer, renderId, task }
+    pdfs: new Map(), // url -> Promise<PDFDocumentProxy>
+    drag: null,
+    pan: null,
+  };
+  document.body.classList.add("table-open");
+  dom.tableStage.replaceChildren();
+  applyTableZoom(1);
+  updateTableHeader(found.channel);
+  setTableStatus("불러오는 중…", "muted");
+  sendSocket({ type: "table:open", roomId });
+  renderRooms();
+}
+
+function updateTableHeader(channel) {
+  const t = state.table;
+  dom.tableRoomName.textContent = t.name;
+  markRoomNameClickable(dom.tableRoomName, channel);
+  dom.tableAddButton.hidden = !t.writable || !canAttachCh(channel);
+}
+
+function closeTableView() {
+  const t = state.table;
+  if (!t) return;
+  sendSocket({ type: "table:close" });
+  state.table = null;
+  for (const card of t.cards.values()) clearTimeout(card.renderTimer);
+  for (const pdf of t.pdfs.values()) pdf.then((doc) => doc.destroy()).catch(() => {});
+  dom.tableStage.replaceChildren();
+  document.body.classList.remove("table-open");
+  renderRooms();
+}
+
+// 채널 목록 갱신 후, 보고 있던 테이블이 사라졌거나 이름·권한이 바뀌었는지 확인.
+function verifyActiveTable() {
+  const t = state.table;
+  if (!t) return;
+  const found = findRoomInChannels(t.roomId);
+  if (!found || found.room.type !== "table") { closeTableView(); return; }
+  t.name = found.room.name;
+  t.channelId = found.channel.id;
+  t.writable = canWriteRoom(found.channel, found.room);
+  updateTableHeader(found.channel);
+  for (const card of t.cards.values()) renderTableCardControls(card);
+}
+
+function handleTableSocketMessage(message) {
+  const t = state.table;
+  if (!t || t.roomId !== message.roomId) return;
+  if (message.type === "table:state") {
+    for (const item of message.items || []) upsertTableCard(item);
+    setTableStatus(t.cards.size ? "" : "파일을 끌어다 놓거나 [파일 올리기]를 누르세요", "muted");
+  } else if (message.type === "table:item") {
+    upsertTableCard(message.item);
+    setTableStatus("");
+  } else if (message.type === "table:remove") {
+    const card = t.cards.get(message.itemId);
+    if (!card) return;
+    clearTimeout(card.renderTimer);
+    card.el.remove();
+    t.cards.delete(message.itemId);
+  }
+}
+
+function upsertTableCard(item) {
+  const t = state.table;
+  let card = t.cards.get(item.id);
+  const previous = card?.item;
+  if (!card) {
+    card = buildTableCard(item);
+    t.cards.set(item.id, card);
+    dom.tableStage.append(card.el);
+  }
+  // 끌고 있는 카드는 서버 메아리보다 내 손이 최신이다.
+  const held = t.drag?.card === card ? { x: previous.x, y: previous.y, w: previous.w, h: previous.h } : null;
+  card.item = { ...item, ...held };
+  placeTableCard(card);
+  if (item.kind === "pdf" && (!previous || previous.page !== item.page || previous.w !== item.w)) scheduleTablePdfRender(card);
+}
+
+function placeTableCard(card) {
+  const { x, y, w, h, z } = card.item;
+  card.el.style.cssText = `left:${x}px;top:${y}px;width:${w}px;height:${h}px;z-index:${z || 0}`;
+}
+
+function buildTableCard(item) {
+  const cardEl = el("div", "table-card");
+  cardEl.dataset.tableItem = item.id;
+  const head = el("div", "table-card-head");
+  head.append(el("span", "table-card-name", item.name));
+  const card = { el: cardEl, item, pageLabel: null, pageCount: 0, renderTimer: 0, renderId: 0, task: null };
+  if (item.kind === "pdf") {
+    const pager = el("div", "table-card-pager");
+    const button = (text, label, step) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = text;
+      b.setAttribute("aria-label", label);
+      b.dataset.tablePage = String(step);
+      return b;
+    };
+    card.pageLabel = el("span", "", "");
+    pager.append(button("‹", "이전 쪽", -1), card.pageLabel, button("›", "다음 쪽", 1));
+    head.append(pager);
+  }
+  const open = document.createElement("a");
+  open.href = `${serverUrl}${item.url}`;
+  open.target = "_blank";
+  open.rel = "noopener";
+  open.download = item.name;
+  open.title = "내려받기";
+  open.textContent = "↓";
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.dataset.tableRemove = item.id;
+  remove.title = "테이블에서 내리기";
+  remove.setAttribute("aria-label", "테이블에서 내리기");
+  remove.textContent = "×";
+  head.append(open, remove);
+  const body = el("div", `table-card-body${item.kind === "file" ? " file" : ""}`, item.kind === "image" ? "" : item.kind === "pdf" ? "불러오는 중…" : item.name);
+  if (item.kind === "image") {
+    const img = document.createElement("img");
+    img.src = `${serverUrl}${item.url}`;
+    img.alt = item.name;
+    img.draggable = false;
+    body.append(img);
+  }
+  card.body = body;
+  card.remove = remove;
+  card.resize = el("div", "table-card-resize");
+  cardEl.append(head, body, card.resize);
+  renderTableCardControls(card);
+  return card;
+}
+
+// 읽기 전용이면 보기만 한다(페이지는 쓸 수 있는 사람을 따라간다).
+function renderTableCardControls(card) {
+  const { writable } = state.table;
+  card.remove.hidden = !writable;
+  card.resize.hidden = !writable;
+  card.el.querySelectorAll("[data-table-page]").forEach((button) => { button.disabled = !writable; });
+}
+
+function sendTableUpdate(item) {
+  const { x, y, w, h, page } = item;
+  sendSocket({ type: "table:update", roomId: state.table.roomId, itemId: item.id, x, y, w, h, page });
+}
+
+// pdf.js 는 수 MB 라서 테이블에서 PDF를 볼 때만 불러온다.
+function loadTablePdfLib() {
+  tablePdfLibPromise ||= new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "table-pdf.bundle.js";
+    script.onload = () => {
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = `${serverUrl}/table-pdf.worker.js`;
+      resolve(window.pdfjsLib);
+    };
+    script.onerror = () => { tablePdfLibPromise = null; reject(new Error("PDF 뷰어를 불러오지 못했습니다.")); };
+    document.head.append(script);
+  });
+  return tablePdfLibPromise;
+}
+
+function loadTablePdf(t, url) {
+  if (!t.pdfs.has(url)) {
+    // ponytail: cMap·표준 글꼴 데이터를 싣지 않아 글꼴을 포함하지 않은 옛 한글 PDF는 글자가 빠질 수 있다.
+    //           실제로 나오면 pdfjs-dist/cmaps 를 public 에 복사하고 cMapUrl 을 넘길 것.
+    const loading = loadTablePdfLib().then((lib) => lib.getDocument({
+      url: `${serverUrl}${url}`,
+      isEvalSupported: false, // CSP(script-src 'self') 가 eval 을 막는다
+      disableRange: true,
+      disableStream: true,
+    }).promise);
+    loading.catch(() => t.pdfs.delete(url));
+    t.pdfs.set(url, loading);
+  }
+  return t.pdfs.get(url);
+}
+
+function scheduleTablePdfRender(card) {
+  clearTimeout(card.renderTimer);
+  card.renderTimer = setTimeout(() => renderTablePdf(card), TABLE_PDF_RENDER_DELAY);
+}
+
+async function renderTablePdf(card) {
+  const t = state.table;
+  if (!t) return;
+  const renderId = ++card.renderId;
+  const stale = () => state.table !== t || renderId !== card.renderId;
+  try {
+    const doc = await loadTablePdf(t, card.item.url);
+    if (stale()) return;
+    card.pageCount = doc.numPages;
+    const pageNumber = Math.min(card.item.page, doc.numPages);
+    card.pageLabel.textContent = `${pageNumber} / ${doc.numPages}`;
+    const page = await doc.getPage(pageNumber);
+    if (stale()) return;
+    const width = page.getViewport({ scale: 1 }).width;
+    const sharp = card.item.w * tableScreenScale(t) * (window.devicePixelRatio || 1);
+    const viewport = page.getViewport({ scale: Math.min(TABLE_PDF_MAX_SCALE, sharp / width) });
+    // 그리는 동안 옛 쪽을 지우지 않도록 새 캔버스에 그린 뒤 바꿔 끼운다.
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.floor(viewport.width);
+    canvas.height = Math.floor(viewport.height);
+    card.task?.cancel();
+    card.task = page.render({ canvas, canvasContext: canvas.getContext("2d"), viewport });
+    await card.task.promise;
+    if (!stale()) card.body.replaceChildren(canvas);
+  } catch (error) {
+    if (error?.name === "RenderingCancelledException" || stale()) return;
+    card.body.textContent = "PDF를 열지 못했습니다.";
+  }
+}
+
+function applyTableZoom(zoom) {
+  const t = state.table;
+  if (!t) return;
+  t.zoom = Math.min(TABLE_ZOOM_MAX, Math.max(TABLE_ZOOM_MIN, zoom));
+  dom.tableStage.style.zoom = String(t.zoom);
+  dom.tableZoomLabel.textContent = `${Math.round(t.zoom * 100)}%`;
+  for (const card of t.cards.values()) if (card.item.kind === "pdf") scheduleTablePdfRender(card);
+}
+
+// 이미지는 원본 비율대로 카드를 잡는다. PDF·일반 파일은 서버 기본 크기를 쓴다.
+async function tableCardSize(file) {
+  if (!file.type.startsWith("image/")) return {};
+  try {
+    const bitmap = await createImageBitmap(file);
+    const ratio = Math.min(1, TABLE_CARD_WIDTH / bitmap.width);
+    const size = { w: Math.round(bitmap.width * ratio), h: Math.round(bitmap.height * ratio) + TABLE_HEAD_HEIGHT };
+    bitmap.close();
+    return size;
+  } catch {
+    return {}; // 브라우저가 못 읽는 형식이면 기본 크기로 둔다
+  }
+}
+
+async function addTableFiles(files) {
+  const t = state.table;
+  if (!t?.writable || !files.length) return;
+  const scale = tableScreenScale(t);
+  let x = Math.round(dom.tableScroll.scrollLeft / scale) + 40;
+  let y = Math.round(dom.tableScroll.scrollTop / scale) + 40;
+  for (const file of files) {
+    if (file.size > CHAT_UPLOAD_MAX) {
+      setTableStatus(`${file.name}: 50MB 이하만 올릴 수 있습니다.`, "bad");
+      continue;
+    }
+    try {
+      setTableStatus(`${file.name} 올리는 중…`, "muted");
+      const size = await tableCardSize(file);
+      const result = await uploadChatFile(file, (done) => setTableStatus(`${file.name} ${Math.round(done * 100)}%`, "muted"));
+      if (state.table !== t) return;
+      sendSocket({ type: "table:add", roomId: t.roomId, url: result.url, name: file.name, x, y, ...size });
+      x += 30;
+      y += 30;
+    } catch (error) {
+      setTableStatus(error.message || "업로드에 실패했습니다.", "bad");
+    }
+  }
+}
+
+function bindTableEvents() {
+  const stage = dom.tableStage;
+  if (!stage) return;
+  dom.tableZoomIn?.addEventListener("click", () => applyTableZoom((state.table?.zoom || 1) * 1.25));
+  dom.tableZoomOut?.addEventListener("click", () => applyTableZoom((state.table?.zoom || 1) / 1.25));
+  dom.tableAddButton?.addEventListener("click", () => dom.tableFileInput.click());
+  dom.tableFileInput?.addEventListener("change", () => {
+    addTableFiles([...dom.tableFileInput.files]);
+    dom.tableFileInput.value = "";
+  });
+  dom.tableRoomName?.addEventListener("click", () => {
+    const t = state.table;
+    const channel = t && state.channels.find((c) => c.id === t.channelId);
+    if (canRenameRoomChannel(channel)) openRoomRenameModal(t.roomId);
+  });
+  dom.tableScroll?.addEventListener("dragover", (event) => {
+    if (state.table?.writable) event.preventDefault();
+  });
+  dom.tableScroll?.addEventListener("drop", (event) => {
+    event.preventDefault();
+    addTableFiles([...event.dataTransfer.files]);
+  });
+  dom.tableScroll?.addEventListener("wheel", (event) => {
+    if (!state.table || (!event.ctrlKey && !event.metaKey)) return;
+    event.preventDefault();
+    applyTableZoom(state.table.zoom * (event.deltaY < 0 ? 1.1 : 1 / 1.1));
+  }, { passive: false });
+  stage.addEventListener("click", (event) => {
+    const t = state.table;
+    if (!t) return;
+    const pageButton = event.target.closest("[data-table-page]");
+    if (pageButton) {
+      const card = t.cards.get(pageButton.closest(".table-card").dataset.tableItem);
+      const page = Math.max(1, Math.min(card.pageCount || 1, card.item.page + Number(pageButton.dataset.tablePage)));
+      if (page === card.item.page) return;
+      sendTableUpdate({ ...card.item, page });
+      return;
+    }
+    const remove = event.target.closest("[data-table-remove]");
+    if (remove && window.confirm("이 파일을 테이블에서 내릴까요?")) {
+      sendSocket({ type: "table:remove", roomId: t.roomId, itemId: remove.dataset.tableRemove });
+    }
+  });
+  stage.addEventListener("pointerdown", (event) => {
+    const t = state.table;
+    if (!t || event.button !== 0) return;
+    if (event.target === stage) {
+      t.pan = { x: event.clientX, y: event.clientY, left: dom.tableScroll.scrollLeft, top: dom.tableScroll.scrollTop };
+      stage.setPointerCapture(event.pointerId);
+      return;
+    }
+    const resize = event.target.closest(".table-card-resize");
+    if (!t.writable || event.target.closest("button, a") || (!resize && !event.target.closest(".table-card-head"))) return;
+    const cardEl = event.target.closest(".table-card");
+    const card = t.cards.get(cardEl.dataset.tableItem);
+    const { x, y, w, h } = card.item;
+    t.drag = { card, resize: Boolean(resize), startX: event.clientX, startY: event.clientY, x, y, w, h, sentAt: 0 };
+    cardEl.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  });
+  stage.addEventListener("pointermove", (event) => {
+    const t = state.table;
+    if (t?.pan) {
+      dom.tableScroll.scrollLeft = t.pan.left - (event.clientX - t.pan.x);
+      dom.tableScroll.scrollTop = t.pan.top - (event.clientY - t.pan.y);
+      return;
+    }
+    const drag = t?.drag;
+    if (!drag) return;
+    const scale = tableScreenScale(t);
+    const dx = (event.clientX - drag.startX) / scale;
+    const dy = (event.clientY - drag.startY) / scale;
+    const { item } = drag.card;
+    if (drag.resize) {
+      item.w = Math.max(TABLE_CARD_MIN, Math.round(drag.w + dx));
+      item.h = Math.max(TABLE_CARD_MIN, Math.round(drag.h + dy));
+    } else {
+      item.x = Math.max(0, Math.round(drag.x + dx));
+      item.y = Math.max(0, Math.round(drag.y + dy));
+    }
+    placeTableCard(drag.card);
+    const now = Date.now();
+    if (now - drag.sentAt < TABLE_SEND_THROTTLE) return;
+    drag.sentAt = now;
+    sendTableUpdate(item);
+  });
+  const finish = () => {
+    const t = state.table;
+    if (!t) return;
+    t.pan = null;
+    if (!t.drag) return;
+    const { card } = t.drag;
+    t.drag = null;
+    sendTableUpdate(card.item); // 마지막 위치 확정(서버 메아리로 맨 앞으로 올라온다)
+  };
+  stage.addEventListener("pointerup", finish);
+  stage.addEventListener("pointercancel", finish);
 }
 
 // ===== 전역 로그 =====
@@ -13675,6 +14241,7 @@ function openDmMode() {
   closeChatView();
   closeMemoView();
   closeDrawView();
+  closeTableView();
   closeLogView();
   document.body.classList.add("dm-open");
   renderChannelRail();
@@ -15389,7 +15956,7 @@ function escapeHtmlText(str) {
     .replace(/'/g, "&#39;");
 }
 
-function renderMarkdown(src) {
+function renderMarkdown(src, foldSet = null) {
   const rawSrc = String(src || "").replace(/\r\n?/g, "\n");
   // 1) 코드펜스(``` 또는 ```lang)를 먼저 빼내 보호. 언어 태그가 있으면 구문 강조에 쓴다.
   const codeBlocks = [];
@@ -15421,7 +15988,6 @@ function renderMarkdown(src) {
   // 체크박스·접기 식별자는 문서 전체를 통틀어 나타난 순서대로 번호를 매긴다.
   // (미리보기 클릭 → 원문의 N번째 항목을 찾아 토글/접기 하기 위한 안정적 인덱스)
   const counters = { cb: 0, fold: 0 };
-  const foldSet = (state.memo && state.memo.folds) || null;
   return renderMemoBlocks(lines, codeBlocks, counters, foldSet).join("\n");
 }
 
@@ -15869,7 +16435,7 @@ function openRoomRenameModal(roomId) {
   // 인원/읽기전용/방별권한은 대표자 전용. 방 이름 변경 권한만 있는 유저에겐 이름 필드만 보인다.
   const owner = isChannelOwner(found.channel);
   const isVoice = owner && found.room.type === "voice";
-  const canReadOnly = owner && ["chat", "memo", "draw"].includes(found.room.type);
+  const canReadOnly = owner && ["chat", "memo", "draw", "table"].includes(found.room.type);
   if (dom.roomLimitField) dom.roomLimitField.hidden = !isVoice;
   if (dom.roomLimitInput) dom.roomLimitInput.value = String(found.room.limit || 8);
   if (dom.roomReadOnlyField) dom.roomReadOnlyField.hidden = !canReadOnly;
@@ -15899,7 +16465,7 @@ function confirmRoomRename() {
     if (limit !== (found.room.limit || 8)) {
       sendSocket({ type: "channel:set-room-limit", channelId: found.channel.id, roomId: roomRenameTargetId, limit });
     }
-  } else if (["chat", "memo", "draw"].includes(found.room.type) && dom.roomReadOnlyInput) {
+  } else if (["chat", "memo", "draw", "table"].includes(found.room.type) && dom.roomReadOnlyInput) {
     const value = dom.roomReadOnlyInput.checked;
     if (value !== Boolean(found.room.readOnly)) {
       sendSocket({ type: "channel:set-room-readonly", channelId: found.channel.id, roomId: roomRenameTargetId, value });

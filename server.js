@@ -25,6 +25,7 @@ const REQUIRE_HTTPS = process.env.VOICE_CHAT_REQUIRE_HTTPS === "1" || process.en
 // nginx 같은 리버스 프록시 뒤에서만 1 로 둔다: 루프백 연결의 X-Real-IP 를 실제 접속 IP로 쓴다(IP별 제한용).
 const TRUST_PROXY = process.env.TRUST_PROXY === "1";
 const MAX_ROOM_LIMIT = 8;
+const MEMO_MAX_OPEN = 2; // 분할보기로 한 연결이 동시에 볼 수 있는 메모 수
 const PUBLIC_DIR = path.join(__dirname, "public");
 
 // ─── 보안/남용 방지 상한 ─────────────────────────────────
@@ -128,8 +129,9 @@ function memoOpDelta(o) {
 const STATS_LIVE_FIELDS = {
   voice: { roomField: "roomId", sinceField: "roomJoinedAt", key: "joinMs" },
   chat: { roomField: "chatRoomId", sinceField: "chatJoinedAt", key: "viewMs" },
-  memo: { roomField: "memoRoomId", sinceField: "memoJoinedAt", key: "viewMs" },
+  memo: { key: "viewMs" }, // 메모는 분할보기로 동시에 여러 방을 볼 수 있어 client.memoRooms 로 판정한다
   draw: { roomField: "drawRoomId", sinceField: "drawJoinedAt", key: "viewMs" },
+  table: { roomField: "tableRoomId", sinceField: "tableJoinedAt", key: "viewMs" },
 };
 
 // 조회 시점 기준 스냅샷. 아직 안 닫힌 구간(접속 중인 시간, 켜져 있는 마이크·화면·소리공유 시간,
@@ -150,8 +152,10 @@ function roomStatsSnapshot(roomId, roomType) {
   const live = STATS_LIVE_FIELDS[roomType];
   if (live) {
     for (const c of clients.values()) {
-      if (!c.userId || c[live.roomField] !== roomId) continue;
-      if (c[live.sinceField]) bump(c, live.key, now - c[live.sinceField]);
+      if (!c.userId) continue;
+      const since = roomType === "memo" ? c.memoRooms.get(roomId) : (c[live.roomField] === roomId ? c[live.sinceField] : undefined);
+      if (since === undefined) continue;
+      if (since) bump(c, live.key, now - since);
       if (roomType !== "voice") continue;
       for (const [kind, since] of Object.entries(c.mediaOn)) {
         if (since) bump(c, `${kind}OnMs`, now - since);
@@ -499,14 +503,15 @@ function handleUpgrade(req, socket) {
     isAdmin: false,
     chatRoomId: "", // 현재 보고 있는 채팅방(입력중 표시 대상 판별용)
     aiRoomId: "", // 현재 보고 있는 AI방(브로드캐스트 대상 판별용)
-    memoRoomId: "", // 현재 보고 있는 메모장(실시간 동기화 대상 판별용)
+    memoRooms: new Map(), // 보고 있는 메모장 roomId -> 보기 시작 시각(분할보기로 최대 MEMO_MAX_OPEN개)
     drawRoomId: "", // 현재 보고 있는 그림판(실시간 동기화 대상 판별용)
+    tableRoomId: "", // 현재 보고 있는 테이블 방
+    tableJoinedAt: 0,
     logRoomId: "", // 현재 보고 있는 로그방(실시간 로그 대상 판별용)
     logChannelId: "", // 그 로그방이 속한 채널(채널 단위 피드라 따로 보관)
     dmUserId: "", // 현재 보고 있는 DM 상대(읽음 판별용)
     roomJoinedAt: 0, // 통화방 접속 시각(통계용 접속시간 누적)
     chatJoinedAt: 0, // 채팅방 보기 시작 시각(통계용)
-    memoJoinedAt: 0, // 메모장 보기 시작 시각(통계용)
     drawJoinedAt: 0, // 그림판 보기 시작 시각(통계용)
     mediaOn: {}, // 통계용 마이크/화면/소리공유 on 시작 시각. { mic, screen, sound } -> Date.now() 또는 0
   };
@@ -667,6 +672,7 @@ function handleMessage(client, message) {
   if (handleAiMessage(client, message)) return;
   if (handleMemoMessage(client, message)) return;
   if (handleDrawMessage(client, message)) return;
+  if (handleTableMessage(client, message)) return;
   if (handleLogMessage(client, message)) return;
   if (handleDmMessage(client, message)) return;
 
@@ -1155,6 +1161,7 @@ function removeClient(client) {
   if (client.userId) store.recordConnection(client.userId, client.ip, "disconnect");
   leaveMemo(client);
   leaveDraw(client);
+  leaveTable(client);
   leaveChatView(client);
   leaveAiView(client);
   client.logRoomId = "";
@@ -1258,7 +1265,7 @@ function broadcastPresence() {
   // 다른 사람이 어느 방에 있는지 방 옆에 표시할 수 있게 한다. (방 id는 전역 고유라 통화방과 겹치지 않음)
   for (const client of clients.values()) {
     if (!client.userId) continue;
-    for (const rid of [client.chatRoomId, client.aiRoomId, client.memoRoomId, client.drawRoomId, client.logRoomId]) {
+    for (const rid of [client.chatRoomId, client.aiRoomId, ...client.memoRooms.keys(), client.drawRoomId, client.tableRoomId, client.logRoomId]) {
       if (!rid) continue;
       if (!presence[rid]) presence[rid] = [];
       presence[rid].push({ clientId: client.id, userId: client.userId, name: client.name || "Guest" });
@@ -1364,42 +1371,42 @@ function handleChannelMessage(client, message) {
         return true;
       });
     case "channel:add-room":
-      return ownerAction(client, message.channelId, () => {
+      return roomManageAction(client, message.channelId, () => {
         const r = store.addRoom(message.channelId, message.name, message.roomType, message.parentGroupId);
         if (r.error) return channelError(client, r.error);
         notifyChannelMembers(message.channelId);
         return true;
       });
     case "channel:add-room-group":
-      return ownerAction(client, message.channelId, () => {
+      return roomManageAction(client, message.channelId, () => {
         const r = store.addRoomGroup(message.channelId, message.name, message.parentGroupId);
         if (r.error) return channelError(client, r.error);
         notifyChannelMembers(message.channelId);
         return true;
       });
     case "channel:rename-room-group":
-      return ownerAction(client, message.channelId, () => {
+      return roomManageAction(client, message.channelId, () => {
         const r = store.renameRoomGroup(message.channelId, message.groupId, message.name);
         if (r.error) return channelError(client, r.error);
         notifyChannelMembers(message.channelId);
         return true;
       });
     case "channel:remove-room-group":
-      return ownerAction(client, message.channelId, () => {
+      return roomManageAction(client, message.channelId, () => {
         const r = store.removeRoomGroup(message.channelId, message.groupId);
         if (r.error) return channelError(client, r.error);
         notifyChannelMembers(message.channelId);
         return true;
       });
     case "channel:reorder-room-layout":
-      return ownerAction(client, message.channelId, () => {
+      return roomManageAction(client, message.channelId, () => {
         const r = store.reorderRoomLayout(message.channelId, message.layout);
         if (r.error) return channelError(client, r.error);
         notifyChannelMembers(message.channelId);
         return true;
       });
     case "channel:remove-room":
-      return ownerAction(client, message.channelId, () => {
+      return roomManageAction(client, message.channelId, () => {
         const r = store.removeRoom(message.channelId, message.roomId);
         if (r.error) return channelError(client, r.error);
         evictRoom(message.roomId);
@@ -1494,6 +1501,7 @@ function handleChannelMessage(client, message) {
           addEmoji: message.addEmoji, removeEmoji: message.removeEmoji,
           useEmoji: message.useEmoji, attachFile: message.attachFile,
           renameRoom: message.renameRoom, manageFont: message.manageFont,
+          manageRooms: message.manageRooms,
         });
         if (r.error) return channelError(client, r.error);
         notifyChannelMembers(message.channelId);
@@ -1651,6 +1659,13 @@ function renameRoomAction(client, channelId, fn) {
   }
   return fn();
 }
+// 방·그룹 추가/삭제/순서 변경: 대표·관리자 또는 manageRooms 권한 보유자만.
+function roomManageAction(client, channelId, fn) {
+  if (!store.canManageRooms(channelId, client.userId, client.isAdmin)) {
+    return channelError(client, "방을 관리할 권한이 없습니다.");
+  }
+  return fn();
+}
 // 공유 글꼴 업로드·삭제: 대표·관리자 또는 manageFont 역할 보유자만.
 function fontManageAction(client, channelId, fn) {
   if (!store.canManageFont(channelId, client.userId, client.isAdmin)) {
@@ -1709,8 +1724,9 @@ function dropLostViews(client) {
   const lost = (roomId) => Boolean(roomId) && !canViewRoom(client, roomId);
   if (lost(client.chatRoomId)) leaveChatView(client);
   if (lost(client.aiRoomId)) leaveAiView(client);
-  if (lost(client.memoRoomId)) leaveMemo(client);
+  for (const roomId of [...client.memoRooms.keys()]) if (lost(roomId)) leaveMemo(client, roomId);
   if (lost(client.drawRoomId)) leaveDraw(client);
+  if (lost(client.tableRoomId)) leaveTable(client);
   if (lost(client.logRoomId)) {
     client.logRoomId = "";
     client.logChannelId = "";
@@ -2353,7 +2369,8 @@ function resolveAiRefs(text, ctx, client, scoped) {
 }
 
 // 라이브 메모(편집자 있음)면 OT op 로 반영, 아니면 파일에 직접 저장.
-function applyAiMemoWrite(roomId, mode, body, client) {
+function applyAiMemoWrite(roomId, mode, rawBody, client) {
+  const body = normalizeMemoNewlines(rawBody);
   const live = memoDocs.get(roomId);
   const cur = live ? live.text : (store.getMemo(roomId).text || "");
   const addition = mode === "append" ? ((cur ? "\n" : "") + body) : body;
@@ -2362,10 +2379,9 @@ function applyAiMemoWrite(roomId, mode, body, client) {
     const op = mode === "append"
       ? (cur.length ? [cur.length, addition] : [addition])
       : (cur.length ? [-cur.length, body] : [body]);
-    live.history.push(op);
-    live.text = next;
+    commitMemoOp(live, op, "");
     const rev = live.history.length;
-    for (const c of clients.values()) if (c.memoRoomId === roomId) send(c, { type: "memo:op", roomId, rev, ops: op, by: "" });
+    for (const c of clients.values()) if (c.memoRooms.has(roomId)) send(c, { type: "memo:op", roomId, rev, ops: op, by: "" });
     scheduleMemoPersist(roomId, client.userId);
   } else {
     store.saveMemo(roomId, next, client.userId); // font 인자 생략 = 기존 글꼴 유지
@@ -2665,10 +2681,26 @@ function getMemoDoc(roomId) {
   let d = memoDocs.get(roomId);
   if (!d) {
     const saved = store.getMemo(roomId);
-    d = { text: saved.text || "", font: cleanMemoFont(saved.font), history: [], cursors: new Map(), saveTimer: 0 };
+    d = { text: normalizeMemoNewlines(saved.text), font: cleanMemoFont(saved.font), history: [], cursors: new Map(), saveTimer: 0 };
     memoDocs.set(roomId, d);
   }
   return d;
+}
+
+// CodeMirror 는 \r\n 을 \n 하나로 세므로, 원본에 \r 이 남으면 클라이언트 문서와 길이가 달라져 원격 op 적용이 터진다.
+function normalizeMemoNewlines(text) {
+  return String(text || "").replace(/\r\n?/g, "\n");
+}
+
+// op 를 문서에 적용·기록한다. 저장해 둔 커서도 함께 옮겨, 늦게 들어온 사람이 옛 위치를 받지 않게 한다.
+function commitMemoOp(d, op, authorClientId) {
+  d.text = ot.apply(d.text, op);
+  d.history.push(op);
+  for (const cur of d.cursors.values()) {
+    const side = cur.clientId === authorClientId ? "right" : "left";
+    cur.pos = ot.transformCursor(cur.pos, op, side);
+    cur.sel = ot.transformCursor(cur.sel, op, side);
+  }
 }
 
 function scheduleMemoPersist(roomId, userId) {
@@ -2690,22 +2722,25 @@ function flushMemoPersist(roomId, userId) {
 
 function memoViewerCount(roomId) {
   let n = 0;
-  for (const c of clients.values()) if (c.memoRoomId === roomId) n++;
+  for (const c of clients.values()) if (c.memoRooms.has(roomId)) n++;
   return n;
 }
 
-// 클라이언트가 메모방 보기를 그만둘 때(닫기/연결종료) 정리.
-function leaveMemo(client) {
-  const roomId = client.memoRoomId;
-  if (!roomId) return;
-  client.memoRoomId = "";
-  if (client.userId && client.memoJoinedAt) addStat(roomId, client.userId, client.name, "viewMs", Date.now() - client.memoJoinedAt);
-  client.memoJoinedAt = 0;
+// 클라이언트가 메모방 보기를 그만둘 때(닫기/연결종료) 정리. roomId 를 생략하면 보던 메모 전부에서 나간다.
+function leaveMemo(client, roomId) {
+  if (roomId === undefined) {
+    for (const id of [...client.memoRooms.keys()]) leaveMemo(client, id);
+    return;
+  }
+  const joinedAt = client.memoRooms.get(roomId);
+  if (joinedAt === undefined) return;
+  client.memoRooms.delete(roomId);
+  if (client.userId && joinedAt) addStat(roomId, client.userId, client.name, "viewMs", Date.now() - joinedAt);
   const d = memoDocs.get(roomId);
   if (d) {
     d.cursors.delete(client.id);
     for (const c of clients.values()) {
-      if (c.memoRoomId === roomId) send(c, { type: "memo:cursor-leave", roomId, clientId: client.id });
+      if (c.memoRooms.has(roomId)) send(c, { type: "memo:cursor-leave", roomId, clientId: client.id });
     }
     if (memoViewerCount(roomId) === 0) {
       flushMemoPersist(roomId, client.userId);
@@ -2725,10 +2760,11 @@ function handleMemoMessage(client, message) {
     case "memo:open": {
       const ctx = resolveMemoRoom(client, message.roomId);
       if (!ctx) return true;
-      // 다른 메모방을 보다가 바로 이 방으로 갈아탄 경우, 이전 방에 내 원격 커서가 남지 않도록 먼저 정리한다.
-      if (client.memoRoomId && client.memoRoomId !== ctx.room.id) leaveMemo(client);
-      client.memoRoomId = ctx.room.id;
-      client.memoJoinedAt = Date.now();
+      // 동시에 볼 수 있는 메모 수를 넘으면 가장 오래 본 방부터 내보낸다(이전 방에 내 원격 커서가 남지 않게).
+      if (!client.memoRooms.has(ctx.room.id) && client.memoRooms.size >= MEMO_MAX_OPEN) {
+        leaveMemo(client, client.memoRooms.keys().next().value);
+      }
+      client.memoRooms.set(ctx.room.id, Date.now());
       const d = getMemoDoc(ctx.room.id);
       const cursors = [...d.cursors.values()].filter((cur) => cur.clientId !== client.id);
       send(client, { type: "memo:state", roomId: ctx.room.id, text: d.text, rev: d.history.length, cursors, font: d.font });
@@ -2736,7 +2772,7 @@ function handleMemoMessage(client, message) {
       return true;
     }
     case "memo:close": {
-      leaveMemo(client);
+      leaveMemo(client, message.roomId);
       broadcastPresence();
       return true;
     }
@@ -2752,7 +2788,7 @@ function handleMemoMessage(client, message) {
       scheduleMemoPersist(ctx.room.id, client.userId);
       const payload = { type: "memo:font", roomId: ctx.room.id, font: d.font, by: client.id };
       for (const c of clients.values()) {
-        if (c.memoRoomId === ctx.room.id) send(c, payload);
+        if (c.memoRooms.has(ctx.room.id)) send(c, payload);
       }
       return true;
     }
@@ -2766,15 +2802,15 @@ function handleMemoMessage(client, message) {
       const d = getMemoDoc(ctx.room.id);
       let o = message.ops;
       if (!Array.isArray(o)) return true;
+      o = o.map((part) => (typeof part === "string" ? normalizeMemoNewlines(part) : part));
       const baseRev = Math.max(0, Math.min(d.history.length, Number(message.rev) || 0));
       try {
         for (let i = baseRev; i < d.history.length; i++) o = ot.transform(o, d.history[i], "right");
-        d.text = ot.apply(d.text, o);
+        commitMemoOp(d, o, client.id);
       } catch (err) {
         send(client, { type: "memo-error", message: "동기화 오류가 발생했습니다. 새로고침 해주세요." });
         return true;
       }
-      d.history.push(o);
       const rev = d.history.length;
       const delta = memoOpDelta(o);
       if (delta.charsTyped) addStat(ctx.room.id, client.userId, client.name, "charsTyped", delta.charsTyped);
@@ -2787,7 +2823,7 @@ function handleMemoMessage(client, message) {
       }
       const payload = { type: "memo:op", roomId: ctx.room.id, rev, ops: o, by: client.id };
       for (const c of clients.values()) {
-        if (c.memoRoomId === ctx.room.id) send(c, payload); // 발신자 포함(ack 겸용)
+        if (c.memoRooms.has(ctx.room.id)) send(c, payload); // 발신자 포함(ack 겸용)
       }
       return true;
     }
@@ -2795,12 +2831,19 @@ function handleMemoMessage(client, message) {
       const ctx = resolveMemoRoom(client, message.roomId);
       if (!ctx) return true;
       const d = getMemoDoc(ctx.room.id);
-      const pos = Math.max(0, Number(message.pos) || 0);
-      const sel = Number.isFinite(Number(message.sel)) ? Math.max(0, Number(message.sel)) : pos;
+      // 커서는 보낸 사람이 본 rev 기준이다. 그사이 서버에 쌓인 op 만큼 옮겨 현재 문서 좌표로 맞춘다.
+      const baseRev = Math.max(0, Math.min(d.history.length, Number(message.rev) || 0));
+      const toCurrent = (value) => {
+        let at = Math.max(0, Number(value) || 0);
+        for (let i = baseRev; i < d.history.length; i++) at = ot.transformCursor(at, d.history[i], "left");
+        return Math.min(at, d.text.length);
+      };
+      const pos = toCurrent(message.pos);
+      const sel = Number.isFinite(Number(message.sel)) ? toCurrent(message.sel) : pos;
       const cur = { clientId: client.id, userId: client.userId, name: client.name, pos, sel };
       d.cursors.set(client.id, cur);
       for (const c of clients.values()) {
-        if (c.id === client.id || c.memoRoomId !== ctx.room.id) continue;
+        if (c.id === client.id || !c.memoRooms.has(ctx.room.id)) continue;
         send(c, { type: "memo:cursor", roomId: ctx.room.id, ...cur });
       }
       return true;
@@ -3165,6 +3208,133 @@ function resolveDrawRoom(client, roomId) {
     return null;
   }
   return found;
+}
+
+// ===== 테이블 방 =====
+// PDF·이미지·파일 카드를 함께 보는 공유 작업대. 배치는 마지막에 보낸 값이 이긴다(서버 순서 = 정답).
+const tableDocs = new Map(); // roomId -> { doc, saveTimer }
+const TABLE_PERSIST_DEBOUNCE = 2000;
+const TABLE_IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]);
+
+function getTableDoc(roomId) {
+  let d = tableDocs.get(roomId);
+  if (!d) {
+    d = { doc: store.getTable(roomId), saveTimer: 0 };
+    tableDocs.set(roomId, d);
+  }
+  return d;
+}
+
+function scheduleTablePersist(roomId) {
+  const d = tableDocs.get(roomId);
+  if (!d || d.saveTimer) return;
+  d.saveTimer = setTimeout(() => {
+    d.saveTimer = 0;
+    store.saveTable(roomId, d.doc);
+  }, TABLE_PERSIST_DEBOUNCE);
+}
+
+function broadcastTable(roomId, payload) {
+  for (const c of clients.values()) if (c.tableRoomId === roomId) send(c, payload);
+}
+
+function leaveTable(client) {
+  const roomId = client.tableRoomId;
+  if (!roomId) return;
+  client.tableRoomId = "";
+  if (client.userId && client.tableJoinedAt) addStat(roomId, client.userId, client.name, "viewMs", Date.now() - client.tableJoinedAt);
+  client.tableJoinedAt = 0;
+  for (const c of clients.values()) if (c.tableRoomId === roomId) return;
+  const d = tableDocs.get(roomId);
+  if (!d) return;
+  if (d.saveTimer) clearTimeout(d.saveTimer);
+  store.saveTable(roomId, d.doc);
+  tableDocs.delete(roomId); // 아무도 안 보면 메모리에서 내림(다음 open 시 파일에서 재적재)
+}
+
+function resolveTableRoom(client, roomId) {
+  const found = store.findRoom(String(roomId || ""));
+  if (!found || found.room.type !== "table") {
+    send(client, { type: "table-error", message: "테이블을 찾지 못했습니다." });
+    return null;
+  }
+  if (!store.isChannelMember(found.channel.id, client.userId, client.isAdmin) ||
+    !store.canAccessRoom(found.channel.id, found.room.id, client.userId, client.isAdmin)) {
+    send(client, { type: "table-error", message: "이 방에 접근할 권한이 없습니다." });
+    return null;
+  }
+  return found;
+}
+
+function handleTableMessage(client, message) {
+  if (typeof message.type !== "string" || !message.type.startsWith("table:")) return false;
+  if (!client.userId) {
+    send(client, { type: "table-error", message: "로그인이 필요합니다." });
+    return true;
+  }
+  if (message.type === "table:close") {
+    leaveTable(client);
+    broadcastPresence();
+    return true;
+  }
+  const ctx = resolveTableRoom(client, message.roomId);
+  if (!ctx) return true;
+  const roomId = ctx.room.id;
+  if (message.type === "table:open") {
+    if (client.tableRoomId !== roomId) leaveTable(client);
+    client.tableRoomId = roomId;
+    client.tableJoinedAt = Date.now();
+    send(client, { type: "table:state", roomId, items: getTableDoc(roomId).doc.items });
+    broadcastPresence();
+    return true;
+  }
+  if (!isRoomWritable(ctx, client)) {
+    send(client, { type: "table-error", message: "읽기 전용 테이블입니다." });
+    return true;
+  }
+  const d = getTableDoc(roomId);
+  const find = () => d.doc.items.find((entry) => entry.id === String(message.itemId || ""));
+  switch (message.type) {
+    case "table:add": {
+      if (!store.canAttach(ctx.channel.id, client.userId, client.isAdmin)) {
+        send(client, { type: "table-error", message: "파일을 올릴 권한이 없습니다." });
+        return true;
+      }
+      const url = String(message.url || "");
+      if (!/^\/uploads\/[a-f0-9]{24}_[A-Za-z0-9._-]+$/.test(url) || !store.isUploadOwner(url, client.userId)) {
+        send(client, { type: "table-error", message: "올린 파일을 찾지 못했습니다." });
+        return true;
+      }
+      if (d.doc.items.length >= store.TABLE_MAX_ITEMS) {
+        send(client, { type: "table-error", message: `테이블에는 최대 ${store.TABLE_MAX_ITEMS}개까지 올릴 수 있습니다.` });
+        return true;
+      }
+      const ext = path.extname(url).toLowerCase();
+      const kind = ext === ".pdf" ? "pdf" : TABLE_IMAGE_EXT.has(ext) ? "image" : "file";
+      const base = { id: crypto.randomBytes(6).toString("hex"), kind, url, name: String(message.name || "파일").slice(0, 120), x: 40, y: 40, w: 420, h: kind === "file" ? 120 : 560, page: 1 };
+      const item = { ...store.cleanTablePlacement(base, message), z: ++d.doc.seq };
+      d.doc.items.push(item);
+      broadcastTable(roomId, { type: "table:item", roomId, item });
+      break;
+    }
+    case "table:update": {
+      const item = find();
+      if (!item) return true;
+      Object.assign(item, store.cleanTablePlacement(item, message), { z: ++d.doc.seq });
+      broadcastTable(roomId, { type: "table:item", roomId, item });
+      break;
+    }
+    case "table:remove": {
+      if (!find()) return true;
+      d.doc.items = d.doc.items.filter((entry) => entry.id !== String(message.itemId));
+      broadcastTable(roomId, { type: "table:remove", roomId, itemId: String(message.itemId) });
+      break;
+    }
+    default:
+      return false;
+  }
+  scheduleTablePersist(roomId);
+  return true;
 }
 
 // ===== 전역 로그 =====

@@ -17,6 +17,7 @@ const AI_DIR = path.join(DATA_DIR, "ai");
 const AI_KEYS_FILE = path.join(DATA_DIR, "ai-keys.json"); // { [channelId]: { key, model } } — 클라이언트로 절대 나가지 않음
 const AI_GLOBAL_FILE = path.join(DATA_DIR, "ai-global.json"); // { prompt } — 모든 AI방 공통 프롬프트(서버 관리자)
 const DRAW_DIR = path.join(DATA_DIR, "draw");
+const TABLE_DIR = path.join(DATA_DIR, "table");
 const LOG_DIR = path.join(DATA_DIR, "log");
 const DM_DIR = path.join(DATA_DIR, "dm");
 const DM_INDEX_FILE = path.join(DATA_DIR, "dm-threads.json");
@@ -35,7 +36,7 @@ const INVITE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 혼동 문자 제
 const MAX_CONN_LOG = 40; // 유저별 접속 로그 보관 개수
 const AVATAR_MAX_LEN = 400000; // 프로필 이미지 data URL 최대 길이(약 300KB)
 const BANNER_MAX_LEN = 900000; // 프로필 배경 이미지 data URL 최대 길이(약 670KB)
-const ROOM_TYPES = ["voice", "chat", "memo", "draw", "log", "ai"];
+const ROOM_TYPES = ["voice", "chat", "memo", "draw", "table", "log", "ai"];
 const DEFAULT_AI_MODEL = "gemini-2.5-flash";
 const DEFAULT_ROOM_LIMIT = 8; // 통화방 기본 정원
 const ROOM_LIMIT_MAX = 99;
@@ -418,7 +419,7 @@ function cleanChannelName(value) {
 }
 
 function cleanRoomTypeName(value, type) {
-  const fallback = { voice: "통화방", chat: "채팅방", memo: "메모장", draw: "그림판", log: "전역 로그", ai: "AI방" }[type] || "새 방";
+  const fallback = { voice: "통화방", chat: "채팅방", memo: "메모장", draw: "그림판", table: "테이블", log: "전역 로그", ai: "AI방" }[type] || "새 방";
   return String(value || "").trim().slice(0, 32) || fallback;
 }
 
@@ -795,6 +796,7 @@ function removeRoom(channelId, roomId) {
   deleteRoomMessages(roomId); // 방 삭제 시 저장된 채팅도 정리
   deleteRoomMemo(roomId);
   deleteRoomDraw(roomId);
+  deleteRoomTable(roomId);
   deleteRoomAi(roomId);
   deleteRoomStats(roomId);
   return { channel };
@@ -872,7 +874,7 @@ function setRoomReadOnly(channelId, roomId, value) {
   if (!channel) return { error: "채널을 찾을 수 없습니다." };
   const room = channel.rooms.find((r) => r.id === roomId);
   if (!room) return { error: "방을 찾을 수 없습니다." };
-  if (!["chat", "memo", "draw"].includes(room.type)) {
+  if (!["chat", "memo", "draw", "table"].includes(room.type)) {
     return { error: "채팅·메모·그림 방만 읽기 전용으로 설정할 수 있습니다." };
   }
   if (value) room.readOnly = true;
@@ -912,7 +914,7 @@ function createRole(channelId, name) {
   return { channel, role };
 }
 
-function updateRole(channelId, roleId, { name, color, manageEmoji, addEmoji, removeEmoji, useEmoji, attachFile, renameRoom, manageFont } = {}) {
+function updateRole(channelId, roleId, { name, color, manageEmoji, addEmoji, removeEmoji, useEmoji, attachFile, renameRoom, manageFont, manageRooms } = {}) {
   const channel = getChannel(channelId);
   if (!channel) return { error: "채널을 찾을 수 없습니다." };
   const role = rolesOf(channel).find((r) => r.id === roleId);
@@ -927,6 +929,7 @@ function updateRole(channelId, roleId, { name, color, manageEmoji, addEmoji, rem
   if (attachFile !== undefined) role.attachFile = Boolean(attachFile);
   if (renameRoom !== undefined) role.renameRoom = Boolean(renameRoom);
   if (manageFont !== undefined) role.manageFont = Boolean(manageFont);
+  if (manageRooms !== undefined) role.manageRooms = Boolean(manageRooms);
   if ((addEmoji !== undefined || removeEmoji !== undefined) && role.manageEmoji !== undefined) delete role.manageEmoji;
   persistChannels();
   return { channel, role };
@@ -1116,7 +1119,7 @@ function canAttach(channelId, userId, isAdmin = false) {
   return rolesOf(channel).some((r) => Boolean(r.attachFile) && roleHasMember(r, userId));
 }
 
-const USER_PERM_CAPS = ["addEmoji", "removeEmoji", "useEmoji", "attachFile", "renameRoom", "manageFont"];
+const USER_PERM_CAPS = ["addEmoji", "removeEmoji", "useEmoji", "attachFile", "renameRoom", "manageFont", "manageRooms"];
 
 // 방 이름 변경 권한: 관리자·대표 또는 renameRoom 역할 보유자·개별허용 유저.
 function canRenameRoom(channelId, userId, isAdmin = false) {
@@ -1125,6 +1128,14 @@ function canRenameRoom(channelId, userId, isAdmin = false) {
   if (isChannelOwner(channelId, userId, isAdmin)) return true;
   if (userPermGranted(channel, userId, "renameRoom")) return true;
   return rolesOf(channel).some((r) => Boolean(r.renameRoom) && roleHasMember(r, userId));
+}
+// 방·그룹 추가/삭제/순서 변경 권한: 관리자·대표 또는 manageRooms 역할 보유자·개별허용 유저.
+function canManageRooms(channelId, userId, isAdmin = false) {
+  const channel = getChannel(channelId);
+  if (!channel) return false;
+  if (isChannelOwner(channelId, userId, isAdmin)) return true;
+  if (userPermGranted(channel, userId, "manageRooms")) return true;
+  return rolesOf(channel).some((r) => Boolean(r.manageRooms) && roleHasMember(r, userId));
 }
 // 공유 글꼴 업로드·삭제 권한: 관리자·대표 또는 manageFont 역할 보유자·개별허용 유저.
 function canManageFont(channelId, userId, isAdmin = false) {
@@ -1303,7 +1314,7 @@ function channelSummary(channel) {
       manageEmoji: Boolean(r.manageEmoji),
       addEmoji: roleCanAdd(r), removeEmoji: roleCanRemove(r),
       useEmoji: Boolean(r.useEmoji), attachFile: Boolean(r.attachFile),
-      renameRoom: Boolean(r.renameRoom), manageFont: Boolean(r.manageFont),
+      renameRoom: Boolean(r.renameRoom), manageFont: Boolean(r.manageFont), manageRooms: Boolean(r.manageRooms),
     })),
     emojiUseRestricted: Boolean(channel.emojiUseRestricted),
     attachRestricted: Boolean(channel.attachRestricted),
@@ -1840,6 +1851,55 @@ function saveDraw(roomId, doc) {
   return { ok: true };
 }
 
+// ===== 테이블 방 =====
+// PDF·이미지·파일 카드를 올려 두고 같이 보는 공유 작업대. 파일 본문은 /uploads 에 있고 여기엔 배치 정보만 둔다.
+const TABLE_MAX_ITEMS = 200;
+const TABLE_STAGE_WIDTH = 6000;
+const TABLE_STAGE_HEIGHT = 4000;
+const TABLE_ITEM_MIN = 80;
+const tableFile = (roomId) => path.join(TABLE_DIR, `${roomId}.json`);
+
+function cleanTableNumber(value, min, max, fallback) {
+  const n = Math.round(Number(value));
+  return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback;
+}
+
+// 위치·크기·페이지를 안전한 범위로 맞춘다. 신뢰 경계라 저장·수신 값 모두 여기를 거친다.
+function cleanTablePlacement(item, raw) {
+  return {
+    ...item,
+    w: cleanTableNumber(raw.w, TABLE_ITEM_MIN, TABLE_STAGE_WIDTH, item.w),
+    h: cleanTableNumber(raw.h, TABLE_ITEM_MIN, TABLE_STAGE_HEIGHT, item.h),
+    x: cleanTableNumber(raw.x, 0, TABLE_STAGE_WIDTH - TABLE_ITEM_MIN, item.x),
+    y: cleanTableNumber(raw.y, 0, TABLE_STAGE_HEIGHT - TABLE_ITEM_MIN, item.y),
+    page: cleanTableNumber(raw.page, 1, 100000, item.page),
+  };
+}
+
+function getTable(roomId) {
+  const empty = { items: [], seq: 0 };
+  if (!isSafeRoomId(roomId)) return empty;
+  const raw = readJson(tableFile(roomId), null);
+  if (!raw || !Array.isArray(raw.items)) return empty;
+  return { items: raw.items, seq: Number(raw.seq) || 0 };
+}
+
+function saveTable(roomId, doc) {
+  if (!isSafeRoomId(roomId)) return;
+  fs.mkdirSync(TABLE_DIR, { recursive: true });
+  writeJsonAtomic(tableFile(roomId), doc);
+}
+
+// ponytail: 카드를 지워도 /uploads 의 파일은 남는다(채팅 첨부와 같은 수준). 용량이 문제 되면 참조 집계로 정리할 것.
+function deleteRoomTable(roomId) {
+  if (!isSafeRoomId(roomId)) return;
+  try {
+    fs.unlinkSync(tableFile(roomId));
+  } catch {
+    /* 파일 없으면 무시 */
+  }
+}
+
 function deleteRoomDraw(roomId) {
   if (!isSafeRoomId(roomId)) return;
   try {
@@ -2087,6 +2147,11 @@ module.exports = {
   getUploadPath,
   deleteUpload,
   isUploadOwner,
+  canManageRooms,
+  getTable,
+  saveTable,
+  cleanTablePlacement,
+  TABLE_MAX_ITEMS,
   UPLOAD_MAX_BYTES,
   // 메모장
   getMemo,

@@ -12,6 +12,7 @@
     "client": "electron .",
     "check": "node scripts/check-v2.js",
     "build:memo-editor": "esbuild client/memo-editor.js --bundle --minify --format=iife --outfile=public/memo-editor.bundle.js",
+    "build:table-pdf": "esbuild client/table-pdf.js --bundle --minify --format=iife --outfile=public/table-pdf.bundle.js && esbuild node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs --bundle --minify --format=esm --outfile=public/table-pdf.worker.js",
     "icons": "node scripts/generate-icons.js",
     "build:mac": "node scripts/fix-mac-builder-permissions.js && npm run icons && node node_modules/electron-builder/cli.js --mac zip --arm64",
     "build:win": "node scripts/build-windows-helper.js && npm run icons && node node_modules/electron-builder/cli.js --win nsis --x64",
@@ -22,7 +23,8 @@
     "codemirror": "^6.0.2",
     "electron": "^31.7.7",
     "electron-builder": "^24.13.3",
-    "esbuild": "^0.28.1"
+    "esbuild": "^0.28.1",
+    "pdfjs-dist": "^5.7.284"
   },
   "build": {
     "appId": "craft374.accord",

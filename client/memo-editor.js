@@ -1,6 +1,6 @@
 import { EditorView, basicSetup } from "codemirror";
 import { Annotation, Compartment, EditorSelection, EditorState, Prec, StateEffect, StateField, Transaction } from "@codemirror/state";
-import { Decoration, ViewPlugin, WidgetType, keymap, lineNumbers, placeholder } from "@codemirror/view";
+import { Decoration, RectangleMarker, ViewPlugin, WidgetType, keymap, layer, lineNumbers, placeholder } from "@codemirror/view";
 import { indentWithTab } from "@codemirror/commands";
 import { acceptCompletion } from "@codemirror/autocomplete";
 import { HighlightStyle, syntaxHighlighting, syntaxTree } from "@codemirror/language";
@@ -149,55 +149,83 @@ const foldField = StateField.define({
 
 const foldAtomicRanges = EditorView.atomicRanges.of((view) => view.state.field(foldField).decorations);
 
-class RemoteCursorWidget extends WidgetType {
-  constructor(cursor) {
-    super();
+// 원격 커서는 글자 흐름 밖의 레이어에 그린다. 줄 안에 위젯을 끼우면 커서가 지나갈 때마다 글자가 2px 밀리고
+// 그 줄 높이가 바뀌어 화면이 울렁거리며, 한글 조합 중인 줄의 DOM 도 건드리게 된다.
+class RemoteCaretMarker {
+  constructor(left, top, height, cursor) {
+    this.left = left;
+    this.top = top;
+    this.height = height;
     this.cursor = cursor;
   }
   eq(other) {
-    return other.cursor.name === this.cursor.name && other.cursor.color === this.cursor.color;
+    return this.left === other.left && this.top === other.top && this.height === other.height &&
+      this.cursor.name === other.cursor.name && this.cursor.color === other.cursor.color;
   }
-  toDOM() {
-    const cursor = document.createElement("span");
-    cursor.className = "cm-memo-remote-cursor";
-    cursor.style.setProperty("--memo-cursor-color", this.cursor.color);
+  draw() {
+    const caret = document.createElement("div");
+    caret.className = "cm-memo-remote-cursor";
+    caret.style.cssText = `left:${this.left}px;top:${this.top}px;height:${this.height}px`;
+    caret.style.setProperty("--memo-cursor-color", this.cursor.color);
     const label = document.createElement("span");
     label.className = "cm-memo-remote-label";
     label.textContent = this.cursor.name;
-    cursor.append(label);
-    return cursor;
+    caret.append(label);
+    return caret;
   }
-  ignoreEvent() { return true; }
+  // false 면 레이어가 요소를 새로 만든다 → 움직일 때마다 이름표 숨김 애니메이션이 처음부터 다시 돈다.
+  update() { return false; }
 }
 
-function remoteDecorations(state, cursors) {
-  const ranges = [];
-  for (const raw of cursors || []) {
-    const pos = Math.max(0, Math.min(Number(raw.pos) || 0, state.doc.length));
-    const sel = Math.max(0, Math.min(Number(raw.sel ?? raw.pos) || 0, state.doc.length));
-    const color = /^#[0-9a-f]{3,8}$/i.test(raw.color || "") ? raw.color : "#f0b232";
-    const cursor = { name: String(raw.name || "익명"), color };
-    if (pos !== sel) {
-      ranges.push(Decoration.mark({
-        class: "cm-memo-remote-selection",
-        attributes: { style: `--memo-cursor-color:${color}` },
-      }).range(Math.min(pos, sel), Math.max(pos, sel)));
-    }
-    ranges.push(Decoration.widget({ widget: new RemoteCursorWidget(cursor), side: -1 }).range(pos));
-  }
+function cleanRemoteCursor(raw, length) {
+  const clamp = (value) => Math.max(0, Math.min(Number(value) || 0, length));
+  return {
+    pos: clamp(raw.pos),
+    sel: clamp(raw.sel ?? raw.pos),
+    name: String(raw.name || "익명"),
+    color: /^#[0-9a-f]{3,8}$/i.test(raw.color || "") ? raw.color : "#f0b232",
+  };
+}
+
+function remoteSelections(cursors) {
+  const ranges = cursors.filter((cursor) => cursor.pos !== cursor.sel).map((cursor) => Decoration.mark({
+    class: "cm-memo-remote-selection",
+    attributes: { style: `--memo-cursor-color:${cursor.color}` },
+  }).range(Math.min(cursor.pos, cursor.sel), Math.max(cursor.pos, cursor.sel)));
   return Decoration.set(ranges, true);
 }
 
 const remoteCursorField = StateField.define({
-  create: () => Decoration.none,
+  create: () => [],
   update(value, transaction) {
-    value = value.map(transaction.changes);
+    if (transaction.docChanged) {
+      value = value.map((cursor) => ({
+        ...cursor,
+        pos: transaction.changes.mapPos(cursor.pos, -1),
+        sel: transaction.changes.mapPos(cursor.sel, -1),
+      }));
+    }
     for (const effect of transaction.effects) {
-      if (effect.is(setRemoteCursors)) value = remoteDecorations(transaction.state, effect.value);
+      if (effect.is(setRemoteCursors)) value = effect.value.map((raw) => cleanRemoteCursor(raw, transaction.newDoc.length));
     }
     return value;
   },
-  provide: (field) => EditorView.decorations.from(field),
+  provide: (field) => EditorView.decorations.from(field, remoteSelections),
+});
+
+const remoteCaretLayer = layer({
+  above: true,
+  class: "cm-memo-remote-layer",
+  update: (update) => update.docChanged || update.geometryChanged || update.viewportChanged ||
+    update.startState.field(remoteCursorField) !== update.state.field(remoteCursorField),
+  markers(view) {
+    const markers = [];
+    for (const cursor of view.state.field(remoteCursorField)) {
+      const [rect] = RectangleMarker.forRange(view, "", EditorSelection.cursor(cursor.pos));
+      if (rect) markers.push(new RemoteCaretMarker(rect.left, rect.top, rect.height, cursor));
+    }
+    return markers;
+  },
 });
 
 class CheckboxWidget extends WidgetType {
@@ -394,26 +422,6 @@ function listOrdinals(state) {
   });
   return ordinals;
 }
-
-// 라이브뷰·미리보기가 보여주는 번호를 원문에도 그대로 반영한다(편집할 때마다 마커 숫자를 고쳐 씀).
-// ponytail: 목록의 첫 항목만 보호하므로 "2026. 7. 22" 같은 날짜 줄이 연달아 두 줄 이상이면
-//           둘째 줄 숫자가 바뀐다. 실제로 문제되면 목록 판정에서 날짜 형태를 빼는 식으로 올릴 것.
-const renumberLists = EditorState.transactionFilter.of((transaction) => {
-  // IME 조합 중에는 브라우저가 조합 영역 DOM을 직접 관리하므로, 그 자리 텍스트를 별도 트랜잭션으로
-  // 갈아치우면 조합 표시가 깨진다(번호가 겹쳐 보이거나 조합 취소 시 사라짐). 조합이 끝난 뒤에만 교정한다.
-  if (!transaction.docChanged || transaction.startState.readOnly || transaction.annotation(externalChange) ||
-    transaction.isUserEvent("input.type.compose")) return transaction;
-  const state = transaction.state;
-  const changes = [];
-  for (const [from, ordinal] of listOrdinals(state)) {
-    const digits = /^\d+/.exec(state.doc.sliceString(from, from + 10))?.[0];
-    if (!digits || Number(digits) === ordinal) continue;
-    changes.push({ from, to: from + digits.length, insert: String(ordinal) });
-  }
-  if (!changes.length) return transaction;
-  // 재번호는 실행 취소 기록에 남기지 않는다 — 되돌린 문서에 다시 적용되므로 Ctrl+Z 한 번으로 편집 전으로 돌아간다.
-  return [transaction, { changes, sequential: true, annotations: Transaction.addToHistory.of(false) }];
-});
 
 function lineDecorations(state, from, to, className, add) {
   let line = state.doc.lineAt(from);
@@ -734,11 +742,11 @@ function createMemoEditor(options) {
     placeholder("마크다운으로 메모를 작성하세요. 채널 멤버와 실시간으로 함께 편집됩니다."),
     readOnly.of(EditorState.readOnly.of(true)),
     measureFlip.of(measureFlipThemes[0]),
-    renumberLists,
     liveModeField,
     foldField,
     foldAtomicRanges,
     remoteCursorField,
+    remoteCaretLayer,
     livePlugin,
     liveAtomicRanges,
     tableField,
@@ -756,7 +764,7 @@ function createMemoEditor(options) {
     }),
     EditorView.updateListener.of((update) => {
       if (update.docChanged && !update.transactions.every((transaction) => transaction.annotation(externalChange))) {
-        callbacks.onChange?.(update.state.doc.toString());
+        callbacks.onChange?.(update.state.doc.toString(), update.changes);
       }
       if (update.selectionSet || update.focusChanged) {
         const main = update.state.selection.main;
@@ -844,7 +852,8 @@ function createMemoEditor(options) {
       const head = Math.max(0, Math.min(selection?.head ?? view.state.selection.main.head, length));
       view.dispatch({
         changes,
-        selection: EditorSelection.single(anchor, head),
+        // 조합 중에 선택을 다시 지정하면 한글 조합이 깨진다. 지정하지 않아도 CM6 가 같은 규칙(왼쪽 유지)으로 옮겨 준다.
+        selection: view.composing ? undefined : EditorSelection.single(anchor, head),
         annotations: [externalChange.of(true), Transaction.addToHistory.of(false)],
       });
     },

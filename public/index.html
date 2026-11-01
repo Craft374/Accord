@@ -362,17 +362,59 @@
                 <button class="memo-view-btn" id="memoViewPreview" type="button" data-memo-view="preview">미리보기</button>
                 <button class="memo-view-btn" id="memoViewLive" type="button" data-memo-view="live" title="옵시디언처럼 편집 중인 줄만 원문으로 보여줍니다">라이브</button>
               </div>
+              <button class="memo-view-btn memo-split-btn" id="memoSplitButton" type="button" aria-pressed="false" title="메모 두 개를 나란히 봅니다">분할</button>
               <button class="focus-btn" id="memoFocusButton" type="button" title="집중모드" aria-label="집중모드">
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
               </button>
             </div>
           </header>
           <div class="memo-tabs" id="memoTabs" role="tablist" aria-label="열린 메모"></div>
-          <div class="memo-body" id="memoBody">
-            <div class="memo-editor-wrap">
-              <div id="memoEditor" class="memo-editor"></div>
+          <div class="memo-panes" id="memoPanes">
+            <div class="memo-pane">
+              <div class="memo-pane-head"><span class="memo-pane-name"></span></div>
+              <div class="memo-pane-empty" hidden>왼쪽 방 목록이나 탭에서 메모를 고르세요</div>
+              <div class="memo-body">
+                <div class="memo-editor-wrap">
+                  <div class="memo-editor"></div>
+                </div>
+                <div class="memo-preview markdown-body"></div>
+              </div>
             </div>
-            <div class="memo-preview markdown-body" id="memoPreview"></div>
+            <div class="memo-pane" hidden>
+              <div class="memo-pane-head">
+                <span class="memo-pane-name"></span>
+                <button class="memo-tab-close" id="memoSplitClose" type="button" title="분할 닫기" aria-label="분할 닫기">×</button>
+              </div>
+              <div class="memo-pane-empty">왼쪽 방 목록이나 탭에서 메모를 고르세요</div>
+              <div class="memo-body" hidden>
+                <div class="memo-editor-wrap">
+                  <div class="memo-editor"></div>
+                </div>
+                <div class="memo-preview markdown-body"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="table-panel" id="tablePanel" aria-hidden="true">
+          <header class="memo-head">
+            <div class="memo-title">
+              <span class="memo-title-icon">🗂️</span>
+              <h2 id="tableRoomName">테이블</h2>
+            </div>
+            <div class="memo-head-actions">
+              <span class="memo-status" id="tableStatus"></span>
+              <div class="memo-view-toggle" role="group" aria-label="확대">
+                <button class="memo-view-btn" id="tableZoomOut" type="button" aria-label="축소">−</button>
+                <span class="table-zoom-label" id="tableZoomLabel">100%</span>
+                <button class="memo-view-btn" id="tableZoomIn" type="button" aria-label="확대">+</button>
+              </div>
+              <button class="memo-view-btn active" id="tableAddButton" type="button">파일 올리기</button>
+              <input type="file" id="tableFileInput" multiple hidden />
+            </div>
+          </header>
+          <div class="table-scroll" id="tableScroll">
+            <div class="table-stage" id="tableStage"></div>
           </div>
         </section>
 
@@ -1051,6 +1093,7 @@
               <label class="room-type-option"><input type="radio" name="roomType" value="chat" /><span># 채팅방</span></label>
               <label class="room-type-option"><input type="radio" name="roomType" value="memo" /><span>📝 메모장</span></label>
               <label class="room-type-option"><input type="radio" name="roomType" value="draw" /><span>🎨 그림판</span></label>
+              <label class="room-type-option"><input type="radio" name="roomType" value="table" /><span>🗂️ 테이블</span></label>
               <label class="room-type-option"><input type="radio" name="roomType" value="log" /><span>📜 전역 로그</span></label>
               <label class="room-type-option"><input type="radio" name="roomType" value="ai" /><span>🤖 AI방</span></label>
             </div>
