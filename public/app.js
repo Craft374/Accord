@@ -8322,7 +8322,7 @@ function buildMembersPane(channel) {
 // --- 방별 권한 탭 ---
 const PERM_LABELS = {
   access: "접근",
-  use: { chat: "채팅", draw: "그리기", memo: "편집", voice: "발언", log: "보기", ai: "AI 사용" },
+  use: { chat: "채팅", draw: "그리기", table: "올리기·배치", memo: "편집", voice: "발언", log: "보기", ai: "AI 사용" },
 };
 function useLabelFor(roomType) {
   return PERM_LABELS.use[roomType] || "사용";
@@ -16499,6 +16499,9 @@ const ROOM_STATS_COLUMNS = {
     ["links", "보낸 링크", String],
   ],
   draw: [
+    ["viewMs", "접속 시간", formatDuration],
+  ],
+  table: [
     ["viewMs", "접속 시간", formatDuration],
   ],
 };
