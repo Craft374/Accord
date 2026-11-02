@@ -1743,6 +1743,7 @@ body.table-open .log-panel {
   min-height: 0;
   overflow: auto;
   background: var(--bg-input);
+  isolation: isolate; /* 카드 z 는 조작마다 커지므로 모달·토스트 위로 새지 않게 가둔다 */
 }
 /* 크기는 서버의 TABLE_STAGE_WIDTH/HEIGHT 와 같아야 한다 */
 .table-stage {
