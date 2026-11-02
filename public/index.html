@@ -399,18 +399,21 @@
         <section class="table-panel" id="tablePanel" aria-hidden="true">
           <header class="memo-head">
             <div class="memo-title">
-              <span class="memo-title-icon">🗂️</span>
-              <h2 id="tableRoomName">테이블</h2>
+              <span class="memo-title-icon">🧩</span>
+              <h2 id="tableRoomName">화이트보드</h2>
             </div>
             <div class="memo-head-actions">
               <span class="memo-status" id="tableStatus"></span>
+              <button class="memo-view-btn" id="tableNoteButton" type="button" title="메모지 추가 (빈 곳 더블클릭)">메모지</button>
+              <button class="memo-view-btn" id="tableArrowButton" type="button" title="화살표 — 카드에서 카드로 끌기 (Esc 취소)">화살표</button>
+              <button class="memo-view-btn" id="tableAddButton" type="button" title="파일 올리기 (끌어다 놓기·붙여넣기도 됩니다)">파일 올리기</button>
+              <input type="file" id="tableFileInput" multiple hidden />
               <div class="memo-view-toggle" role="group" aria-label="확대">
                 <button class="memo-view-btn" id="tableZoomOut" type="button" aria-label="축소">−</button>
-                <span class="table-zoom-label" id="tableZoomLabel">100%</span>
+                <button class="memo-view-btn table-zoom-label" id="tableZoomLabel" type="button" title="가운데로 맞추기">100%</button>
                 <button class="memo-view-btn" id="tableZoomIn" type="button" aria-label="확대">+</button>
               </div>
-              <button class="memo-view-btn active" id="tableAddButton" type="button">파일 올리기</button>
-              <input type="file" id="tableFileInput" multiple hidden />
+              <button class="memo-view-btn" id="tableThemeButton" type="button" aria-label="다크 모드" title="다크 모드">🌙</button>
             </div>
           </header>
           <div class="table-scroll" id="tableScroll">
@@ -1093,7 +1096,7 @@
               <label class="room-type-option"><input type="radio" name="roomType" value="chat" /><span># 채팅방</span></label>
               <label class="room-type-option"><input type="radio" name="roomType" value="memo" /><span>📝 메모장</span></label>
               <label class="room-type-option"><input type="radio" name="roomType" value="draw" /><span>🎨 그림판</span></label>
-              <label class="room-type-option"><input type="radio" name="roomType" value="table" /><span>🗂️ 테이블</span></label>
+              <label class="room-type-option"><input type="radio" name="roomType" value="table" /><span>🧩 화이트보드</span></label>
               <label class="room-type-option"><input type="radio" name="roomType" value="log" /><span>📜 전역 로그</span></label>
               <label class="room-type-option"><input type="radio" name="roomType" value="ai" /><span>🤖 AI방</span></label>
             </div>

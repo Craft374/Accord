@@ -419,7 +419,7 @@ function cleanChannelName(value) {
 }
 
 function cleanRoomTypeName(value, type) {
-  const fallback = { voice: "통화방", chat: "채팅방", memo: "메모장", draw: "그림판", table: "테이블", log: "전역 로그", ai: "AI방" }[type] || "새 방";
+  const fallback = { voice: "통화방", chat: "채팅방", memo: "메모장", draw: "그림판", table: "화이트보드", log: "전역 로그", ai: "AI방" }[type] || "새 방";
   return String(value || "").trim().slice(0, 32) || fallback;
 }
 
@@ -1908,12 +1908,14 @@ function saveDraw(roomId, doc) {
   return { ok: true };
 }
 
-// ===== 테이블 방 =====
-// PDF·이미지·파일 카드를 올려 두고 같이 보는 공유 작업대. 파일 본문은 /uploads 에 있고 여기엔 배치 정보만 둔다.
-const TABLE_MAX_ITEMS = 200;
-const TABLE_STAGE_WIDTH = 6000;
-const TABLE_STAGE_HEIGHT = 4000;
+// ===== 화이트보드 방 (내부 타입은 예전 이름 "table" 그대로) =====
+// 파일 카드·메모지·화살표를 무한 캔버스에 올려 두고 같이 보는 공유 작업대. 파일 본문은 /uploads 에 있고 여기엔 배치 정보만 둔다.
+const TABLE_MAX_ITEMS = 500;
+const TABLE_WORLD = 50000; // 좌표는 원점(가운데) 기준 ±TABLE_WORLD
 const TABLE_ITEM_MIN = 80;
+const TABLE_ITEM_MAX = 6000;
+const TABLE_NOTE_COLORS = 5;
+const TABLE_NOTE_TEXT_MAX = 4000;
 const tableFile = (roomId) => path.join(TABLE_DIR, `${roomId}.json`);
 
 function cleanTableNumber(value, min, max, fallback) {
@@ -1921,16 +1923,33 @@ function cleanTableNumber(value, min, max, fallback) {
   return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback;
 }
 
-// 위치·크기·페이지를 안전한 범위로 맞춘다. 신뢰 경계라 저장·수신 값 모두 여기를 거친다.
-function cleanTablePlacement(item, raw) {
-  return {
+// 화살표 끝점: 카드에 붙으면 { id }, 허공이면 { x, y }.
+function cleanTableEnd(raw, fallback) {
+  if (!raw || typeof raw !== "object") return fallback;
+  if (typeof raw.id === "string" && /^[a-f0-9]{12}$/.test(raw.id)) return { id: raw.id };
+  return { x: cleanTableNumber(raw.x, -TABLE_WORLD, TABLE_WORLD, 0), y: cleanTableNumber(raw.y, -TABLE_WORLD, TABLE_WORLD, 0) };
+}
+
+// 위치·크기·페이지·메모 내용을 안전한 범위로 맞춘다. 신뢰 경계라 저장·수신 값 모두 여기를 거친다.
+// id·kind·url·name 은 item 쪽 값만 쓴다(수신 값으로 못 바꾼다).
+function cleanTableItem(item, raw) {
+  if (item.kind === "arrow") {
+    return { ...item, from: cleanTableEnd(raw.from, item.from), to: cleanTableEnd(raw.to, item.to) };
+  }
+  const next = {
     ...item,
-    w: cleanTableNumber(raw.w, TABLE_ITEM_MIN, TABLE_STAGE_WIDTH, item.w),
-    h: cleanTableNumber(raw.h, TABLE_ITEM_MIN, TABLE_STAGE_HEIGHT, item.h),
-    x: cleanTableNumber(raw.x, 0, TABLE_STAGE_WIDTH - TABLE_ITEM_MIN, item.x),
-    y: cleanTableNumber(raw.y, 0, TABLE_STAGE_HEIGHT - TABLE_ITEM_MIN, item.y),
+    w: cleanTableNumber(raw.w, TABLE_ITEM_MIN, TABLE_ITEM_MAX, item.w),
+    h: cleanTableNumber(raw.h, TABLE_ITEM_MIN, TABLE_ITEM_MAX, item.h),
+    x: cleanTableNumber(raw.x, -TABLE_WORLD, TABLE_WORLD, item.x),
+    y: cleanTableNumber(raw.y, -TABLE_WORLD, TABLE_WORLD, item.y),
     page: cleanTableNumber(raw.page, 1, 100000, item.page),
   };
+  if (item.kind === "note") {
+    next.text = typeof raw.text === "string" ? raw.text.slice(0, TABLE_NOTE_TEXT_MAX) : String(item.text || "");
+    next.color = cleanTableNumber(raw.color, 0, TABLE_NOTE_COLORS - 1, item.color || 0);
+    next.size = cleanTableNumber(raw.size, 10, 96, item.size || 16);
+  }
+  return next;
 }
 
 function getTable(roomId) {
@@ -2212,7 +2231,7 @@ module.exports = {
   canManageRooms,
   getTable,
   saveTable,
-  cleanTablePlacement,
+  cleanTableItem,
   TABLE_MAX_ITEMS,
   UPLOAD_MAX_BYTES,
   // 메모장

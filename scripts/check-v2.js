@@ -529,6 +529,23 @@ const reviews = [
     } catch { return false; }
   })(), "AI방 isAiTextyFile detects text-extractable files by mime/extension (runtime)"],
   [(() => {
+    try {
+      const pick = (re) => dataStore.match(re)?.[0] || "";
+      const src = [/const TABLE_WORLD = [^\n]+/, /const TABLE_ITEM_MIN = [^\n]+/, /const TABLE_ITEM_MAX = [^\n]+/, /const TABLE_NOTE_COLORS = [^\n]+/, /const TABLE_NOTE_TEXT_MAX = [^\n]+/,
+        /function cleanTableNumber\([\s\S]*?\n\}/, /function cleanTableEnd\([\s\S]*?\n\}/, /function cleanTableItem\([\s\S]*?\n\}/].map(pick);
+      if (src.some((part) => !part)) return false;
+      const clean = new Function(`${src.join("\n")}\nreturn cleanTableItem;`)();
+      const file = { id: "a1", kind: "image", url: "/uploads/x", name: "n", x: 0, y: 0, w: 100, h: 100, page: 1 };
+      const moved = clean(file, { x: -300, y: "12", kind: "note", url: "/evil", text: "hi" });
+      const note = clean({ id: "b2", kind: "note", x: 0, y: 0, w: 200, h: 200, page: 1, text: "", color: 0, size: 16 }, { text: "x".repeat(5000), color: 9, size: 2 });
+      const arrow = clean({ id: "c3", kind: "arrow", from: { x: 0, y: 0 }, to: { x: 0, y: 0 } }, { from: { id: "0123456789ab" }, to: { x: 1e9, y: -5 }, x: 5 });
+      return moved.x === -300 && moved.y === 12 && moved.kind === "image" && moved.url === "/uploads/x" && !("text" in moved)
+        && note.text.length === 4000 && note.color === 4 && note.size === 10
+        && arrow.from.id === "0123456789ab" && arrow.to.x === 50000 && arrow.to.y === -5 && !("x" in arrow);
+    } catch { return false; }
+  })(), "화이트보드 cleanTableItem: 음수 좌표 허용, kind·url 고정, 메모지·화살표 값 정리 (runtime)"],
+  [app.includes("tableWorldPoint") && app.includes("buildTableNote") && app.includes("tableArrowPoints") && server.includes('message.kind === "arrow"'), "화이트보드 메모지·화살표·무한 캔버스가 연결돼 있다"],
+  [(() => {
     // AI방: 그림 생성 요청 자동 감지(자동 모델 선택). 동사가 있어야 하고, "그림판"·"그림 설명"은 안 걸린다.
     try {
       const src = dataStore.match(/function aiWantsImage\(text\) \{[\s\S]*?\n\}/);

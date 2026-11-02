@@ -1713,7 +1713,7 @@ body.memo-open .log-panel {
 .memo-preview.markdown-body h6 { margin: 0.6em 0 0.25em; }
 .memo-preview.markdown-body blockquote { margin: 0.25em 0; }
 
-/* ─── 공동 그림판 ─────────────────────────── */
+/* ─── 화이트보드 ─────────────────────────── */
 .table-panel {
   display: none;
   flex-direction: column;
@@ -1732,39 +1732,83 @@ body.table-open .log-panel {
   display: none !important;
 }
 .table-zoom-label {
-  align-self: center;
-  min-width: 42px;
-  color: var(--muted);
+  min-width: 52px;
   font-size: 12px;
   text-align: center;
 }
+/* 화이트보드 색 — 기본 흰 보드, .wb-dark 는 내 화면에서만 켜는 다크 모드 */
+.table-panel {
+  --wb-bg: #ffffff;
+  --wb-dot: #d5d7dc;
+  --wb-card: #ffffff;
+  --wb-line: #dcdee3;
+  --wb-text: #25272b;
+  --wb-muted: #6c707a;
+  --wb-hover: #eef0f3;
+  --wb-arrow: #4b4f58;
+  --wb-shadow: 0 6px 18px rgba(30, 32, 40, 0.14);
+  --wb-note-text: #2a2a2a;
+  --wb-note-0: #fff1a8;
+  --wb-note-1: #ffd6e0;
+  --wb-note-2: #cdeccf;
+  --wb-note-3: #cfe5ff;
+  --wb-note-4: #e4d7ff;
+}
+.table-panel.wb-dark {
+  --wb-bg: #1f2024;
+  --wb-dot: #3a3d44;
+  --wb-card: #2b2d31;
+  --wb-line: rgba(255, 255, 255, 0.12);
+  --wb-text: #f2f3f5;
+  --wb-muted: #a0a6b0;
+  --wb-hover: #383a40;
+  --wb-arrow: #c4c8d0;
+  --wb-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
+  --wb-note-text: #f1f1f1;
+  --wb-note-0: #5e5524;
+  --wb-note-1: #5f3645;
+  --wb-note-2: #2e5039;
+  --wb-note-3: #2c4663;
+  --wb-note-4: #463a6b;
+}
 .table-scroll {
+  position: relative;
   flex: 1;
   min-height: 0;
-  overflow: auto;
-  background: var(--bg-input);
+  overflow: hidden;
+  background-color: var(--wb-bg);
+  background-image: radial-gradient(var(--wb-dot) 1px, transparent 1px);
+  cursor: grab;
+  touch-action: none;
   isolation: isolate; /* 카드 z 는 조작마다 커지므로 모달·토스트 위로 새지 않게 가둔다 */
 }
-/* 크기는 서버의 TABLE_STAGE_WIDTH/HEIGHT 와 같아야 한다 */
+.table-scroll:active { cursor: grabbing; }
+.table-scroll.arrow-tool,
+.table-scroll.arrow-tool .table-card,
+.table-scroll.arrow-tool .table-card-head { cursor: crosshair; }
+/* 무한 캔버스: 크기 0 인 원점 레이어를 translate·scale 로 옮긴다(app.js applyTableView) */
 .table-stage {
-  position: relative;
-  width: 6000px;
-  height: 4000px;
-  cursor: grab;
-  background-image: radial-gradient(var(--line-strong) 1px, transparent 1px);
-  background-size: 28px 28px;
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  transform-origin: 0 0;
 }
 .table-card {
   position: absolute;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--wb-line);
   border-radius: var(--radius-sm);
-  background: var(--bg-surface);
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.28);
+  background: var(--wb-card);
+  box-shadow: var(--wb-shadow);
+  color: var(--wb-text);
   cursor: default;
 }
+.table-card.selected,
+.table-note.selected { outline: 2px solid var(--blurple); outline-offset: 2px; }
 .table-card-head {
   display: flex;
   align-items: center;
@@ -1772,8 +1816,8 @@ body.table-open .log-panel {
   flex-shrink: 0;
   min-height: 30px;
   padding: 2px 6px 2px 10px;
-  border-bottom: 1px solid var(--line);
-  color: var(--heading);
+  border-bottom: 1px solid var(--wb-line);
+  color: var(--wb-text);
   font-size: 12px;
   font-weight: 600;
   touch-action: none;
@@ -1791,26 +1835,28 @@ body.table-open .log-panel {
   display: flex;
   align-items: center;
   gap: 2px;
-  color: var(--muted);
+  color: var(--wb-muted);
   font-weight: 500;
   white-space: nowrap;
 }
 .table-card-head button,
-.table-card-head a {
+.table-card-head a,
+.table-note-tools button[data-table-remove] {
   min-height: 22px;
   padding: 0 6px;
   border: 0;
   border-radius: var(--radius-xs);
   background: transparent;
-  color: var(--muted);
+  color: var(--wb-muted);
   font-size: 13px;
   text-decoration: none;
   cursor: pointer;
 }
 .table-card-head button:hover:not(:disabled),
-.table-card-head a:hover {
-  background: var(--bg-elevated);
-  color: var(--heading);
+.table-card-head a:hover,
+.table-note-tools button[data-table-remove]:hover {
+  background: var(--wb-hover);
+  color: var(--wb-text);
 }
 .table-card-body {
   flex: 1;
@@ -1822,7 +1868,7 @@ body.table-open .log-panel {
   color: #333;
   font-size: 13px;
 }
-.table-card-body.file { background: transparent; color: var(--muted); }
+.table-card-body.file { background: transparent; color: var(--wb-muted); }
 .table-card-body img,
 .table-card-body canvas {
   width: 100%;
@@ -1837,8 +1883,93 @@ body.table-open .log-panel {
   height: 16px;
   touch-action: none;
   cursor: nwse-resize;
-  background: linear-gradient(135deg, transparent 50%, var(--line-strong) 50%);
+  background: linear-gradient(135deg, transparent 50%, var(--wb-line) 50%);
 }
+/* 메모지 — 아무 데나 끌어 옮기고, 더블클릭하면 쓴다 */
+.table-note {
+  overflow: visible;
+  border: 0;
+  border-radius: 4px;
+  background: var(--wb-note-0);
+  color: var(--wb-note-text);
+  cursor: move;
+  touch-action: none;
+}
+.table-note[data-color="1"] { background: var(--wb-note-1); }
+.table-note[data-color="2"] { background: var(--wb-note-2); }
+.table-note[data-color="3"] { background: var(--wb-note-3); }
+.table-note[data-color="4"] { background: var(--wb-note-4); }
+.table-note-text {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  padding: 14px;
+  border: 0;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 1.35;
+  cursor: text;
+}
+.table-note-text[readonly] { pointer-events: none; user-select: none; }
+.table-note-text::placeholder { color: inherit; opacity: 0.45; }
+.table-note-tools {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border: 1px solid var(--wb-line);
+  border-radius: 999px;
+  background: var(--wb-card);
+  box-shadow: var(--wb-shadow);
+  cursor: default;
+  white-space: nowrap;
+}
+.table-note:not(.selected) .table-note-tools { display: none; }
+.table-note-swatch {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  border-radius: 50%;
+  background: var(--wb-note-0);
+  cursor: pointer;
+}
+.table-note-swatch[data-note-color="1"] { background: var(--wb-note-1); }
+.table-note-swatch[data-note-color="2"] { background: var(--wb-note-2); }
+.table-note-swatch[data-note-color="3"] { background: var(--wb-note-3); }
+.table-note-swatch[data-note-color="4"] { background: var(--wb-note-4); }
+.table-note[data-color="0"] [data-note-color="0"],
+.table-note[data-color="1"] [data-note-color="1"],
+.table-note[data-color="2"] [data-note-color="2"],
+.table-note[data-color="3"] [data-note-color="3"],
+.table-note[data-color="4"] [data-note-color="4"] { box-shadow: 0 0 0 2px var(--blurple); }
+.table-note-size {
+  height: 22px;
+  margin-left: 4px;
+  border: 1px solid var(--wb-line);
+  border-radius: var(--radius-xs);
+  background: var(--wb-card);
+  color: var(--wb-text);
+  font-size: 12px;
+}
+/* 화살표 — 선 둘레의 투명한 굵은 선(hit)만 눌린다 */
+.table-arrow {
+  position: absolute;
+  overflow: visible;
+  pointer-events: none;
+}
+.table-arrow path { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.table-arrow-hit { stroke: transparent; stroke-width: 14px; pointer-events: stroke; cursor: pointer; }
+.table-arrow-line { stroke: var(--wb-arrow); stroke-width: 2.5px; }
+.table-arrow.selected .table-arrow-line { stroke: var(--blurple); }
+.table-arrow.draft path { pointer-events: none; }
+.table-arrow.draft .table-arrow-line { stroke: var(--blurple); stroke-dasharray: 6 5; }
 .draw-panel {
   display: none;
   flex-direction: column;

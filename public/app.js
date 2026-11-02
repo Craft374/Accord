@@ -39,7 +39,7 @@ const ROOM_TYPE_META = {
   chat: { icon: "#", label: "채팅방" },
   memo: { icon: "📝", label: "메모장" },
   draw: { icon: "🎨", label: "그림판" },
-  table: { icon: "🗂️", label: "테이블" },
+  table: { icon: "🧩", label: "화이트보드" },
   log: { icon: "📜", label: "전역 로그" },
   ai: { icon: "🤖", label: "AI방" },
 };
@@ -194,7 +194,7 @@ const state = {
   roomRenderPending: false, // 드래그 중 미뤄 둔 renderRooms
   // 메모장
   memo: null, // { roomId, channelId, name, rev, remotePending, saveTimer, view }
-  table: null, // 열어 둔 테이블 방
+  table: null, // 열어 둔 화이트보드 방
   memoTabs: [], // 열어둔 메모방 roomId 목록(파일 탭). 패널을 완전히 닫으면 함께 비워짐
   // 전역 로그
   activeLog: null, // { roomId, channelId, name, entries: [] }
@@ -289,6 +289,10 @@ const dom = {
   tableZoomIn: document.querySelector("#tableZoomIn"),
   tableZoomOut: document.querySelector("#tableZoomOut"),
   tableZoomLabel: document.querySelector("#tableZoomLabel"),
+  tablePanel: document.querySelector("#tablePanel"),
+  tableNoteButton: document.querySelector("#tableNoteButton"),
+  tableArrowButton: document.querySelector("#tableArrowButton"),
+  tableThemeButton: document.querySelector("#tableThemeButton"),
   tableAddButton: document.querySelector("#tableAddButton"),
   tableFileInput: document.querySelector("#tableFileInput"),
   tableScroll: document.querySelector("#tableScroll"),
@@ -2010,7 +2014,7 @@ async function handleSocketMessage(message) {
   }
 
   if (message.type === "table-error") {
-    setTableStatus(message.message || "테이블 오류", "bad");
+    setTableStatus(message.message || "화이트보드 오류", "bad");
     return;
   }
 
@@ -8330,7 +8334,7 @@ function buildMembersPane(channel) {
 // --- 방별 권한 탭 ---
 const PERM_LABELS = {
   access: "접근",
-  use: { chat: "채팅", draw: "그리기", table: "올리기·배치", memo: "편집", voice: "발언", log: "보기", ai: "AI 사용" },
+  use: { chat: "채팅", draw: "그리기", table: "편집", memo: "편집", voice: "발언", log: "보기", ai: "AI 사용" },
 };
 function useLabelFor(roomType) {
   return PERM_LABELS.use[roomType] || "사용";
@@ -13499,16 +13503,23 @@ function verifyActiveDraw() {
   markRoomNameClickable(dom.drawRoomName, found.channel);
 }
 
-// ===== 테이블 방 =====
-// PDF·이미지·파일 카드를 올려 같이 보는 공유 작업대. 위치·크기·PDF 페이지가 모두에게 동기화된다.
-const TABLE_ZOOM_MIN = 0.25;
-const TABLE_ZOOM_MAX = 3;
+// ===== 화이트보드 방 (내부 타입은 예전 이름 "table") =====
+// 무한 캔버스에 파일 카드·메모지·화살표를 올려 같이 보는 공유 작업대. 위치·크기·내용이 모두에게 동기화된다.
+// 좌표는 원점(0,0)이 처음 화면 가운데인 월드 좌표이고, 화면에는 translate(pan)·scale(zoom) 으로 옮겨 그린다.
+const TABLE_ZOOM_MIN = 0.1;
+const TABLE_ZOOM_MAX = 4;
 const TABLE_SEND_THROTTLE = 60;
+const TABLE_TEXT_THROTTLE = 250;
 const TABLE_CARD_WIDTH = 480;
 const TABLE_CARD_MIN = 80;
 const TABLE_HEAD_HEIGHT = 32;
+const TABLE_GRID = 28;
+const TABLE_ARROW_GAP = 6; // 카드 테두리와 화살표 끝 사이 여백
 const TABLE_PDF_RENDER_DELAY = 120;
 const TABLE_PDF_MAX_SCALE = 4;
+const TABLE_NOTE_COLORS = ["노랑", "분홍", "초록", "하늘", "보라"]; // 실제 색은 CSS(.table-note[data-color]) — 라이트/다크 따로
+const TABLE_NOTE_SIZES = [12, 14, 16, 20, 24, 32, 48, 64];
+const TABLE_THEME_KEY = "accordWhiteboardDark";
 let tablePdfLibPromise = null;
 
 function setTableStatus(text, tone) {
@@ -13517,10 +13528,99 @@ function setTableStatus(text, tone) {
   dom.tableStatus.className = "memo-status" + (tone ? ` ${tone}` : "");
 }
 
-// 화면 설정의 UI 배율(.app 의 CSS zoom)까지 곱해야 마우스 이동량이 카드 좌표와 맞는다.
+// 화면 px(clientX) 대비 보드 안쪽 CSS px 비율. 화면 설정의 UI 배율(.app 의 CSS zoom)을 실측으로 반영한다.
+function tableViewRatio() {
+  return dom.tableScroll.getBoundingClientRect().width / dom.tableScroll.offsetWidth || 1;
+}
+
+// 마우스 이동량(화면 px) → 월드 이동량 비율. PDF 선명도 계산에도 쓴다.
 function tableScreenScale(t) {
-  const ui = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--ui-scale")) || 1;
-  return t.zoom * ui;
+  return t.zoom * tableViewRatio();
+}
+
+// 화면 좌표 → 보드 안쪽 CSS px. 좌표 변환은 전부 이 함수와 tableWorldPoint 를 거친다.
+function tableLocalPoint(clientX, clientY) {
+  const r = dom.tableScroll.getBoundingClientRect();
+  const k = tableViewRatio();
+  return { x: (clientX - r.left) / k, y: (clientY - r.top) / k };
+}
+
+function tableWorldPoint(t, clientX, clientY) {
+  const p = tableLocalPoint(clientX, clientY);
+  return { x: (p.x - t.panX) / t.zoom, y: (p.y - t.panY) / t.zoom };
+}
+
+function tableViewCenter(t) {
+  return {
+    x: (dom.tableScroll.offsetWidth / 2 - t.panX) / t.zoom,
+    y: (dom.tableScroll.offsetHeight / 2 - t.panY) / t.zoom,
+  };
+}
+
+function applyTableView(t) {
+  dom.tableStage.style.transform = `translate(${t.panX}px, ${t.panY}px) scale(${t.zoom})`;
+  const grid = TABLE_GRID * t.zoom;
+  dom.tableScroll.style.backgroundSize = `${grid}px ${grid}px`;
+  dom.tableScroll.style.backgroundPosition = `${t.panX}px ${t.panY}px`;
+  dom.tableZoomLabel.textContent = `${Math.round(t.zoom * 100)}%`;
+}
+
+function rerenderTablePdfs(t) {
+  for (const card of t.cards.values()) if (card.item.kind === "pdf") scheduleTablePdfRender(card);
+}
+
+// (lx, ly)(보드 안쪽 CSS px, 기본은 화면 가운데) 아래의 월드 점이 제자리에 있도록 확대한다.
+function zoomTable(t, zoom, lx = dom.tableScroll.offsetWidth / 2, ly = dom.tableScroll.offsetHeight / 2) {
+  const next = Math.min(TABLE_ZOOM_MAX, Math.max(TABLE_ZOOM_MIN, zoom));
+  t.panX = lx - (lx - t.panX) * (next / t.zoom);
+  t.panY = ly - (ly - t.panY) * (next / t.zoom);
+  t.zoom = next;
+  applyTableView(t);
+  rerenderTablePdfs(t);
+}
+
+// 올려 둔 것 전체가 화면 가운데에 오게 맞춘다(100% 이하로만). 비어 있으면 원점이 가운데.
+function centerTableView(t) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const { item } of t.cards.values()) {
+    if (item.kind === "arrow") continue;
+    minX = Math.min(minX, item.x);
+    minY = Math.min(minY, item.y);
+    maxX = Math.max(maxX, item.x + item.w);
+    maxY = Math.max(maxY, item.y + item.h);
+  }
+  const vw = dom.tableScroll.offsetWidth;
+  const vh = dom.tableScroll.offsetHeight;
+  const empty = !Number.isFinite(minX);
+  const fit = empty ? 1 : Math.min(1, (vw - 80) / (maxX - minX), (vh - 80) / (maxY - minY));
+  t.zoom = Math.min(TABLE_ZOOM_MAX, Math.max(TABLE_ZOOM_MIN, fit));
+  t.panX = vw / 2 - (empty ? 0 : (minX + maxX) / 2) * t.zoom;
+  t.panY = vh / 2 - (empty ? 0 : (minY + maxY) / 2) * t.zoom;
+  applyTableView(t);
+  rerenderTablePdfs(t);
+}
+
+// 보드 배경은 기본 흰색. 다크 모드는 내 화면에만 적용된다(동기화 안 함).
+function applyTableTheme() {
+  const dark = localStorage.getItem(TABLE_THEME_KEY) === "1";
+  dom.tablePanel?.classList.toggle("wb-dark", dark);
+  if (!dom.tableThemeButton) return;
+  dom.tableThemeButton.textContent = dark ? "☀️" : "🌙";
+  dom.tableThemeButton.title = dark ? "라이트 모드" : "다크 모드";
+  dom.tableThemeButton.setAttribute("aria-label", dom.tableThemeButton.title);
+}
+
+function setTableTool(t, tool) {
+  t.tool = tool;
+  dom.tableArrowButton.classList.toggle("active", tool === "arrow");
+  dom.tableScroll.classList.toggle("arrow-tool", tool === "arrow");
+}
+
+function selectTableItem(t, itemId) {
+  if (t.selected === itemId) return;
+  t.cards.get(t.selected)?.el.classList.remove("selected");
+  t.selected = itemId;
+  t.cards.get(itemId)?.el.classList.add("selected");
 }
 
 function openTableRoom(roomId) {
@@ -13537,14 +13637,22 @@ function openTableRoom(roomId) {
     name: found.room.name,
     writable: canWriteRoom(found.channel, found.room),
     zoom: 1,
-    cards: new Map(), // itemId -> { el, item, body, pageLabel, pageCount, renderTimer, renderId, task }
+    panX: 0,
+    panY: 0,
+    tool: "select",
+    selected: "",
+    noteOffset: 0,
+    cards: new Map(), // itemId -> { el, item, ... } (파일 카드·메모지·화살표 공통)
     pdfs: new Map(), // url -> Promise<PDFDocumentProxy>
     drag: null,
     pan: null,
+    arrowDraft: null,
   };
   document.body.classList.add("table-open");
   dom.tableStage.replaceChildren();
-  applyTableZoom(1);
+  applyTableTheme();
+  centerTableView(state.table);
+  setTableTool(state.table, "select");
   updateTableHeader(found.channel);
   setTableStatus("불러오는 중…", "muted");
   sendSocket({ type: "table:open", roomId });
@@ -13556,6 +13664,9 @@ function updateTableHeader(channel) {
   dom.tableRoomName.textContent = t.name;
   markRoomNameClickable(dom.tableRoomName, channel);
   dom.tableAddButton.hidden = !t.writable || !canAttachCh(channel);
+  dom.tableNoteButton.hidden = !t.writable;
+  dom.tableArrowButton.hidden = !t.writable;
+  if (!t.writable) setTableTool(t, "select");
 }
 
 function closeTableView() {
@@ -13563,14 +13674,18 @@ function closeTableView() {
   if (!t) return;
   sendSocket({ type: "table:close" });
   state.table = null;
-  for (const card of t.cards.values()) clearTimeout(card.renderTimer);
+  for (const card of t.cards.values()) {
+    clearTimeout(card.renderTimer);
+    clearTimeout(card.textTimer);
+  }
   for (const pdf of t.pdfs.values()) pdf.then((doc) => doc.destroy()).catch(() => {});
   dom.tableStage.replaceChildren();
+  dom.tableScroll.classList.remove("arrow-tool");
   document.body.classList.remove("table-open");
   renderRooms();
 }
 
-// 채널 목록 갱신 후, 보고 있던 테이블이 사라졌거나 이름·권한이 바뀌었는지 확인.
+// 채널 목록 갱신 후, 보고 있던 화이트보드가 사라졌거나 이름·권한이 바뀌었는지 확인.
 function verifyActiveTable() {
   const t = state.table;
   if (!t) return;
@@ -13588,7 +13703,9 @@ function handleTableSocketMessage(message) {
   if (!t || t.roomId !== message.roomId) return;
   if (message.type === "table:state") {
     for (const item of message.items || []) upsertTableCard(item);
-    setTableStatus(t.cards.size ? "" : "파일을 끌어다 놓거나 [파일 올리기]를 누르세요", "muted");
+    placeTableArrows(t); // 화살표가 붙은 카드보다 먼저 왔을 수 있다
+    centerTableView(t);
+    setTableStatus(t.cards.size ? "" : "빈 곳을 더블클릭해 메모지를 붙이거나, 파일을 끌어다 놓거나 붙여넣으세요", "muted");
   } else if (message.type === "table:item") {
     upsertTableCard(message.item);
     setTableStatus("");
@@ -13596,8 +13713,10 @@ function handleTableSocketMessage(message) {
     const card = t.cards.get(message.itemId);
     if (!card) return;
     clearTimeout(card.renderTimer);
+    clearTimeout(card.textTimer);
     card.el.remove();
     t.cards.delete(message.itemId);
+    if (t.selected === message.itemId) t.selected = "";
   }
 }
 
@@ -13610,19 +13729,156 @@ function upsertTableCard(item) {
     t.cards.set(item.id, card);
     dom.tableStage.append(card.el);
   }
-  // 끌고 있는 카드는 서버 메아리보다 내 손이 최신이다.
+  // 끌고 있는 카드·쓰고 있는 메모지는 서버 메아리보다 내 손이 최신이다.
   const held = t.drag?.card === card ? { x: previous.x, y: previous.y, w: previous.w, h: previous.h } : null;
-  card.item = { ...item, ...held };
+  // ponytail: 같은 메모지를 둘이 동시에 쓰면 마지막에 보낸 글이 이긴다. 자주 겹치면 메모장처럼 OT 로 바꿀 것.
+  const typing = card.text && document.activeElement === card.text ? { text: previous.text } : null;
+  card.item = { ...item, ...held, ...typing };
   placeTableCard(card);
   if (item.kind === "pdf" && (!previous || previous.page !== item.page || previous.w !== item.w)) scheduleTablePdfRender(card);
 }
 
 function placeTableCard(card) {
+  if (card.item.kind === "arrow") {
+    placeTableArrow(card);
+    return;
+  }
   const { x, y, w, h, z } = card.item;
   card.el.style.cssText = `left:${x}px;top:${y}px;width:${w}px;height:${h}px;z-index:${z || 0}`;
+  if (card.text) renderTableNote(card);
+  if (state.table) placeTableArrows(state.table, card.item.id);
+}
+
+// itemId 를 주면 그 카드에 붙은 화살표만 다시 그린다.
+function placeTableArrows(t, itemId) {
+  for (const card of t.cards.values()) {
+    const { kind, from, to } = card.item;
+    if (kind === "arrow" && (!itemId || from?.id === itemId || to?.id === itemId)) placeTableArrow(card);
+  }
+}
+
+// 끝점 둘을 월드 좌표로. 카드에 붙은 쪽은 카드 가운데에서 상대 쪽으로 그은 선이 테두리와 만나는 점.
+function tableArrowPoints(t, arrow) {
+  const resolve = (end) => {
+    if (!end) return null;
+    if (!end.id) return { x: end.x, y: end.y, rect: null };
+    const target = t.cards.get(end.id)?.item;
+    if (!target || target.kind === "arrow") return null;
+    return { x: target.x + target.w / 2, y: target.y + target.h / 2, rect: target };
+  };
+  const a = resolve(arrow.from);
+  const b = resolve(arrow.to);
+  if (!a || !b) return null;
+  const clip = (p, toward) => {
+    if (!p.rect) return p;
+    const dx = toward.x - p.x;
+    const dy = toward.y - p.y;
+    const s = Math.min((p.rect.w / 2 + TABLE_ARROW_GAP) / Math.abs(dx), (p.rect.h / 2 + TABLE_ARROW_GAP) / Math.abs(dy));
+    return s < 1 ? { x: p.x + dx * s, y: p.y + dy * s } : p;
+  };
+  return [clip(a, b), clip(b, a)];
+}
+
+function placeTableArrow(card) {
+  const points = state.table && tableArrowPoints(state.table, card.item);
+  if (!points) {
+    card.el.style.display = "none";
+    return;
+  }
+  const [p, q] = points;
+  const pad = 16;
+  const left = Math.min(p.x, q.x) - pad;
+  const top = Math.min(p.y, q.y) - pad;
+  card.el.style.cssText = `left:${left}px;top:${top}px;width:${Math.abs(p.x - q.x) + pad * 2}px;height:${Math.abs(p.y - q.y) + pad * 2}px;z-index:${card.item.z || 0}`;
+  const x1 = p.x - left, y1 = p.y - top, x2 = q.x - left, y2 = q.y - top;
+  const angle = Math.atan2(y2 - y1, x2 - x1);
+  const wing = (a) => `${x2 - 13 * Math.cos(angle + a)} ${y2 - 13 * Math.sin(angle + a)}`;
+  const line = `M${x1} ${y1}L${x2} ${y2}`;
+  card.hit.setAttribute("d", line);
+  card.line.setAttribute("d", `${line}M${wing(0.5)}L${x2} ${y2}L${wing(-0.5)}`);
+}
+
+function buildTableArrow(item) {
+  const svgNs = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgNs, "svg");
+  svg.classList.add("table-arrow");
+  svg.dataset.tableItem = item.id;
+  const hit = document.createElementNS(svgNs, "path");
+  hit.classList.add("table-arrow-hit");
+  const line = document.createElementNS(svgNs, "path");
+  line.classList.add("table-arrow-line");
+  svg.append(hit, line);
+  return { el: svg, item, hit, line };
+}
+
+function buildTableNote(item) {
+  const cardEl = el("div", "table-card table-note");
+  cardEl.dataset.tableItem = item.id;
+  const tools = el("div", "table-note-tools");
+  TABLE_NOTE_COLORS.forEach((label, index) => {
+    const swatch = document.createElement("button");
+    swatch.type = "button";
+    swatch.className = "table-note-swatch";
+    swatch.dataset.noteColor = String(index);
+    swatch.title = label;
+    swatch.setAttribute("aria-label", `${label}색`);
+    tools.append(swatch);
+  });
+  const size = document.createElement("select");
+  size.className = "table-note-size";
+  size.title = "글자 크기";
+  size.setAttribute("aria-label", "글자 크기");
+  for (const n of TABLE_NOTE_SIZES) size.append(new Option(String(n), String(n)));
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.dataset.tableRemove = item.id;
+  remove.title = "메모지 지우기";
+  remove.setAttribute("aria-label", "메모지 지우기");
+  remove.textContent = "×";
+  tools.append(size, remove);
+  const text = document.createElement("textarea");
+  text.className = "table-note-text";
+  text.readOnly = true;
+  text.spellcheck = false;
+  text.maxLength = 4000; // 서버 TABLE_NOTE_TEXT_MAX 와 같게
+  const card = { el: cardEl, item, tools, text, size, remove, resize: el("div", "table-card-resize"), textTimer: 0, renderTimer: 0 };
+  cardEl.append(tools, text, card.resize);
+  renderTableCardControls(card);
+  return card;
+}
+
+function renderTableNote(card) {
+  const { item, text, size } = card;
+  card.el.dataset.color = String(item.color || 0);
+  text.style.fontSize = `${item.size || 16}px`;
+  size.value = String(item.size || 16);
+  if (document.activeElement !== text && text.value !== (item.text || "")) text.value = item.text || "";
+}
+
+function editTableNote(card) {
+  if (!state.table?.writable) return;
+  card.text.readOnly = false;
+  card.text.focus();
+  card.text.setSelectionRange(card.text.value.length, card.text.value.length);
+}
+
+function queueTableNoteText(card) {
+  card.item.text = card.text.value;
+  card.dirty = true;
+  if (card.textTimer) return;
+  card.textTimer = setTimeout(() => {
+    card.textTimer = 0;
+    if (state.table?.cards.get(card.item.id) === card) sendTableUpdate(card.item.id, { text: card.item.text });
+  }, TABLE_TEXT_THROTTLE);
+}
+
+function addTableNote(t, at, fields) {
+  sendSocket({ ...fields, type: "table:add", roomId: t.roomId, kind: "note", x: Math.round(at.x - 100), y: Math.round(at.y - 100) });
 }
 
 function buildTableCard(item) {
+  if (item.kind === "arrow") return buildTableArrow(item);
+  if (item.kind === "note") return buildTableNote(item);
   const cardEl = el("div", "table-card");
   cardEl.dataset.tableItem = item.id;
   const head = el("div", "table-card-head");
@@ -13652,8 +13908,8 @@ function buildTableCard(item) {
   const remove = document.createElement("button");
   remove.type = "button";
   remove.dataset.tableRemove = item.id;
-  remove.title = "테이블에서 내리기";
-  remove.setAttribute("aria-label", "테이블에서 내리기");
+  remove.title = "화이트보드에서 내리기";
+  remove.setAttribute("aria-label", "화이트보드에서 내리기");
   remove.textContent = "×";
   head.append(open, remove);
   const body = el("div", `table-card-body${item.kind === "file" ? " file" : ""}`, item.kind === "image" ? "" : item.kind === "pdf" ? "불러오는 중…" : item.name);
@@ -13674,18 +13930,52 @@ function buildTableCard(item) {
 
 // 읽기 전용이면 보기만 한다(페이지는 쓸 수 있는 사람을 따라간다).
 function renderTableCardControls(card) {
+  if (card.item.kind === "arrow") return;
   const { writable } = state.table;
   card.remove.hidden = !writable;
   card.resize.hidden = !writable;
+  if (card.text) {
+    card.tools.hidden = !writable;
+    card.text.placeholder = writable ? "더블클릭해서 쓰기" : "";
+    if (!writable) card.text.readOnly = true;
+  }
   card.el.querySelectorAll("[data-table-page]").forEach((button) => { button.disabled = !writable; });
 }
 
-function sendTableUpdate(item) {
-  const { x, y, w, h, page } = item;
-  sendSocket({ type: "table:update", roomId: state.table.roomId, itemId: item.id, x, y, w, h, page });
+// patch 에 담은 값만 보낸다 — 남이 동시에 바꾼 다른 값(위치·글 등)을 내 옛 값으로 덮지 않게.
+function sendTableUpdate(itemId, patch) {
+  sendSocket({ ...patch, type: "table:update", roomId: state.table.roomId, itemId });
 }
 
-// pdf.js 는 수 MB 라서 테이블에서 PDF를 볼 때만 불러온다.
+function removeTableItem(t, itemId) {
+  const card = t.cards.get(itemId);
+  if (!card) return;
+  if (card.item.url && !window.confirm("이 파일을 화이트보드에서 내릴까요?")) return;
+  sendSocket({ type: "table:remove", roomId: t.roomId, itemId });
+}
+
+// 화살표 끝점: 손을 뗀 곳에 카드가 있으면 그 카드에 붙인다.
+function tableArrowEndAt(t, event) {
+  const hit = document.elementFromPoint(event.clientX, event.clientY)?.closest(".table-card");
+  if (hit && t.cards.has(hit.dataset.tableItem)) return { id: hit.dataset.tableItem };
+  const p = tableWorldPoint(t, event.clientX, event.clientY);
+  return { x: Math.round(p.x), y: Math.round(p.y) };
+}
+
+function finishTableArrow(t, event, cancelled) {
+  const draft = t.arrowDraft;
+  t.arrowDraft = null;
+  draft.el.remove();
+  setTableTool(t, "select");
+  if (cancelled) return;
+  const { from } = draft.item;
+  const to = tableArrowEndAt(t, event);
+  if (from.id && from.id === to.id) return;
+  if (!from.id && !to.id && Math.hypot(from.x - to.x, from.y - to.y) < 10) return;
+  sendSocket({ type: "table:add", roomId: t.roomId, kind: "arrow", from, to });
+}
+
+// pdf.js 는 수 MB 라서 화이트보드에서 PDF를 볼 때만 불러온다.
 function loadTablePdfLib() {
   tablePdfLibPromise ||= new Promise((resolve, reject) => {
     const script = document.createElement("script");
@@ -13751,15 +14041,6 @@ async function renderTablePdf(card) {
   }
 }
 
-function applyTableZoom(zoom) {
-  const t = state.table;
-  if (!t) return;
-  t.zoom = Math.min(TABLE_ZOOM_MAX, Math.max(TABLE_ZOOM_MIN, zoom));
-  dom.tableStage.style.zoom = String(t.zoom);
-  dom.tableZoomLabel.textContent = `${Math.round(t.zoom * 100)}%`;
-  for (const card of t.cards.values()) if (card.item.kind === "pdf") scheduleTablePdfRender(card);
-}
-
 // 이미지는 원본 비율대로 카드를 잡는다. PDF·일반 파일은 서버 기본 크기를 쓴다.
 async function tableCardSize(file) {
   if (!file.type.startsWith("image/")) return {};
@@ -13774,12 +14055,15 @@ async function tableCardSize(file) {
   }
 }
 
-async function addTableFiles(files) {
+// at(월드 좌표, 기본은 화면 가운데)에 카드 가운데가 오도록 올린다. 여러 개면 조금씩 비껴 쌓는다.
+async function addTableFiles(files, at) {
   const t = state.table;
   if (!t?.writable || !files.length) return;
-  const scale = tableScreenScale(t);
-  let x = Math.round(dom.tableScroll.scrollLeft / scale) + 40;
-  let y = Math.round(dom.tableScroll.scrollTop / scale) + 40;
+  if (dom.tableAddButton.hidden) {
+    setTableStatus("파일을 올릴 권한이 없습니다.", "bad");
+    return;
+  }
+  let { x, y } = at || tableViewCenter(t);
   for (const file of files) {
     if (file.size > CHAT_UPLOAD_MAX) {
       setTableStatus(`${file.name}: 50MB 이하만 올릴 수 있습니다.`, "bad");
@@ -13790,7 +14074,7 @@ async function addTableFiles(files) {
       const size = await tableCardSize(file);
       const result = await uploadChatFile(file, (done) => setTableStatus(`${file.name} ${Math.round(done * 100)}%`, "muted"));
       if (state.table !== t) return;
-      sendSocket({ type: "table:add", roomId: t.roomId, url: result.url, name: file.name, x, y, ...size });
+      sendSocket({ type: "table:add", roomId: t.roomId, url: result.url, name: file.name, x: Math.round(x - (size.w || 420) / 2), y: Math.round(y - (size.h || 200) / 2), ...size });
       x += 30;
       y += 30;
     } catch (error) {
@@ -13800,73 +14084,189 @@ async function addTableFiles(files) {
 }
 
 function bindTableEvents() {
-  const stage = dom.tableStage;
-  if (!stage) return;
-  dom.tableZoomIn?.addEventListener("click", () => applyTableZoom((state.table?.zoom || 1) * 1.25));
-  dom.tableZoomOut?.addEventListener("click", () => applyTableZoom((state.table?.zoom || 1) / 1.25));
+  const scroll = dom.tableScroll;
+  if (!scroll) return;
+  const current = () => (document.body.classList.contains("table-open") ? state.table : null);
+  const editable = (target) => target instanceof Element && Boolean(target.closest("input, textarea, select, [contenteditable]"));
+  // 모달 등 보드 밖에 포커스가 있으면 붙여넣기·지우기 단축키를 가로채지 않는다.
+  const outside = (target) => target !== document.body && !dom.tablePanel.contains(target);
+  applyTableTheme();
+  dom.tableThemeButton?.addEventListener("click", () => {
+    localStorage.setItem(TABLE_THEME_KEY, localStorage.getItem(TABLE_THEME_KEY) === "1" ? "0" : "1");
+    applyTableTheme();
+  });
+  dom.tableZoomIn?.addEventListener("click", () => state.table && zoomTable(state.table, state.table.zoom * 1.25));
+  dom.tableZoomOut?.addEventListener("click", () => state.table && zoomTable(state.table, state.table.zoom / 1.25));
+  dom.tableZoomLabel?.addEventListener("click", () => state.table && centerTableView(state.table));
   dom.tableAddButton?.addEventListener("click", () => dom.tableFileInput.click());
   dom.tableFileInput?.addEventListener("change", () => {
     addTableFiles([...dom.tableFileInput.files]);
     dom.tableFileInput.value = "";
+  });
+  dom.tableNoteButton?.addEventListener("click", () => {
+    const t = state.table;
+    if (!t?.writable) return;
+    const center = tableViewCenter(t);
+    t.noteOffset = (t.noteOffset + 24) % 144; // 연달아 누르면 조금씩 비껴 붙인다
+    addTableNote(t, { x: center.x + t.noteOffset, y: center.y + t.noteOffset });
+  });
+  dom.tableArrowButton?.addEventListener("click", () => {
+    const t = state.table;
+    if (t?.writable) setTableTool(t, t.tool === "arrow" ? "select" : "arrow");
   });
   dom.tableRoomName?.addEventListener("click", () => {
     const t = state.table;
     const channel = t && state.channels.find((c) => c.id === t.channelId);
     if (canRenameRoomChannel(channel)) openRoomRenameModal(t.roomId);
   });
-  dom.tableScroll?.addEventListener("dragover", (event) => {
+  scroll.addEventListener("dragover", (event) => {
     if (state.table?.writable) event.preventDefault();
   });
-  dom.tableScroll?.addEventListener("drop", (event) => {
+  scroll.addEventListener("drop", (event) => {
     event.preventDefault();
-    addTableFiles([...event.dataTransfer.files]);
+    const t = state.table;
+    if (t) addTableFiles([...event.dataTransfer.files], tableWorldPoint(t, event.clientX, event.clientY));
   });
-  dom.tableScroll?.addEventListener("wheel", (event) => {
-    if (!state.table || (!event.ctrlKey && !event.metaKey)) return;
+  // 휠 = 마우스 위치 기준 확대·축소. 트랙패드 핀치는 ctrl+wheel 로 작은 값이 연달아 와서 더 민감하게 받는다.
+  scroll.addEventListener("wheel", (event) => {
+    const t = state.table;
+    if (!t) return;
     event.preventDefault();
-    applyTableZoom(state.table.zoom * (event.deltaY < 0 ? 1.1 : 1 / 1.1));
+    const delta = event.deltaY * (event.deltaMode === 1 ? 16 : 1);
+    const p = tableLocalPoint(event.clientX, event.clientY);
+    zoomTable(t, t.zoom * Math.exp(-delta * (event.ctrlKey ? 0.01 : 0.0015)), p.x, p.y);
   }, { passive: false });
-  stage.addEventListener("click", (event) => {
+  // 이미지 붙여넣기 → 카드, 글자 붙여넣기 → 메모지. 입력칸(메모지 쓰는 중 포함)에서는 원래대로 붙여넣는다.
+  document.addEventListener("paste", (event) => {
+    const t = current();
+    if (!t?.writable || editable(event.target) || outside(event.target)) return;
+    const files = [...(event.clipboardData?.files || [])];
+    const text = event.clipboardData?.getData("text/plain") || "";
+    if (!files.length && !text.trim()) return;
+    event.preventDefault();
+    if (files.length) addTableFiles(files);
+    else addTableNote(t, tableViewCenter(t), { text: text.slice(0, 4000) });
+  });
+  document.addEventListener("keydown", (event) => {
+    const t = current();
+    if (!t) return;
+    if (event.key === "Escape" && event.target.classList?.contains("table-note-text")) {
+      event.target.blur();
+      return;
+    }
+    if (editable(event.target) || outside(event.target)) return;
+    if (event.key === "Escape") {
+      if (t.arrowDraft) finishTableArrow(t, null, true);
+      setTableTool(t, "select");
+      selectTableItem(t, "");
+    } else if ((event.key === "Delete" || event.key === "Backspace") && t.selected && t.writable) {
+      event.preventDefault();
+      removeTableItem(t, t.selected);
+    }
+  });
+  scroll.addEventListener("click", (event) => {
     const t = state.table;
     if (!t) return;
     const pageButton = event.target.closest("[data-table-page]");
     if (pageButton) {
       const card = t.cards.get(pageButton.closest(".table-card").dataset.tableItem);
       const page = Math.max(1, Math.min(card.pageCount || 1, card.item.page + Number(pageButton.dataset.tablePage)));
-      if (page === card.item.page) return;
-      sendTableUpdate({ ...card.item, page });
+      if (page !== card.item.page) sendTableUpdate(card.item.id, { page });
+      return;
+    }
+    const swatch = event.target.closest("[data-note-color]");
+    if (swatch) {
+      sendTableUpdate(swatch.closest(".table-card").dataset.tableItem, { color: Number(swatch.dataset.noteColor) });
       return;
     }
     const remove = event.target.closest("[data-table-remove]");
-    if (remove && window.confirm("이 파일을 테이블에서 내릴까요?")) {
-      sendSocket({ type: "table:remove", roomId: t.roomId, itemId: remove.dataset.tableRemove });
-    }
+    if (remove) removeTableItem(t, remove.dataset.tableRemove);
   });
-  stage.addEventListener("pointerdown", (event) => {
+  scroll.addEventListener("change", (event) => {
+    if (!state.table || !event.target.classList.contains("table-note-size")) return;
+    sendTableUpdate(event.target.closest(".table-card").dataset.tableItem, { size: Number(event.target.value) });
+  });
+  scroll.addEventListener("input", (event) => {
+    const card = event.target.classList.contains("table-note-text") && state.table?.cards.get(event.target.closest(".table-card").dataset.tableItem);
+    if (card) queueTableNoteText(card);
+  });
+  scroll.addEventListener("focusout", (event) => {
     const t = state.table;
-    if (!t || event.button !== 0) return;
-    if (event.target === stage) {
-      t.pan = { x: event.clientX, y: event.clientY, left: dom.tableScroll.scrollLeft, top: dom.tableScroll.scrollTop };
-      stage.setPointerCapture(event.pointerId);
+    const card = event.target.classList.contains("table-note-text") && t?.cards.get(event.target.closest(".table-card").dataset.tableItem);
+    if (!card) return;
+    card.text.readOnly = true;
+    clearTimeout(card.textTimer);
+    card.textTimer = 0;
+    if (t.writable && card.dirty) sendTableUpdate(card.item.id, { text: card.text.value });
+    card.dirty = false;
+  });
+  // 메모지 더블클릭 = 쓰기, 빈 곳 더블클릭 = 새 메모지.
+  scroll.addEventListener("dblclick", (event) => {
+    const t = state.table;
+    if (!t?.writable || t.tool !== "select") return;
+    const noteEl = event.target.closest(".table-note");
+    if (noteEl) {
+      const card = t.cards.get(noteEl.dataset.tableItem);
+      if (card && !event.target.closest(".table-note-tools")) editTableNote(card);
       return;
     }
+    if (event.target.closest(".table-card, .table-arrow")) return;
+    addTableNote(t, tableWorldPoint(t, event.clientX, event.clientY));
+  });
+  scroll.addEventListener("pointerdown", (event) => {
+    const t = state.table;
+    if (!t) return;
+    // 다른 곳을 누르면 쓰던 메모지는 끝낸다(아래 preventDefault 가 포커스 이동을 막으므로 직접).
+    const active = document.activeElement;
+    if (active?.classList?.contains("table-note-text") && active !== event.target) active.blur();
+    const onItem = event.target.closest(".table-card, .table-arrow");
+    if (event.button === 1 || (event.button === 0 && t.tool === "select" && !onItem)) {
+      // 빈 곳(또는 휠 버튼) 끌기 = 화면 이동
+      if (event.button === 0) selectTableItem(t, "");
+      t.pan = { x: event.clientX, y: event.clientY, panX: t.panX, panY: t.panY, k: tableViewRatio() };
+      scroll.setPointerCapture(event.pointerId);
+      event.preventDefault();
+      return;
+    }
+    if (event.button !== 0) return;
+    if (t.tool === "arrow") {
+      if (!t.writable) return;
+      const p = tableWorldPoint(t, event.clientX, event.clientY);
+      const draft = buildTableArrow({ id: "", kind: "arrow", from: tableArrowEndAt(t, event), to: p, z: 1e9 });
+      draft.el.classList.add("draft");
+      dom.tableStage.append(draft.el);
+      t.arrowDraft = draft;
+      placeTableArrow(draft);
+      scroll.setPointerCapture(event.pointerId);
+      event.preventDefault();
+      return;
+    }
+    selectTableItem(t, onItem.dataset.tableItem);
+    const card = t.cards.get(onItem.dataset.tableItem);
+    if (!card || card.item.kind === "arrow" || !t.writable) return;
+    if (event.target.closest("button, a, select") || (event.target === card.text && !card.text.readOnly)) return;
     const resize = event.target.closest(".table-card-resize");
-    if (!t.writable || event.target.closest("button, a") || (!resize && !event.target.closest(".table-card-head"))) return;
-    const cardEl = event.target.closest(".table-card");
-    const card = t.cards.get(cardEl.dataset.tableItem);
+    if (card.item.kind !== "note" && !resize && !event.target.closest(".table-card-head")) return;
     const { x, y, w, h } = card.item;
-    t.drag = { card, resize: Boolean(resize), startX: event.clientX, startY: event.clientY, x, y, w, h, sentAt: 0 };
-    cardEl.setPointerCapture(event.pointerId);
+    t.drag = { card, resize: Boolean(resize), startX: event.clientX, startY: event.clientY, x, y, w, h, sentAt: 0, moved: false };
+    card.el.setPointerCapture(event.pointerId);
     event.preventDefault();
   });
-  stage.addEventListener("pointermove", (event) => {
+  scroll.addEventListener("pointermove", (event) => {
     const t = state.table;
-    if (t?.pan) {
-      dom.tableScroll.scrollLeft = t.pan.left - (event.clientX - t.pan.x);
-      dom.tableScroll.scrollTop = t.pan.top - (event.clientY - t.pan.y);
+    if (!t) return;
+    if (t.pan) {
+      t.panX = t.pan.panX + (event.clientX - t.pan.x) / t.pan.k;
+      t.panY = t.pan.panY + (event.clientY - t.pan.y) / t.pan.k;
+      applyTableView(t);
       return;
     }
-    const drag = t?.drag;
+    if (t.arrowDraft) {
+      t.arrowDraft.item.to = tableWorldPoint(t, event.clientX, event.clientY);
+      placeTableArrow(t.arrowDraft);
+      return;
+    }
+    const drag = t.drag;
     if (!drag) return;
     const scale = tableScreenScale(t);
     const dx = (event.clientX - drag.startX) / scale;
@@ -13876,26 +14276,32 @@ function bindTableEvents() {
       item.w = Math.max(TABLE_CARD_MIN, Math.round(drag.w + dx));
       item.h = Math.max(TABLE_CARD_MIN, Math.round(drag.h + dy));
     } else {
-      item.x = Math.max(0, Math.round(drag.x + dx));
-      item.y = Math.max(0, Math.round(drag.y + dy));
+      item.x = Math.round(drag.x + dx);
+      item.y = Math.round(drag.y + dy);
     }
+    drag.moved = true;
     placeTableCard(drag.card);
     const now = Date.now();
     if (now - drag.sentAt < TABLE_SEND_THROTTLE) return;
     drag.sentAt = now;
-    sendTableUpdate(item);
+    sendTableUpdate(item.id, { x: item.x, y: item.y, w: item.w, h: item.h });
   });
-  const finish = () => {
+  const finish = (event) => {
     const t = state.table;
     if (!t) return;
     t.pan = null;
+    if (t.arrowDraft) {
+      finishTableArrow(t, event, event.type === "pointercancel");
+      return;
+    }
     if (!t.drag) return;
-    const { card } = t.drag;
+    const { card, moved } = t.drag;
     t.drag = null;
-    sendTableUpdate(card.item); // 마지막 위치 확정(서버 메아리로 맨 앞으로 올라온다)
+    const { item } = card;
+    if (moved) sendTableUpdate(item.id, { x: item.x, y: item.y, w: item.w, h: item.h }); // 마지막 위치 확정(서버 메아리로 맨 앞으로 올라온다)
   };
-  stage.addEventListener("pointerup", finish);
-  stage.addEventListener("pointercancel", finish);
+  scroll.addEventListener("pointerup", finish);
+  scroll.addEventListener("pointercancel", finish);
 }
 
 // ===== 전역 로그 =====

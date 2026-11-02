@@ -505,7 +505,7 @@ function handleUpgrade(req, socket) {
     aiRoomId: "", // 현재 보고 있는 AI방(브로드캐스트 대상 판별용)
     memoRooms: new Map(), // 보고 있는 메모장 roomId -> 보기 시작 시각(분할보기로 최대 MEMO_MAX_OPEN개)
     drawRoomId: "", // 현재 보고 있는 그림판(실시간 동기화 대상 판별용)
-    tableRoomId: "", // 현재 보고 있는 테이블 방
+    tableRoomId: "", // 현재 보고 있는 화이트보드 방
     tableJoinedAt: 0,
     logRoomId: "", // 현재 보고 있는 로그방(실시간 로그 대상 판별용)
     logChannelId: "", // 그 로그방이 속한 채널(채널 단위 피드라 따로 보관)
@@ -3298,8 +3298,8 @@ function resolveDrawRoom(client, roomId) {
   return found;
 }
 
-// ===== 테이블 방 =====
-// PDF·이미지·파일 카드를 함께 보는 공유 작업대. 배치는 마지막에 보낸 값이 이긴다(서버 순서 = 정답).
+// ===== 화이트보드 방 (내부 타입은 "table") =====
+// 파일 카드·메모지·화살표를 함께 보는 공유 작업대. 배치는 마지막에 보낸 값이 이긴다(서버 순서 = 정답).
 const tableDocs = new Map(); // roomId -> { doc, saveTimer }
 const TABLE_PERSIST_DEBOUNCE = 2000;
 const TABLE_IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]);
@@ -3343,7 +3343,7 @@ function leaveTable(client) {
 function resolveTableRoom(client, roomId) {
   const found = store.findRoom(String(roomId || ""));
   if (!found || found.room.type !== "table") {
-    send(client, { type: "table-error", message: "테이블을 찾지 못했습니다." });
+    send(client, { type: "table-error", message: "화이트보드를 찾지 못했습니다." });
     return null;
   }
   if (!store.isChannelMember(found.channel.id, client.userId, client.isAdmin) ||
@@ -3377,30 +3377,38 @@ function handleTableMessage(client, message) {
     return true;
   }
   if (!isRoomWritable(ctx, client)) {
-    send(client, { type: "table-error", message: "읽기 전용 테이블입니다." });
+    send(client, { type: "table-error", message: "읽기 전용 화이트보드입니다." });
     return true;
   }
   const d = getTableDoc(roomId);
   const find = () => d.doc.items.find((entry) => entry.id === String(message.itemId || ""));
   switch (message.type) {
     case "table:add": {
-      if (!store.canAttach(ctx.channel.id, client.userId, client.isAdmin)) {
-        send(client, { type: "table-error", message: "파일을 올릴 권한이 없습니다." });
-        return true;
-      }
-      const url = String(message.url || "");
-      if (!/^\/uploads\/[a-f0-9]{24}_[A-Za-z0-9._-]+$/.test(url) || !store.isUploadOwner(url, client.userId)) {
-        send(client, { type: "table-error", message: "올린 파일을 찾지 못했습니다." });
-        return true;
-      }
       if (d.doc.items.length >= store.TABLE_MAX_ITEMS) {
-        send(client, { type: "table-error", message: `테이블에는 최대 ${store.TABLE_MAX_ITEMS}개까지 올릴 수 있습니다.` });
+        send(client, { type: "table-error", message: `화이트보드에는 최대 ${store.TABLE_MAX_ITEMS}개까지 올릴 수 있습니다.` });
         return true;
       }
-      const ext = path.extname(url).toLowerCase();
-      const kind = ext === ".pdf" ? "pdf" : TABLE_IMAGE_EXT.has(ext) ? "image" : "file";
-      const base = { id: crypto.randomBytes(6).toString("hex"), kind, url, name: String(message.name || "파일").slice(0, 120), x: 40, y: 40, w: 420, h: kind === "file" ? 120 : 560, page: 1 };
-      const item = { ...store.cleanTablePlacement(base, message), z: ++d.doc.seq };
+      const id = crypto.randomBytes(6).toString("hex");
+      let base;
+      if (message.kind === "note") {
+        base = { id, kind: "note", x: 0, y: 0, w: 200, h: 200, page: 1, text: "", color: 0, size: 16 };
+      } else if (message.kind === "arrow") {
+        base = { id, kind: "arrow", from: { x: 0, y: 0 }, to: { x: 0, y: 0 } };
+      } else {
+        if (!store.canAttach(ctx.channel.id, client.userId, client.isAdmin)) {
+          send(client, { type: "table-error", message: "파일을 올릴 권한이 없습니다." });
+          return true;
+        }
+        const url = String(message.url || "");
+        if (!/^\/uploads\/[a-f0-9]{24}_[A-Za-z0-9._-]+$/.test(url) || !store.isUploadOwner(url, client.userId)) {
+          send(client, { type: "table-error", message: "올린 파일을 찾지 못했습니다." });
+          return true;
+        }
+        const ext = path.extname(url).toLowerCase();
+        const kind = ext === ".pdf" ? "pdf" : TABLE_IMAGE_EXT.has(ext) ? "image" : "file";
+        base = { id, kind, url, name: String(message.name || "파일").slice(0, 120), x: 0, y: 0, w: 420, h: kind === "file" ? 120 : 560, page: 1 };
+      }
+      const item = { ...store.cleanTableItem(base, message), z: ++d.doc.seq };
       d.doc.items.push(item);
       broadcastTable(roomId, { type: "table:item", roomId, item });
       break;
@@ -3408,14 +3416,20 @@ function handleTableMessage(client, message) {
     case "table:update": {
       const item = find();
       if (!item) return true;
-      Object.assign(item, store.cleanTablePlacement(item, message), { z: ++d.doc.seq });
+      Object.assign(item, store.cleanTableItem(item, message), { z: ++d.doc.seq });
       broadcastTable(roomId, { type: "table:item", roomId, item });
       break;
     }
     case "table:remove": {
-      if (!find()) return true;
-      d.doc.items = d.doc.items.filter((entry) => entry.id !== String(message.itemId));
-      broadcastTable(roomId, { type: "table:remove", roomId, itemId: String(message.itemId) });
+      const target = find();
+      if (!target) return true;
+      // 카드를 내리면 거기 붙어 있던 화살표도 같이 내린다.
+      const gone = new Set([target.id]);
+      for (const entry of d.doc.items) {
+        if (entry.kind === "arrow" && (gone.has(entry.from?.id) || gone.has(entry.to?.id))) gone.add(entry.id);
+      }
+      d.doc.items = d.doc.items.filter((entry) => !gone.has(entry.id));
+      for (const itemId of gone) broadcastTable(roomId, { type: "table:remove", roomId, itemId });
       break;
     }
     default:
