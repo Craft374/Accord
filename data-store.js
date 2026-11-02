@@ -14,7 +14,7 @@ const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const UPLOAD_OWNERS_FILE = path.join(DATA_DIR, "upload-owners.json"); // { [파일명]: userId } — 첨부 시 본인 파일인지 확인용
 const MEMO_DIR = path.join(DATA_DIR, "memo");
 const AI_DIR = path.join(DATA_DIR, "ai");
-const AI_KEYS_FILE = path.join(DATA_DIR, "ai-keys.json"); // { [channelId]: { key, model } } — 클라이언트로 절대 나가지 않음
+const AI_KEYS_FILE = path.join(DATA_DIR, "ai-keys.json"); // { [channelId]: { keys: { gemini, anthropic, openai }, model } } — 클라이언트로 절대 나가지 않음
 const AI_GLOBAL_FILE = path.join(DATA_DIR, "ai-global.json"); // { prompt } — 모든 AI방 공통 프롬프트(서버 관리자)
 const DRAW_DIR = path.join(DATA_DIR, "draw");
 const TABLE_DIR = path.join(DATA_DIR, "table");
@@ -1632,14 +1632,22 @@ function loadAiKeys() {
   if (!aiKeys) aiKeys = readJson(AI_KEYS_FILE, {}) || {};
   return aiKeys;
 }
-// 서버에서만 사용: 실제 키 포함
+// 서버에서만 사용: 실제 키 포함. 예전 저장 형식의 key 는 Gemini 키다.
 function getAiSecret(channelId) {
-  return loadAiKeys()[channelId] || null;
+  const c = loadAiKeys()[channelId] || {};
+  return { keys: { ...(c.key ? { gemini: c.key } : {}), ...c.keys }, model: c.model || "" };
+}
+// 모델 ID 로 공급자를 가른다. 모르는 ID 는 예전처럼 Gemini 로 본다.
+function aiProviderOf(model) {
+  if (/^claude-/i.test(model)) return "anthropic";
+  if (/^(gpt-|o\d|chatgpt-|ft:)/i.test(model)) return "openai";
+  return "gemini";
 }
 // 클라이언트로 나가도 안전한 형태(키 없음)
 function getAiConfig(channelId) {
-  const c = loadAiKeys()[channelId];
-  return { hasKey: Boolean(c && c.key), model: (c && c.model) || DEFAULT_AI_MODEL };
+  const { keys, model } = getAiSecret(channelId);
+  const providers = { gemini: Boolean(keys.gemini), anthropic: Boolean(keys.anthropic), openai: Boolean(keys.openai) };
+  return { hasKey: Object.values(providers).some(Boolean), providers, model: model || (keys.gemini ? DEFAULT_AI_MODEL : "") };
 }
 // 저장된 AI 세션 메시지 목록 -> Gemini generateContent 의 contents 배열.
 // 순수 함수(네트워크 무관). 사용자 발화에는 화자 이름을 접두어로 붙여 모델이 누가 말했는지 알게 한다.
@@ -1659,15 +1667,64 @@ function toGeminiContents(messages, limit = 20) {
   return out;
 }
 
-function setAiConfig(channelId, { key, model } = {}) {
+// toGeminiContents 결과 -> Claude messages. 대화는 user 로 시작해야 해서 앞쪽 model 턴은 버린다.
+function toClaudeMessages(contents) {
+  const out = contents.filter((c) => c.parts.length).map((c) => ({
+    role: c.role === "model" ? "assistant" : "user",
+    content: c.parts.map((p) => {
+      if (p.text) return { type: "text", text: p.text };
+      const { mimeType, data } = p.inlineData;
+      return /^image\/(png|jpeg|gif|webp)$/i.test(mimeType)
+        ? { type: "image", source: { type: "base64", media_type: mimeType, data } }
+        : { type: "text", text: `[${mimeType} 이미지는 이 모델이 읽을 수 없어 전달하지 못했습니다]` };
+    }),
+  }));
+  while (out[0]?.role === "assistant") out.shift();
+  return out;
+}
+
+// toGeminiContents 결과 -> OpenAI Responses input. assistant 턴은 입력 파트를 못 쓰므로 문자열로 보낸다.
+function toOpenAiInput(contents) {
+  return contents.filter((c) => c.parts.length).map((c) => {
+    if (c.role === "model") return { role: "assistant", content: c.parts.map((p) => p.text || "").join("") };
+    return {
+      role: "user",
+      content: c.parts.map((p) => {
+        if (p.text) return { type: "input_text", text: p.text };
+        const { mimeType, data } = p.inlineData;
+        return /^image\/(png|jpeg|gif|webp)$/i.test(mimeType)
+          ? { type: "input_image", image_url: `data:${mimeType};base64,${data}` }
+          : { type: "input_text", text: `[${mimeType} 이미지는 이 모델이 읽을 수 없어 전달하지 못했습니다]` };
+      }),
+    };
+  });
+}
+
+// Claude 응답 -> 공통 형태. 생각 블록 등은 빼고 text 블록만 읽는다.
+function parseClaudeReply(data) {
+  const text = (data?.content || []).filter((b) => b.type === "text").map((b) => b.text).join("").trim();
+  if (!text) throw new Error(data?.stop_reason === "refusal" ? "답변을 거절했습니다." : `응답이 비어 있습니다 (${data?.stop_reason || "알 수 없음"}).`);
+  return { text, images: [], imageBlockReason: "", truncated: data?.stop_reason === "max_tokens" };
+}
+
+// OpenAI Responses 응답 -> 공통 형태. output_text 합본은 SDK 편의 속성이라 output 배열을 직접 읽는다.
+function parseOpenAiReply(data) {
+  const parts = (data?.output || []).filter((o) => o.type === "message").flatMap((o) => o.content || []);
+  const text = parts.filter((p) => p.type === "output_text").map((p) => p.text).join("").trim();
+  const refusal = parts.find((p) => p.type === "refusal")?.refusal;
+  if (!text) throw new Error(refusal ? `답변을 거절했습니다: ${refusal}` : `응답이 비어 있습니다 (${data?.incomplete_details?.reason || data?.status || "알 수 없음"}).`);
+  return { text, images: [], imageBlockReason: "", truncated: data?.status === "incomplete" };
+}
+
+function setAiConfig(channelId, { keys, model } = {}) {
   const all = loadAiKeys();
-  const cur = { ...(all[channelId] || {}) };
-  if (typeof key === "string") {
-    const k = key.trim();
-    if (k) cur.key = k;
-    else delete cur.key; // 빈 문자열이면 키 삭제
+  const cur = getAiSecret(channelId);
+  for (const provider of ["gemini", "anthropic", "openai"]) {
+    if (keys?.[provider] === null) delete cur.keys[provider];
+    const k = typeof keys?.[provider] === "string" ? keys[provider].trim().slice(0, 400) : "";
+    if (k) cur.keys[provider] = k;
   }
-  if (typeof model === "string" && model.trim()) cur.model = model.trim().slice(0, 80);
+  if (typeof model === "string") cur.model = model.trim().slice(0, 80);
   all[channelId] = cur;
   writeJsonAtomic(AI_KEYS_FILE, all);
   return getAiConfig(channelId);
@@ -2098,6 +2155,11 @@ module.exports = {
   getAiGlobalPrompt,
   setAiGlobalPrompt,
   toGeminiContents,
+  toClaudeMessages,
+  toOpenAiInput,
+  parseClaudeReply,
+  parseOpenAiReply,
+  aiProviderOf,
   buildAiSystemInstruction,
   buildAiReferenceBlock,
   addAiFile,

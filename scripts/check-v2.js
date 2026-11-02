@@ -452,6 +452,39 @@ const reviews = [
     } catch { return false; }
   })(), "AI방 toGeminiContents maps stored messages to Gemini contents (runtime)"],
   [(() => {
+    // AI방: 공급자 판별과 Claude·GPT 요청/응답 변환(실제 키 없이 형식만 검증).
+    try {
+      const pick = (name) => dataStore.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n\\}`))[0];
+      const { aiProviderOf, toClaudeMessages, toOpenAiInput, parseClaudeReply, parseOpenAiReply } = new Function(
+        `${["aiProviderOf", "toClaudeMessages", "toOpenAiInput", "parseClaudeReply", "parseOpenAiReply"].map(pick).join("\n")}
+        return { aiProviderOf, toClaudeMessages, toOpenAiInput, parseClaudeReply, parseOpenAiReply };`)();
+      const contents = [
+        { role: "model", parts: [{ text: "앞선 답변" }] },
+        { role: "user", parts: [] },
+        { role: "user", parts: [{ text: "질문" }] },
+        { role: "model", parts: [{ text: "답변" }] },
+        { role: "user", parts: [{ text: "그림 봐줘" }, { inlineData: { mimeType: "image/png", data: "QQ==" } }, { inlineData: { mimeType: "image/bmp", data: "Qg==" } }] },
+      ];
+      const claude = toClaudeMessages(contents);
+      const gpt = toOpenAiInput(contents);
+      const throws = (fn, re) => { try { fn(); return false; } catch (e) { return re.test(e.message); } };
+      return aiProviderOf("claude-opus-5-5") === "anthropic"
+        && aiProviderOf("gpt-5.5") === "openai" && aiProviderOf("o3") === "openai"
+        && aiProviderOf("gemini-2.5-flash") === "gemini" && aiProviderOf("모르는모델") === "gemini"
+        && claude[0].role === "user" && claude[1].role === "assistant" && claude.length === 3
+        && claude[2].content[1].source.media_type === "image/png" && claude[2].content[2].type === "text"
+        && gpt[0].role === "assistant" && gpt[2].content === "답변"
+        && gpt[3].content[1].image_url === "data:image/png;base64,QQ==" && gpt[3].content[2].type === "input_text"
+        && parseClaudeReply({ content: [{ type: "thinking", thinking: "" }, { type: "text", text: "답" }], stop_reason: "end_turn" }).text === "답"
+        && parseClaudeReply({ content: [{ type: "text", text: "잘림" }], stop_reason: "max_tokens" }).truncated === true
+        && throws(() => parseClaudeReply({ content: [], stop_reason: "refusal" }), /거절/)
+        && parseOpenAiReply({ status: "completed", output: [{ type: "reasoning" }, { type: "message", content: [{ type: "output_text", text: "답" }] }] }).text === "답"
+        && parseOpenAiReply({ status: "incomplete", output: [{ type: "message", content: [{ type: "output_text", text: "잘림" }] }] }).truncated === true
+        && throws(() => parseOpenAiReply({ output: [{ type: "message", content: [{ type: "refusal", refusal: "안 됩니다" }] }] }), /안 됩니다/);
+    } catch (e) { console.error(e); return false; }
+  })(), "AI방 Claude·GPT 요청 변환과 응답 파싱 (runtime)"],
+  [/channel:set-ai[\s\S]{0,800}aiModelCache\.delete/.test(server), "AI 키를 바꾸면 모델 목록 캐시를 비운다"],
+  [(() => {
     // AI방: systemInstruction 조립. 공통 지침 + 방 지침 + 방 메모리 + 활성 세션 제외한 다른 대화 "전문".
     try {
       const src = dataStore.match(/function buildAiSystemInstruction\(doc, globalPrompt\) \{[\s\S]*?\n\}/);

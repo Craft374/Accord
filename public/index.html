@@ -1176,22 +1176,12 @@
             <input id="channelRenameInput" autocomplete="off" maxlength="32" />
           </label>
           <div class="field ai-settings-field" id="aiSettingsRow" hidden>
-            <span>AI방 설정 (Gemini)</span>
-            <input id="aiKeyInput" type="password" autocomplete="off" placeholder="API 키 붙여넣기 (비우고 저장하면 삭제)" />
-            <input id="aiModelInput" list="aiModelList" autocomplete="off" placeholder="모델 ID (예: gemini-2.5-flash)" />
-            <datalist id="aiModelList">
-              <option value="gemini-3.7-flash"></option>
-              <option value="gemini-3.6-flash"></option>
-              <option value="gemini-3.5-flash"></option>
-              <option value="gemini-3.5-flash-lite"></option>
-              <option value="gemini-3.1-pro-preview"></option>
-              <option value="gemini-2.5-pro"></option>
-              <option value="gemini-2.5-flash"></option>
-              <option value="gemini-2.5-flash-lite"></option>
-              <option value="gemini-3-pro-image-preview"></option>
-              <option value="gemini-3.1-flash-image-preview"></option>
-              <option value="gemini-2.5-flash-image"></option>
-            </datalist>
+            <span>AI방 설정</span>
+            <div class="ai-key-row"><input id="aiKeyGemini" type="password" autocomplete="off" aria-label="Gemini API 키" /><button class="secondary" type="button" data-ai-key-clear="gemini">지우기</button></div>
+            <div class="ai-key-row"><input id="aiKeyAnthropic" type="password" autocomplete="off" aria-label="Claude API 키" /><button class="secondary" type="button" data-ai-key-clear="anthropic">지우기</button></div>
+            <div class="ai-key-row"><input id="aiKeyOpenai" type="password" autocomplete="off" aria-label="GPT API 키" /><button class="secondary" type="button" data-ai-key-clear="openai">지우기</button></div>
+            <input id="aiModelInput" list="aiModelList" autocomplete="off" placeholder="채널 기본 모델 (목록에서 고르거나 직접 입력)" />
+            <datalist id="aiModelList"></datalist>
             <button class="secondary" id="aiSettingsSave" type="button">AI 설정 저장</button>
             <p class="ai-settings-state" id="aiSettingsState" aria-live="polite"></p>
           </div>

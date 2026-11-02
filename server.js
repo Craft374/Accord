@@ -1475,10 +1475,8 @@ function handleChannelMessage(client, message) {
       });
     case "channel:set-ai":
       return ownerAction(client, message.channelId, () => {
-        const patch = {};
-        if (typeof message.key === "string") patch.key = message.key.slice(0, 400);
-        if (typeof message.model === "string") patch.model = message.model;
-        store.setAiConfig(message.channelId, patch);
+        store.setAiConfig(message.channelId, { keys: message.keys, model: message.model });
+        aiModelCache.delete(message.channelId);
         notifyChannelMembers(message.channelId); // aiConfig 가 channelSummary 로 다시 나감
         // 이 채널 AI방을 보고 있는 사람에게 갱신된 설정을 즉시 반영
         const channel = store.getChannel(message.channelId);
@@ -2086,8 +2084,15 @@ function broadcastChat(channel, roomId, payload) {
 // 보낸 프롬프트와 AI 응답은 방 전원이 함께 본다.
 // 세션(대화 스레드) + 방 메모리는 server-data/ai/<roomId>.json 에 저장되고, 입력 미리보기(draft)는 메모리에만 둔다.
 const AI_TEXT_MAX = 4000;
-const AI_CONTEXT_TURNS = 20; // Gemini 에 함께 보내는 최근 메시지 수(활성 세션)
+const AI_CONTEXT_TURNS = 20; // 모델에 함께 보내는 최근 메시지 수(활성 세션)
 const AI_TIMEOUT_MS = 60000;
+// Claude·GPT 는 스트리밍 없이 생각까지 끝나야 응답이 와서 더 기다린다. undici 헤더 타임아웃(5분)보다는 짧아야 한다.
+const AI_THINKING_TIMEOUT_MS = 240000;
+const AI_LIST_TIMEOUT_MS = 15000;
+const AI_MAX_TOKENS = 16000; // Claude 필수값. 비스트리밍이라 이보다 크면 응답이 타임아웃에 걸린다.
+const AI_MODEL_TTL_MS = 10 * 60 * 1000;
+const AI_MODEL_RETRY_MS = 30000; // 목록을 못 가져왔을 때는 금방 다시 시도한다.
+const AI_PROVIDER_LABEL = { gemini: "Gemini", anthropic: "Claude", openai: "GPT" };
 const AI_IMG_MIME = { "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp" };
 const AI_REF_MAX = 5; // 한 메시지에서 처리하는 #방 참조 최대 개수
 const AI_ATTACH_MAX = 3; // 메시지 하나에 첨부 가능한 파일 수(클라 상한과 동일)
@@ -2205,11 +2210,49 @@ function aiEnsureSession(doc) {
   return s;
 }
 
+// AI 공급자 공통 호출. body 가 없으면 GET. 세 공급자 모두 오류를 { error: { message } } 로 준다.
+// 이미지 생성처럼 오래 걸리는 요청에서 DEADLINE_EXCEEDED(504)·5xx·429 가 간헐적으로 나온다 — 1회 재시도.
+// ponytail: 재시도 1번 고정. 최악의 경우 대기 시간이 timeoutMs 의 2배(+백오프)까지 늘고 그동안 방이 aiBusy 로 잠긴다.
+async function aiFetchJson(label, url, headers, body, timeoutMs = AI_TIMEOUT_MS) {
+  if (typeof fetch !== "function") throw new Error("이 서버의 Node 버전이 낮습니다. Node 18 이상이 필요합니다.");
+  const payload = body ? JSON.stringify(body) : undefined;
+  for (let attempt = 1; ; attempt++) {
+    if (attempt > 1) await new Promise((r) => setTimeout(r, 1500));
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    let res;
+    try {
+      res = await fetch(url, {
+        method: payload ? "POST" : "GET",
+        headers: { "content-type": "application/json", ...headers },
+        body: payload,
+        signal: ctrl.signal,
+      });
+    } catch (err) {
+      clearTimeout(timer);
+      if (err.name === "AbortError") throw new Error("AI 응답이 시간 내에 오지 않았습니다.");
+      const detail = err?.cause?.code || err?.cause?.message || err?.code || err?.message || "unknown";
+      console.error("[ai] fetch 실패:", detail, err?.cause || err);
+      throw new Error(`AI 서버에 연결하지 못했습니다 (${detail})`);
+    }
+    // 본문을 받는 동안에도 타임아웃이 걸려 있어야 업스트림이 멈췄을 때 방이 aiBusy 로 영영 잠기지 않는다.
+    const data = await res.json().catch(() => ({}));
+    clearTimeout(timer);
+    if (ctrl.signal.aborted) throw new Error("AI 응답이 시간 내에 오지 않았습니다.");
+    if (res.ok) return data;
+    const msg = data?.error?.message ? `${label} 오류: ${data.error.message}` : `${label} 오류 (HTTP ${res.status})`;
+    if ((res.status >= 500 || res.status === 429) && attempt < 2) {
+      console.warn(`[ai] ${msg} — 재시도`);
+      continue;
+    }
+    throw new Error(msg);
+  }
+}
+
 // Gemini generateContent 호출. { text, images:[{mime,dataB64}] } 반환.
 // ponytail: 이미지 생성은 모델 ID 에 "image" 가 들어가면 responseModalities 로 IMAGE 를 요청하는 휴리스틱.
 //           전용 토글이 필요해지면 그때 만든다.
 async function callGemini({ apiKey, model, contents, system, thinking }) {
-  if (typeof fetch !== "function") throw new Error("이 서버의 Node 버전이 낮습니다. Node 18 이상이 필요합니다.");
   // 키는 URL(프록시·에러 로그에 남기 쉬움) 대신 헤더로 보낸다.
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
   const body = { contents };
@@ -2222,41 +2265,7 @@ async function callGemini({ apiKey, model, contents, system, thinking }) {
     gen.thinkingConfig = { thinkingBudget: thinking === "off" ? 0 : 24576 };
   }
   if (Object.keys(gen).length) body.generationConfig = gen;
-  // 이미지 생성처럼 오래 걸리는 요청에서 Gemini 가 DEADLINE_EXCEEDED(504)·5xx·429 를 간헐적으로 뱉는다 — 1회 재시도.
-  // ponytail: 재시도 1번 고정. 최악의 경우 대기 시간이 AI_TIMEOUT_MS 의 2배(+백오프)까지 늘고 그동안 방이 aiBusy 로 잠긴다.
-  const payload = JSON.stringify(body);
-  let data;
-  for (let attempt = 1; ; attempt++) {
-    if (attempt > 1) await new Promise((r) => setTimeout(r, 1500));
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), AI_TIMEOUT_MS);
-    let res;
-    try {
-      res = await fetch(url, {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
-        body: payload,
-        signal: ctrl.signal,
-      });
-    } catch (err) {
-      clearTimeout(timer);
-      if (err.name === "AbortError") throw new Error("AI 응답이 시간 내에 오지 않았습니다.");
-      const detail = err?.cause?.code || err?.cause?.message || err?.code || err?.message || "unknown";
-      console.error("[ai] fetch 실패:", detail, err?.cause || err);
-      throw new Error(`AI 서버에 연결하지 못했습니다 (${detail})`);
-    }
-    // 본문을 받는 동안에도 타임아웃이 걸려 있어야 업스트림이 멈췄을 때 방이 aiBusy 로 영영 잠기지 않는다.
-    data = await res.json().catch(() => ({}));
-    clearTimeout(timer);
-    if (ctrl.signal.aborted) throw new Error("AI 응답이 시간 내에 오지 않았습니다.");
-    if (res.ok) break;
-    const msg = data?.error?.message ? `Gemini 오류: ${data.error.message}` : `Gemini 오류 (HTTP ${res.status})`;
-    if ((res.status >= 500 || res.status === 429) && attempt < 2) {
-      console.warn(`[ai] ${msg} — 재시도`);
-      continue;
-    }
-    throw new Error(msg);
-  }
+  const data = await aiFetchJson("Gemini", url, { "x-goog-api-key": apiKey }, body);
   const cand = data?.candidates?.[0];
   const parts = cand?.content?.parts || [];
   const text = parts.map((p) => p.text || "").join("").trim();
@@ -2279,6 +2288,72 @@ async function callGemini({ apiKey, model, contents, system, thinking }) {
     console.error("[ai] 이미지 모델 응답에 이미지 없음:", { reason, parts: parts.map((p) => Object.keys(p)) });
   }
   return { text, images, imageBlockReason: imageMissing ? reason : "" };
+}
+
+// thinking·temperature 는 모델마다 거부 규칙이 달라 보내지 않는다(모델 기본값 사용).
+async function callClaude({ apiKey, model, contents, system, channelId }) {
+  const { models } = await listAiModels(channelId);
+  const cap = models.find((m) => m.id === model)?.maxTokens || AI_MAX_TOKENS;
+  const body = { model, max_tokens: Math.min(AI_MAX_TOKENS, cap), messages: store.toClaudeMessages(contents) };
+  if (system) body.system = system;
+  return store.parseClaudeReply(await aiFetchJson("Claude", "https://api.anthropic.com/v1/messages", aiClaudeHeaders(apiKey), body, AI_THINKING_TIMEOUT_MS));
+}
+
+function aiClaudeHeaders(apiKey) {
+  return { "x-api-key": apiKey, "anthropic-version": "2026-10-21" };
+}
+
+// 추론 토큰도 출력 상한을 쓰므로 상한을 두지 않는다. 대화는 서버가 보관하니 store 는 끈다.
+async function callOpenAi({ apiKey, model, contents, system }) {
+  const body = { model, input: store.toOpenAiInput(contents), store: false };
+  if (system) body.instructions = system;
+  return store.parseOpenAiReply(await aiFetchJson("GPT", "https://api.openai.com/v1/responses", { authorization: `Bearer ${apiKey}` }, body, AI_THINKING_TIMEOUT_MS));
+}
+
+async function listGeminiModels(apiKey) {
+  const data = await aiFetchJson("Gemini", "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000", { "x-goog-api-key": apiKey }, null, AI_LIST_TIMEOUT_MS);
+  return (data.models || [])
+    .filter((m) => m.supportedGenerationMethods?.includes("generateContent"))
+    .map((m) => ({ id: String(m.name).replace(/^models\//, "") }))
+    .filter((m) => !/embedding|aqa|tts|audio|live|robotics|computer-use|gemma/i.test(m.id));
+}
+
+async function listClaudeModels(apiKey) {
+  const data = await aiFetchJson("Claude", "https://api.anthropic.com/v1/models?limit=1000", aiClaudeHeaders(apiKey), null, AI_LIST_TIMEOUT_MS);
+  return (data.data || []).map((m) => ({ id: m.id, maxTokens: m.max_tokens }));
+}
+
+// ponytail: OpenAI 목록에는 대화 모델 표시가 없어 ID 로 거른다. 빠진 모델은 채널 기본 모델에 직접 입력하면 쓸 수 있다.
+async function listOpenAiModels(apiKey) {
+  const data = await aiFetchJson("GPT", "https://api.openai.com/v1/models", { authorization: `Bearer ${apiKey}` }, null, AI_LIST_TIMEOUT_MS);
+  return (data.data || [])
+    .filter((m) => /^(gpt-|o\d|chatgpt-)/.test(m.id) && !/audio|realtime|transcribe|tts|embedding|moderation|image|search|instruct|research|-\d{4}-\d{2}-\d{2}$/.test(m.id))
+    .sort((a, b) => (b.created || 0) - (a.created || 0))
+    .map((m) => ({ id: m.id }));
+}
+
+const AI_MODEL_LISTERS = { gemini: listGeminiModels, anthropic: listClaudeModels, openai: listOpenAiModels };
+const aiModelCache = new Map(); // channelId -> { until, promise } — 멤버가 방을 열 때마다 공급자를 부르지 않게 한다.
+
+// 키가 있는 공급자의 모델 목록. 키가 바뀌면 channel:set-ai 가 캐시를 지운다.
+function listAiModels(channelId) {
+  const hit = aiModelCache.get(channelId);
+  if (hit && Date.now() < hit.until) return hit.promise;
+  const { keys } = store.getAiSecret(channelId);
+  const entry = { until: Date.now() + AI_MODEL_TTL_MS, promise: null };
+  const errors = [];
+  entry.promise = Promise.all(Object.keys(AI_MODEL_LISTERS).filter((p) => keys[p]).map((provider) =>
+    AI_MODEL_LISTERS[provider](keys[provider])
+      .then((models) => models.map((m) => ({ ...m, provider })))
+      .catch((err) => {
+        // 공급자 오류 문구는 서버 로그에만 남기고, 멤버에게는 어느 키를 확인할지만 알린다.
+        console.warn("[ai] 모델 목록 실패:", provider, err?.message || err);
+        entry.until = Date.now() + AI_MODEL_RETRY_MS;
+        errors.push(`${AI_PROVIDER_LABEL[provider]} 모델 목록을 불러오지 못했습니다. 키를 확인하세요.`);
+        return [];
+      }))).then((lists) => ({ models: lists.flat(), errors }));
+  aiModelCache.set(channelId, entry);
+  return entry.promise;
 }
 
 // 메시지에 첨부된 파일을 Gemini 콘텐츠에 태울 형태로 바꾼다. toGeminiContents(순수함수)는 안 건드리고
@@ -2443,6 +2518,12 @@ function handleAiMessage(client, message) {
       broadcastPresence();
       return true;
     }
+    case "ai:models": {
+      const channelId = String(message.channelId || "");
+      if (!store.isChannelMember(channelId, client.userId, client.isAdmin)) return true;
+      listAiModels(channelId).then((list) => send(client, { type: "ai:models", channelId, ...list }));
+      return true;
+    }
     case "ai:draft": {
       const ctx = resolveAiRoom(client, message.roomId);
       if (!ctx) return true;
@@ -2567,9 +2648,15 @@ function handleAiMessage(client, message) {
       const text = String(message.text || "").replace(/\s+$/, "").slice(0, AI_TEXT_MAX);
       const files = cleanChatFiles(message.files, client.userId).slice(0, AI_ATTACH_MAX);
       if (!text && !files.length) { send(client, { type: "ai:error", message: "빈 메시지는 보낼 수 없습니다." }); return true; }
-      const secret = store.getAiSecret(ctx.channel.id);
-      if (!secret || !secret.key) {
-        send(client, { type: "ai:error", message: "AI API 키가 없습니다. 채널 관리 → AI방 설정에서 Gemini 키를 등록하세요." });
+      const { keys } = store.getAiSecret(ctx.channel.id);
+      const doc = store.getAiDoc(ctx.room.id);
+      let model = doc.settings.model || store.getAiConfig(ctx.channel.id).model;
+      if (!model) {
+        send(client, { type: "ai:error", message: Object.keys(keys).length ? "사용할 모델을 먼저 고르세요." : "AI API 키가 없습니다. 채널 관리 → AI방 설정에서 Gemini, Claude, GPT 키 중 하나를 등록하세요." });
+        return true;
+      }
+      if (!keys[store.aiProviderOf(model)]) {
+        send(client, { type: "ai:error", message: `${model} 모델을 쓰려면 ${AI_PROVIDER_LABEL[store.aiProviderOf(model)]} 키가 필요합니다. 채널 관리 → AI방 설정에서 등록하거나 다른 모델을 고르세요.` });
         return true;
       }
       if (files.length && !store.canAttach(ctx.channel.id, client.userId, client.isAdmin)) {
@@ -2580,7 +2667,6 @@ function handleAiMessage(client, message) {
       // 한 사람이 여러 AI방에 동시에 요청을 걸어 채널 키 비용을 불리지 못하게 사용자당 1건만 허용한다.
       if (aiBusyUsers.has(client.userId)) { send(client, { type: "ai:error", message: "보낸 요청의 응답이 끝난 뒤 다시 시도하세요." }); return true; }
 
-      const doc = store.getAiDoc(ctx.room.id);
       const session = aiEnsureSession(doc);
       const user = store.findById(client.userId);
       const userMsg = { role: "user", text, at: Date.now(), userId: client.userId, name: user ? user.displayName : client.name };
@@ -2600,10 +2686,9 @@ function handleAiMessage(client, message) {
       aiBusy.add(ctx.room.id);
       aiBusyUsers.add(client.userId);
       broadcastAi(ctx.room.id, { type: "ai:thinking", roomId: ctx.room.id, on: true });
-      let model = doc.settings.model || secret.model || store.DEFAULT_AI_MODEL;
       // 자동 모델 선택: 그림 요청 같으면 이번 턴만 이미지 모델로. 방 설정(doc.settings.model)은 그대로 둔다.
       let autoNote = "";
-      if (text && !/image/i.test(model) && store.aiWantsImage(text)) {
+      if (keys.gemini && text && !/image/i.test(model) && store.aiWantsImage(text)) {
         model = store.AI_AUTO_IMAGE_MODEL;
         autoNote = `🎨 그림 요청으로 보고 ${model} 모델로 답합니다`;
       }
@@ -2619,7 +2704,9 @@ function handleAiMessage(client, message) {
           last.parts.push(...imageParts);
         }
       }
-      callGemini({ apiKey: secret.key, model, system, thinking: doc.settings.thinking, contents })
+      const provider = store.aiProviderOf(model);
+      const call = { gemini: callGemini, anthropic: callClaude, openai: callOpenAi }[provider];
+      call({ apiKey: keys[provider], model, system, thinking: doc.settings.thinking, contents, channelId: ctx.channel.id })
         .then((reply) => {
           const fresh = store.getAiDoc(ctx.room.id);
           const s = fresh.sessions.find((x) => x.id === session.id);
@@ -2637,6 +2724,7 @@ function handleAiMessage(client, message) {
           let outText = display;
           if (autoNote) notes.unshift(autoNote);
           if (reply.imageBlockReason) notes.push(`⚠️ 이미지가 생성되지 않았습니다 (사유: ${reply.imageBlockReason})`);
+          if (reply.truncated) notes.push("⚠️ 답변이 길어 중간에 잘렸습니다.");
           if (notes.length) outText += `${outText ? "\n\n" : ""}> ${notes.join("\n> ")}`;
           const aiMsg = { role: "model", text: outText, at: Date.now(), model };
           if (urls.length) aiMsg.images = urls;

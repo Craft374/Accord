@@ -7101,6 +7101,9 @@ body.ai-open .dm-panel { display: none !important; }
 
 .ai-settings-field { display: flex; flex-direction: column; gap: 6px; }
 .ai-settings-field input { width: 100%; }
+.ai-key-row { display: flex; gap: 6px; }
+.ai-key-row input { flex: 1; min-width: 0; }
+.ai-key-row button { flex: none; }
 .ai-settings-state { margin: 0; font-size: 12px; color: var(--muted); }
 .ai-settings-state.ok { color: var(--green); }
 

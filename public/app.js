@@ -45,21 +45,7 @@ const ROOM_TYPE_META = {
 };
 const AI_DRAFT_THROTTLE = 180; // 입력 미리보기(draft) 전송 최소 간격(ms)
 const AI_DRAFT_TTL = 8000; // 남의 "입력 중" 표시가 갱신 없이 살아 있는 최대 시간(ms)
-// 채널 설정의 datalist(#aiModelList)와 목록을 맞춰 둘 것. 모델 ID는 자유 입력도 가능하다.
-const AI_MODEL_CHOICES = [
-  ["", "채널 기본"],
-  ["gemini-3.7-flash", "gemini-3.7-flash"],
-  ["gemini-3.6-flash", "gemini-3.6-flash"],
-  ["gemini-3.5-flash", "gemini-3.5-flash"],
-  ["gemini-3.5-flash-lite", "gemini-3.5-flash-lite"],
-  ["gemini-3.1-pro-preview", "gemini-3.1-pro-preview"],
-  ["gemini-2.5-pro", "gemini-2.5-pro"],
-  ["gemini-2.5-flash", "gemini-2.5-flash"],
-  ["gemini-2.5-flash-lite", "gemini-2.5-flash-lite"],
-  ["gemini-3-pro-image-preview", "gemini-3-pro-image-preview (그림)"],
-  ["gemini-3.1-flash-image-preview", "gemini-3.1-flash-image-preview (그림)"],
-  ["gemini-2.5-flash-image", "gemini-2.5-flash-image (그림)"],
-];
+const AI_PROVIDERS = { gemini: "Gemini", anthropic: "Claude", openai: "GPT" };
 const AI_THINKING_CHOICES = [["auto", "생각: 자동"], ["off", "생각: 끔"], ["high", "생각: 깊게"]];
 const AI_ATTACH_MAX_FILES = 3; // 메시지 하나당 첨부 개수(서버 AI_ATTACH_MAX 와 동일)
 const AI_ATTACH_MAX_BYTES = 4 * 1024 * 1024; // 서버 AI_ATTACH_IMG_MAX 와 동일 — 넘으면 업로드는 되지만 AI엔 전달 안 됨
@@ -192,6 +178,7 @@ const state = {
   online: [],
   // AI방
   ai: null, // { roomId, channelId, name, config, sessions, activeSessionId, messages, thinking, writable, draftBy }
+  aiModels: {}, // channelId -> 서버가 공급자에서 불러온 [{ id, provider }]
   aiPendingFiles: [], // 이번 메시지에 첨부해 전송 대기 중인 파일 메타(방 지식 업로드와는 별개)
   // 채팅
   activeChat: null, // { roomId, channelId, name }
@@ -619,7 +606,8 @@ const dom = {
   aiSendButton: document.querySelector("#aiSendButton"),
   aiComposerHint: document.querySelector("#aiComposerHint"),
   aiSettingsRow: document.querySelector("#aiSettingsRow"),
-  aiKeyInput: document.querySelector("#aiKeyInput"),
+  aiKeyInputs: { gemini: document.querySelector("#aiKeyGemini"), anthropic: document.querySelector("#aiKeyAnthropic"), openai: document.querySelector("#aiKeyOpenai") },
+  aiModelList: document.querySelector("#aiModelList"),
   aiModelInput: document.querySelector("#aiModelInput"),
   aiSettingsSave: document.querySelector("#aiSettingsSave"),
   aiSettingsState: document.querySelector("#aiSettingsState"),
@@ -1941,6 +1929,16 @@ async function handleSocketMessage(message) {
     if (state.ai && message.roomId === state.ai.roomId) {
       state.ai.config = message.config || state.ai.config;
       applyAiWritable();
+      sendSocket({ type: "ai:models", channelId: state.ai.channelId });
+    }
+    return;
+  }
+  if (message.type === "ai:models") {
+    state.aiModels[message.channelId] = message.models;
+    if (dom.aiModelList) dom.aiModelList.replaceChildren(...message.models.map((m) => new Option("", m.id)));
+    if (message.errors.length) setAiSettingsState(message.errors.join(" "));
+    if (state.ai?.channelId === message.channelId) {
+      renderAiControls();
     }
     return;
   }
@@ -9410,6 +9408,7 @@ function openAiRoom(roomId) {
   closeAiRefMenu();
   renderAiControls();
   sendSocket({ type: "ai:open", roomId });
+  sendSocket({ type: "ai:models", channelId: found.channel.id });
   renderRooms();
   dom.aiInput?.focus();
 }
@@ -9470,11 +9469,20 @@ function applyAiState(msg) {
 function renderAiControls() {
   if (!state.ai || !dom.aiModelSelect || !dom.aiThinkingSelect) return;
   const st = state.ai.settings || { model: "", thinking: "auto", refScope: true };
-  const chDefault = state.ai.config?.model || "?";
+  const chDefault = state.ai.config?.model;
+  const models = state.aiModels[state.ai.channelId] || [];
   dom.aiModelSelect.innerHTML = "";
-  for (const [v, l] of AI_MODEL_CHOICES) dom.aiModelSelect.append(new Option(v ? l : `모델: 채널 기본 (${chDefault})`, v, false, v === st.model));
+  dom.aiModelSelect.append(new Option(chDefault ? `모델: 채널 기본 (${chDefault})` : "모델을 고르세요", "", false, !st.model));
+  for (const [provider, label] of Object.entries(AI_PROVIDERS)) {
+    const list = models.filter((m) => m.provider === provider);
+    if (!list.length) continue;
+    const group = document.createElement("optgroup");
+    group.label = label;
+    for (const { id } of list) group.append(new Option(/image/i.test(id) ? `${id} (그림)` : id, id, false, id === st.model));
+    dom.aiModelSelect.append(group);
+  }
   // 목록에 없는 모델(채널이 자유 입력한 값 등)도 선택 상태로 보이게 한 항목 추가.
-  if (st.model && !AI_MODEL_CHOICES.some(([v]) => v === st.model)) {
+  if (st.model && !models.some((m) => m.id === st.model)) {
     dom.aiModelSelect.append(new Option(st.model, st.model, false, true));
   }
   dom.aiThinkingSelect.innerHTML = "";
@@ -9741,7 +9749,7 @@ function applyAiWritable() {
   if (dom.aiInput) {
     dom.aiInput.disabled = !ok;
     dom.aiInput.placeholder = ok
-      ? (cfg.hasKey ? "무엇이든 물어보세요 · #로 방 참조 · 결과는 전원 공유" : "채널 관리 → AI방 설정에서 Gemini 키를 등록하세요")
+      ? (cfg.hasKey ? "무엇이든 물어보세요 · #로 방 참조 · 결과는 전원 공유" : "채널 관리 → AI방 설정에서 API 키를 등록하세요")
       : "읽기 전용 방입니다";
   }
   if (dom.aiSendButton) dom.aiSendButton.disabled = !ok;
@@ -9953,7 +9961,7 @@ function sendAiPrompt() {
   const files = state.aiPendingFiles.filter((f) => f.url).map((f) => ({ url: f.url, name: f.name, size: f.size, mime: f.mime, kind: f.kind }));
   if (!text && !files.length) return;
   if (state.ai.writable === false) { setAiHint("읽기 전용 방입니다."); return; }
-  if (!state.ai.config?.hasKey) { setAiHint("API 키가 없습니다. 채널 관리 → AI방 설정에서 Gemini 키를 등록하세요."); return; }
+  if (!state.ai.config?.hasKey) { setAiHint("API 키가 없습니다. 채널 관리 → AI방 설정에서 Gemini, Claude, GPT 키 중 하나를 등록하세요."); return; }
   if (state.ai.thinking) { setAiHint("AI가 응답 중입니다. 잠시 후 시도하세요."); return; }
   setAiHint("");
   sendSocket({ type: "ai:send", roomId: state.ai.roomId, text, files });
@@ -10074,14 +10082,33 @@ function bindAiEvents() {
   dom.aiSettingsSave?.addEventListener("click", () => {
     const channel = currentChannel();
     if (!channel || !isChannelOwner(channel)) return;
-    const payload = { type: "channel:set-ai", channelId: channel.id };
-    const key = (dom.aiKeyInput?.value || "").trim();
-    if (key) payload.key = key; // 빈칸 저장은 키를 건드리지 않음(모델만 변경 가능)
+    const payload = { type: "channel:set-ai", channelId: channel.id, keys: {} };
+    for (const [provider, input] of Object.entries(dom.aiKeyInputs)) {
+      const key = input.value.trim();
+      input.value = "";
+      if (!key) continue; // 빈칸 저장은 키를 건드리지 않음(모델만 변경 가능)
+      payload.keys[provider] = key;
+      setAiKeyPlaceholder(provider, true);
+    }
     if (dom.aiModelInput) payload.model = dom.aiModelInput.value.trim();
     sendSocket(payload);
-    if (dom.aiKeyInput) dom.aiKeyInput.value = "";
+    sendSocket({ type: "ai:models", channelId: channel.id });
     setAiSettingsState("저장했습니다.", true);
   });
+  document.querySelectorAll("[data-ai-key-clear]").forEach((button) => button.addEventListener("click", () => {
+    const channel = currentChannel();
+    if (!channel || !isChannelOwner(channel)) return;
+    const provider = button.dataset.aiKeyClear;
+    sendSocket({ type: "channel:set-ai", channelId: channel.id, keys: { [provider]: null } });
+    sendSocket({ type: "ai:models", channelId: channel.id });
+    setAiKeyPlaceholder(provider, false);
+    setAiSettingsState(`${AI_PROVIDERS[provider]} 키를 지웠습니다.`, true);
+  }));
+}
+
+function setAiKeyPlaceholder(provider, saved) {
+  const label = AI_PROVIDERS[provider];
+  dom.aiKeyInputs[provider].placeholder = saved ? `${label} 키 저장됨 · 새 키를 넣으면 교체` : `${label} API 키 붙여넣기`;
 }
 
 function setAiSettingsState(text, ok = false) {
@@ -16595,8 +16622,12 @@ function openChannelMenu() {
   if (dom.aiSettingsRow) dom.aiSettingsRow.hidden = !(owner && hasAiRoom);
   if (owner && hasAiRoom) {
     const cfg = channel.aiConfig || { hasKey: false, model: "" };
-    if (dom.aiKeyInput) { dom.aiKeyInput.value = ""; dom.aiKeyInput.placeholder = cfg.hasKey ? "키 저장됨 · 새 키를 넣으면 교체" : "API 키 붙여넣기"; }
+    for (const provider of Object.keys(AI_PROVIDERS)) {
+      dom.aiKeyInputs[provider].value = "";
+      setAiKeyPlaceholder(provider, cfg.providers?.[provider]);
+    }
     if (dom.aiModelInput) dom.aiModelInput.value = cfg.model || "";
+    sendSocket({ type: "ai:models", channelId: channel.id });
     setAiSettingsState(cfg.hasKey ? "현재 키가 설정되어 있습니다." : "키가 없어 AI방을 쓸 수 없습니다.");
   }
   setChannelMenuMessage("");
