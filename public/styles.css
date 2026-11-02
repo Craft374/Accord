@@ -5353,8 +5353,10 @@ body.ui-obsidian-sidebar .room-group-head:focus-within .room-group-count { opaci
   transition: opacity 0.12s ease;
 }
 .room-group-action.danger { right: 2px; }
-.room-group-head:hover .room-group-count,
-.room-group-head:focus-within .room-group-count { margin-right: 48px; }
+.room-group-action.add { right: 50px; font-size: 15px; }
+/* 관리 버튼(+ ✎ ×)이 있는 그룹에서만 개수를 비켜 준다. */
+.room-group-draggable > .room-group-head:hover .room-group-count,
+.room-group-draggable > .room-group-head:focus-within .room-group-count { margin-right: 72px; }
 .room-group-head:hover .room-group-action,
 .room-group-head:focus-within .room-group-action { opacity: 1; pointer-events: auto; }
 .room-group-action:hover { background: var(--bg-elevated); color: var(--text); }
@@ -5374,30 +5376,54 @@ body.ui-obsidian-sidebar .room-group-head:focus-within .room-group-count { opaci
   border-left: 1px solid var(--line);
 }
 body.ui-obsidian-sidebar .room-group > .room-group-rooms { margin-left: 6px; padding-left: 9px; }
-.room-tree-root { padding-top: 1px; }
-/* 드래그 중에는 그룹 카드 배경/테두리를 없애 드롭 표시(파란 선·빈 그룹 안내)가 겹쳐 지저분해지지 않게 한다. */
-.room-list.room-tree-drag-active .room-group {
-  background: transparent;
+/* 위·아래 여백: 첫/마지막 항목이 그룹이어도 그 앞·뒤(최상위 맨 위/맨 끝)에 놓을 자리를 남긴다.
+   목록이 길어 스크롤되면 아래 빈 공간이 없으므로 아래 여백이 '마지막 그룹 밖' 자리가 된다. */
+.room-tree-root { padding-top: 6px; padding-bottom: 16px; }
+/* 드래그를 시작해도 목록 모양(카드·빈 그룹 안내)은 그대로 둔다 — 커서 밑 레이아웃이 바뀌면 판정이 흔들린다. */
+.room-tree-empty.room-root-empty { display: none; }
+/* 드롭하면 들어갈 그룹 전체를 칠한다(머리줄+내용). 칠해진 그룹이 없으면 최상위로 간다.
+   .room-list 를 붙인 건 옵시디언 스타일의 background:none 규칙보다 우선하기 위해서다. */
+.room-list .room-group.drop-into {
+  background: rgba(88, 101, 242, 0.12);
   border-color: transparent;
-}
-.room-tree-empty { display: none; }
-.room-list.room-tree-drag-active .room-tree-empty { display: block; }
-.room-list.room-tree-drag-active .room-tree-root { min-height: 36px; }
-.room-tree-children.drop-target > .room-tree-empty { display: none; }
-.room-tree-children.drop-target {
+  border-radius: var(--radius-sm);
   box-shadow: inset 0 0 0 1px var(--blurple);
-  background: rgba(88, 101, 242, 0.08);
 }
+.room-list .room-group.drop-into > .room-group-head .room-group-toggle { color: var(--heading); }
+/* 끼워 넣을 위치 선. 위아래 음수 여백으로 레이아웃 높이를 0으로 만들어 넣었다 뺄 때 목록이 밀리지 않는다
+   (flex gap 2px 안에 그대로 겹쳐 그려짐). */
 .room-tree-drop-indicator {
   height: 2px;
   flex: none;
-  margin: 1px 6px;
+  margin: -2px 6px;
   border-radius: 999px;
   background: var(--blurple);
   box-shadow: 0 0 0 1px rgba(88, 101, 242, 0.24);
   pointer-events: none;
 }
 .room-group-empty { padding: 8px; color: var(--muted); font-size: 11px; text-align: center; border: 1px dashed var(--line-strong); border-radius: var(--radius-xs); }
+body.ui-obsidian-sidebar .room-group-empty { padding: 3px 8px; border: 0; text-align: left; font-style: italic; opacity: 0.8; }
+/* 드래그 중 커서를 따라다니는 이름표("op → 📁 빈그룹") */
+.room-drag-ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 10000;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 4px 9px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--blurple);
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+.room-drag-ghost.invalid { border-color: var(--danger); color: var(--muted); }
 /* 방을 '떠 있는 글자'가 아니라 경계가 있는 상자로 보이게 한다.
    경계선을 항목(.room-item) 전체에 두어 통화방의 참가자 목록까지 한 상자로 묶는다. */
 .room-item {

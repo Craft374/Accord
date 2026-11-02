@@ -190,6 +190,8 @@ const state = {
   chatTypers: new Map(), // userId -> { name, timer }
   chatTypingSentAt: 0,
   collapsedRoomGroups: readCollapsedRoomGroups(), // channelId:groupId 형태의 사용자별 접기 상태
+  roomDragHeld: false, // 방/그룹을 끌고 있는 동안 true — 그동안 목록을 다시 그리면 드래그 대상 DOM 이 사라진다
+  roomRenderPending: false, // 드래그 중 미뤄 둔 renderRooms
   // 메모장
   memo: null, // { roomId, channelId, name, rev, remotePending, saveTimer, view }
   table: null, // 열어 둔 테이블 방
@@ -7415,6 +7417,9 @@ function renderChannelHeader() {
 
 function renderRooms() {
   if (!dom.roomList) return;
+  // 드래그 중에 접속자·안읽음 갱신으로 목록을 새로 그리면 잡고 있던 요소가 바뀌어
+  // 드롭이 사라지거나 같은 방이 두 번 직렬화된다. 드래그가 끝난 뒤 한 번 그린다.
+  if (state.roomDragHeld) { state.roomRenderPending = true; return; }
   dom.roomList.innerHTML = "";
   const channel = currentChannel();
   // 미리보기 중에는 방 관리 버튼(추가/삭제)도 숨겨 실제 유저 화면처럼 보여준다.
@@ -7562,7 +7567,7 @@ function buildRoomTree(channel, nodes, owner, parentGroupId, root = false) {
   }
   if (owner && !(nodes || []).length) {
     body.append(el("div", `room-group-empty room-tree-empty${root ? " room-root-empty" : ""}`,
-      root ? "그룹 없이 두기" : "여기로 방이나 그룹을 끌어오세요"));
+      root ? "그룹 없이 두기" : "비어 있음 · 방을 끌어다 놓으세요"));
   }
   return body;
 }
@@ -7605,6 +7610,11 @@ function buildRoomGroup(channel, group, children, owner) {
   toggle.querySelector(".room-group-name").textContent = group.name;
   head.append(toggle);
   if (owner) {
+    const add = document.createElement("button");
+    add.className = "room-group-action add";
+    add.dataset.roomGroupAddRoom = group.id;
+    add.title = "이 그룹에 방 만들기";
+    add.textContent = "+";
     const rename = document.createElement("button");
     rename.className = "room-group-action";
     rename.dataset.roomGroupRename = group.id;
@@ -7615,7 +7625,7 @@ function buildRoomGroup(channel, group, children, owner) {
     del.dataset.roomGroupDelete = group.id;
     del.title = "그룹 삭제 (내용은 상위 위치로 이동)";
     del.textContent = "×";
-    head.append(rename, del);
+    head.append(add, rename, del);
   }
   section.append(head);
 
@@ -8715,7 +8725,7 @@ function ensureRoomTreeDropIndicator() {
 }
 
 function clearRoomTreeDropTargets() {
-  dom.roomList?.querySelectorAll(".room-tree-children.drop-target").forEach((node) => node.classList.remove("drop-target"));
+  dom.roomList?.querySelectorAll(".room-group.drop-into").forEach((node) => node.classList.remove("drop-into"));
 }
 
 function directRoomGroupBody(section) {
@@ -8734,25 +8744,73 @@ function placeRoomTreeDropIndicator(container, before = null) {
   const indicator = ensureRoomTreeDropIndicator();
   const empty = [...container.children].find((child) => child.classList?.contains("room-tree-empty")) || null;
   container.insertBefore(indicator, before?.parentElement === container ? before : empty);
-  // 루트는 방 목록 전체이므로 '컨테이너 안으로 드롭' 파란 테두리를 씌우면 목록 전체가
-  // 박스로 감싸여 보인다. 그룹 내부로 드롭할 때만 테두리를 표시한다.
-  if (!container.classList.contains("room-tree-root")) container.classList.add("drop-target");
+  // 들어갈 그룹 전체(머리줄+내용)를 칠한다. 칠해진 그룹이 없으면 그룹 밖(최상위)이다.
+  if (!container.classList.contains("room-tree-root")) container.parentElement?.classList.add("drop-into");
   return true;
 }
 
-function expandRoomGroupForDrop(section) {
-  const body = directRoomGroupBody(section);
-  if (!body) return null;
-  if (!body.hidden || !section.dataset.roomGroupId) return;
-  body.hidden = false;
-  section.classList.remove("collapsed");
-  section.querySelector(":scope > .room-group-head [data-room-group-toggle]")?.setAttribute("aria-expanded", "true");
-  const channel = currentChannel();
-  if (channel) {
-    state.collapsedRoomGroups.delete(roomGroupCollapseKey(channel.id, section.dataset.roomGroupId));
-    try { localStorage.setItem("accordCollapsedRoomGroups", JSON.stringify([...state.collapsedRoomGroups])); } catch {}
+// 드롭 위치 판정은 '어느 칸 위에 있나'만 본다(칸 안의 높이 비율로 안/밖을 가르지 않는다).
+//   그룹 머리줄 어디든 → 그 그룹 안(펼쳐져 있으면 맨 위, 접혀 있으면 맨 끝)
+//   펼친 그룹의 내용 영역 → 그 그룹 안, 커서 높이의 방 사이
+//   방 위 → 그 방의 앞/뒤(같은 그룹 안)
+// 그룹 앞에 두려면 앞쪽 방의 아래 절반, 뒤에 두려면 다음 방의 위 절반에 놓는다.
+function updateRoomTreePointerDrop(clientX, clientY) {
+  // 히트 테스트(elementFromPoint)와 위치 계산(getBoundingClientRect)이 반드시 같은 레이아웃을
+  // 보도록, 이전 프레임에서 꽂아 둔 인디케이터를 먼저 뗀다.
+  clearRoomTreeDropTargets();
+  roomTreeDropIndicator?.remove();
+  const point = document.elementFromPoint(clientX, clientY);
+  if (!point || (!dom.roomList?.contains(point) && point !== dom.roomList)) return false;
+
+  const container = point.closest?.(".room-tree-children") || null;
+  let over = point.closest?.(".room-tree-node") || null;
+  // 빈 그룹 영역에서는 closest 노드가 그 영역을 소유한 그룹이므로 형제가 아니라 내부 드롭으로 본다.
+  if (over?.parentElement !== container) over = null;
+
+  if (over?.dataset.roomNodeKind === "group" && over !== roomPointerDrag?.source) {
+    const head = over.querySelector(":scope > .room-group-head");
+    const body = directRoomGroupBody(over);
+    if (head && clientY < head.getBoundingClientRect().bottom) {
+      // 접힌 그룹은 펼치지 않는다(커서 밑 레이아웃이 갑자기 바뀌지 않게). 드롭하면 그때 펼친다.
+      const first = body?.hidden ? null : body?.querySelector(":scope > .room-tree-node");
+      return placeRoomTreeDropIndicator(body, first);
+    }
+    // 그룹 카드의 옆·아래 여백: 내용 높이 안이면 그 그룹 안, 그 아래면 그룹 뒤.
+    if (body && !body.hidden && clientY < body.getBoundingClientRect().bottom) {
+      return placeRoomTreeDropIndicator(body, roomTreeBeforeNodeAt(body, clientY));
+    }
+    return placeRoomTreeDropIndicator(container, over.nextSibling);
   }
-  return body;
+
+  if (over && canDropRoomTreeIn(container)) {
+    const target = over.dataset.roomNodeKind === "group" ? (over.querySelector(":scope > .room-group-head") || over) : over;
+    const rect = target.getBoundingClientRect();
+    return placeRoomTreeDropIndicator(container, clientY > rect.top + rect.height / 2 ? over.nextSibling : over);
+  }
+
+  if (container) {
+    return canDropRoomTreeIn(container) && placeRoomTreeDropIndicator(container, roomTreeBeforeNodeAt(container, clientY));
+  }
+
+  // 트리 아래의 빈 영역은 루트 마지막 위치로 취급한다.
+  const root = dom.roomList.querySelector(".room-tree-root");
+  return root ? placeRoomTreeDropIndicator(root, roomTreeBeforeNodeAt(root, clientY)) : false;
+}
+
+// 커서를 따라다니는 이름표: "op → 빈그룹" / "op → 최상위". 어디로 들어가는지 글로도 확정해 준다.
+function updateRoomDragGhost(drag, clientX, clientY) {
+  if (!drag.ghost) {
+    drag.ghost = el("div", "room-drag-ghost");
+    document.body.append(drag.ghost);
+  }
+  const host = drag.hasTarget ? roomTreeDropIndicator?.parentElement : null;
+  const groupName = host && !host.classList.contains("room-tree-root")
+    ? host.parentElement?.querySelector(":scope > .room-group-head .room-group-name")?.textContent
+    : "";
+  drag.ghost.textContent = !drag.hasTarget ? `${drag.label} · 여기에는 놓을 수 없습니다`
+    : groupName ? `${drag.label} → 📁 ${groupName}` : `${drag.label} → 최상위`;
+  drag.ghost.classList.toggle("invalid", !drag.hasTarget);
+  drag.ghost.style.transform = `translate(${clientX + 14}px, ${clientY + 14}px)`;
 }
 
 function roomTreeBeforeNodeAt(container, clientY) {
@@ -8775,51 +8833,6 @@ function scrollRoomTreeForPointer(clientY) {
   if (clientY < rect.top + edge) delta = -Math.ceil((rect.top + edge - clientY) / 4);
   else if (clientY > rect.bottom - edge) delta = Math.ceil((clientY - (rect.bottom - edge)) / 4);
   if (delta) list.scrollTop += Math.max(-18, Math.min(18, delta));
-}
-
-function updateRoomTreePointerDrop(clientX, clientY) {
-  // 히트 테스트(elementFromPoint)와 위치 계산(getBoundingClientRect)이 반드시 같은 레이아웃을
-  // 보도록, 이전 프레임에서 꽂아 둔 인디케이터를 먼저 뗀다. 인디케이터가 남아 있으면 그 높이만큼
-  // 밀린 레이아웃에서 커서 밑 요소가 달라져 매 프레임 삽입 위치가 뒤집히며 파바박 떨린다.
-  clearRoomTreeDropTargets();
-  roomTreeDropIndicator?.remove();
-  const point = document.elementFromPoint(clientX, clientY);
-  if (!point || (!dom.roomList?.contains(point) && point !== dom.roomList)) return false;
-
-  let container = point.closest?.(".room-tree-children") || null;
-  let over = point.closest?.(".room-tree-node") || null;
-  // 빈 그룹 영역에서는 closest 노드가 그 영역을 소유한 그룹이므로 형제가 아니라 내부 드롭으로 본다.
-  if (over?.parentElement !== container) over = null;
-
-  if (over?.dataset.roomNodeKind === "group") {
-    const head = point.closest?.(".room-group-head");
-    if (head?.parentElement === over) {
-      const rect = head.getBoundingClientRect();
-      const ratio = rect.height ? (clientY - rect.top) / rect.height : 0;
-      if (ratio >= 0.25 && ratio <= 0.75) {
-        const body = directRoomGroupBody(over);
-        if (canDropRoomTreeIn(body)) {
-          expandRoomGroupForDrop(over);
-          return placeRoomTreeDropIndicator(body);
-        }
-      }
-    }
-  }
-
-  if (over && canDropRoomTreeIn(container)) {
-    const target = over.dataset.roomNodeKind === "group" ? (over.querySelector(":scope > .room-group-head") || over) : over;
-    const rect = target.getBoundingClientRect();
-    return placeRoomTreeDropIndicator(container, clientY > rect.top + rect.height / 2 ? over.nextSibling : over);
-  }
-
-  if (container && !canDropRoomTreeIn(container)) return false;
-  if (container && canDropRoomTreeIn(container)) {
-    return placeRoomTreeDropIndicator(container, roomTreeBeforeNodeAt(container, clientY));
-  }
-
-  // 트리 아래의 빈 영역(고정 추가 버튼 위 포함)은 루트 마지막 위치로 취급한다.
-  const root = dom.roomList.querySelector(".room-tree-root");
-  return root ? placeRoomTreeDropIndicator(root, roomTreeBeforeNodeAt(root, clientY)) : false;
 }
 
 function serializeRoomTreeNode(element, drag) {
@@ -8870,10 +8883,17 @@ function roomLayoutContainsEveryNode(layout, channel) {
 }
 
 function clearRoomPointerDrag() {
-  dom.roomList?.classList.remove("room-tree-drag-active", "room-pointer-drag-active");
-  dom.roomList?.querySelectorAll(".dragging, .dragging-group, .drop-target").forEach((node) => node.classList.remove("dragging", "dragging-group", "drop-target"));
+  dom.roomList?.classList.remove("room-pointer-drag-active");
+  dom.roomList?.querySelectorAll(".dragging, .dragging-group").forEach((node) => node.classList.remove("dragging", "dragging-group"));
+  clearRoomTreeDropTargets();
   roomTreeDropIndicator?.remove();
+  roomPointerDrag?.ghost?.remove();
   roomPointerDrag = null;
+  state.roomDragHeld = false;
+  if (state.roomRenderPending) {
+    state.roomRenderPending = false;
+    renderRooms();
+  }
 }
 
 function finishRoomPointerDrag(event, commit) {
@@ -8889,6 +8909,16 @@ function finishRoomPointerDrag(event, commit) {
       const layout = serializeRoomTreeContainer(root, drag);
       if (roomLayoutContainsEveryNode(layout, channel)) {
         sendSocket({ type: "channel:reorder-room-layout", channelId: channel.id, layout });
+        // 서버 응답을 기다리는 동안 원래 자리로 튀었다 돌아오지 않게 바로 반영한다(서버가 곧 확정본을 다시 보낸다).
+        channel.roomLayout = layout;
+        // 접힌 그룹에 넣었으면 펼쳐서 들어간 결과를 바로 보여 준다.
+        const host = roomTreeDropIndicator?.parentElement;
+        const targetGroupId = host && !host.classList.contains("room-tree-root") ? host.parentElement?.dataset.roomGroupId : "";
+        if (targetGroupId && isRoomGroupCollapsed(channel.id, targetGroupId)) {
+          state.collapsedRoomGroups.delete(roomGroupCollapseKey(channel.id, targetGroupId));
+          try { localStorage.setItem("accordCollapsedRoomGroups", JSON.stringify([...state.collapsedRoomGroups])); } catch {}
+        }
+        state.roomRenderPending = true;
       } else {
         // 내게 숨겨진 방은 목록에 없어 전체 순서를 만들 수 없다.
         setMessage("볼 수 없는 방이 있어 순서를 바꿀 수 없습니다.");
@@ -8898,6 +8928,13 @@ function finishRoomPointerDrag(event, commit) {
   clearRoomPointerDrag();
 }
 
+function confirmRemoveRoomGroup(groupId) {
+  const channel = currentChannel();
+  if (channel && window.confirm("이 그룹을 삭제할까요? 내부 방과 하위 그룹은 상위 위치로 이동합니다.")) {
+    sendSocket({ type: "channel:remove-room-group", channelId: channel.id, groupId });
+  }
+}
+
 function bindRoomDragEvents() {
   dom.roomList?.addEventListener("pointerdown", (event) => {
     if (event.button !== 0 || roomPointerDrag) return;
@@ -8905,12 +8942,14 @@ function bindRoomDragEvents() {
     if (!channel || !canManageRooms(channel) || rolePreview.active) return;
     const item = event.target?.closest?.('.room-item.room-draggable[data-room-node-kind="room"]');
     if (item && !event.target?.closest?.("[data-room-delete]")) {
-      roomPointerDrag = { kind: "room", id: item.dataset.roomNodeId, source: item, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, active: false, hasTarget: false };
+      const label = item.querySelector(".room-name")?.textContent || "방";
+      roomPointerDrag = { kind: "room", id: item.dataset.roomNodeId, label, source: item, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, active: false, hasTarget: false };
     } else {
       const group = event.target?.closest?.('.room-group.room-group-draggable[data-room-node-kind="group"]');
       const head = event.target?.closest?.(".room-group-head");
       if (!group || head?.parentElement !== group || event.target?.closest?.(".room-group-action")) return;
-      roomPointerDrag = { kind: "group", id: group.dataset.roomNodeId, source: group, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, active: false, hasTarget: false };
+      const label = `📁 ${head.querySelector(".room-group-name")?.textContent || "그룹"}`;
+      roomPointerDrag = { kind: "group", id: group.dataset.roomNodeId, label, source: group, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, active: false, hasTarget: false };
     }
   });
 
@@ -8920,13 +8959,17 @@ function bindRoomDragEvents() {
     if (!drag.active) {
       if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 6) return;
       drag.active = true;
+      state.roomDragHeld = true;
+      // 누른 뒤 움직이기 전에 목록이 다시 그려졌을 수 있으니 지금 화면의 같은 요소로 바꿔 잡는다.
+      drag.source = dom.roomList.querySelector(`[data-room-node-kind="${drag.kind}"][data-room-node-id="${CSS.escape(drag.id)}"]`) || drag.source;
       roomTreeDropIndicator?.remove();
-      dom.roomList.classList.add("room-pointer-drag-active", "room-tree-drag-active");
+      dom.roomList.classList.add("room-pointer-drag-active");
       drag.source.classList.add(drag.kind === "room" ? "dragging" : "dragging-group");
     }
     event.preventDefault();
     scrollRoomTreeForPointer(event.clientY);
     drag.hasTarget = updateRoomTreePointerDrop(event.clientX, event.clientY);
+    updateRoomDragGhost(drag, event.clientX, event.clientY);
   });
 
   window.addEventListener("pointerup", (event) => {
@@ -8993,16 +9036,12 @@ function bindChannelEvents() {
       toggleRoomGroup(groupToggle.dataset.channelId, groupToggle.dataset.roomGroupToggle);
       return;
     }
+    const groupAddRoom = event.target?.closest?.("[data-room-group-add-room]");
+    if (groupAddRoom) { openRoomModal(groupAddRoom.dataset.roomGroupAddRoom); return; }
     const groupRename = event.target?.closest?.("[data-room-group-rename]");
     if (groupRename) { openRoomGroupModal(groupRename.dataset.roomGroupRename); return; }
     const groupDelete = event.target?.closest?.("[data-room-group-delete]");
-    if (groupDelete) {
-      const channel = currentChannel();
-      if (channel && window.confirm("이 그룹을 삭제할까요? 내부 방과 하위 그룹은 상위 위치로 이동합니다.")) {
-        sendSocket({ type: "channel:remove-room-group", channelId: channel.id, groupId: groupDelete.dataset.roomGroupDelete });
-      }
-      return;
-    }
+    if (groupDelete) { confirmRemoveRoomGroup(groupDelete.dataset.roomGroupDelete); return; }
     const head = event.target?.closest?.(".room-item-head");
     if (head) openRoom(head.dataset.roomId, head.dataset.roomType);
   });
@@ -9027,6 +9066,21 @@ function bindChannelEvents() {
 
   // 방 우클릭 → 이름 변경(대표자 또는 방 이름 변경 권한 보유자)
   dom.roomList?.addEventListener("contextmenu", (event) => {
+    // 그룹 머리줄 우클릭 → 그룹 관리 메뉴(방 관리 권한자만)
+    const groupHead = event.target?.closest?.(".room-group-head");
+    if (groupHead) {
+      const channel = currentChannel();
+      const groupId = groupHead.parentElement?.dataset.roomGroupId;
+      if (!channel || !groupId || !canManageRooms(channel) || rolePreview.active) return;
+      event.preventDefault();
+      openChatContextMenu([
+        { label: "이 그룹에 방 만들기", action: () => openRoomModal(groupId) },
+        { label: "하위 그룹 만들기", action: () => openRoomGroupModal("", groupId) },
+        { label: "그룹 이름 변경", action: () => openRoomGroupModal(groupId) },
+        { label: "그룹 삭제", danger: true, action: () => confirmRemoveRoomGroup(groupId) },
+      ], { x: event.clientX, y: event.clientY });
+      return;
+    }
     const head = event.target?.closest?.(".room-item-head");
     if (!head) return;
     event.preventDefault();
