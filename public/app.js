@@ -14091,7 +14091,7 @@ function bindTableEvents() {
   const editable = (target) => target instanceof Element && Boolean(target.closest("input, textarea, select, [contenteditable]"));
   // 모달 등 보드 밖에 포커스가 있으면 붙여넣기·지우기 단축키를 가로채지 않는다.
   const outside = (target) => target !== document.body && !dom.tablePanel.contains(target);
-  applyTableTheme();
+  // 여기서 TABLE_* 상수를 바로 쓰면 안 된다 — init() 이 파일 위쪽에서 먼저 돌아 아직 초기화 전(TDZ)이다. 테마는 openTableRoom 에서 적용한다.
   dom.tableThemeButton?.addEventListener("click", () => {
     localStorage.setItem(TABLE_THEME_KEY, localStorage.getItem(TABLE_THEME_KEY) === "1" ? "0" : "1");
     applyTableTheme();
