@@ -14386,6 +14386,8 @@ function bindTableEvents() {
     }
     const drag = t.drag;
     if (!drag) return;
+    // 누를 때 손이 조금 떨린 건 끌기가 아니다(메모지 누르면 쓰기·화살표 고르기가 그대로 되게).
+    if (!drag.moved && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 4) return;
     const scale = tableScreenScale(t);
     const dx = (event.clientX - drag.startX) / scale;
     const dy = (event.clientY - drag.startY) / scale;

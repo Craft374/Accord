@@ -1947,7 +1947,8 @@ function cleanTableItem(item, raw) {
     page: cleanTableNumber(raw.page, 1, 100000, item.page),
   };
   if (item.kind === "note") {
-    next.text = typeof raw.text === "string" ? raw.text.slice(0, TABLE_NOTE_TEXT_MAX) : String(item.text || "");
+    // 줄바꿈은 \n 으로만 — textarea 값과 글자 수가 같아야 OT 위치가 맞는다(윈도 붙여넣기는 \r\n).
+    next.text = (typeof raw.text === "string" ? raw.text : String(item.text || "")).replace(/\r\n?/g, "\n").slice(0, TABLE_NOTE_TEXT_MAX);
     next.color = cleanTableNumber(raw.color, 0, TABLE_NOTE_COLORS - 1, item.color || 0);
     next.size = cleanTableNumber(raw.size, 10, 96, item.size || 16);
   }

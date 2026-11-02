@@ -3308,6 +3308,8 @@ function getTableDoc(roomId) {
   let d = tableDocs.get(roomId);
   if (!d) {
     d = { doc: store.getTable(roomId), saveTimer: 0, texts: new Map() };
+    // 예전에 \r\n 그대로 저장된 메모지 — textarea 와 글자 수가 달라 OT 위치가 어긋나므로 불러올 때 맞춘다.
+    for (const item of d.doc.items) if (item.kind === "note") item.text = String(item.text || "").replace(/\r\n?/g, "\n");
     tableDocs.set(roomId, d);
   }
   return d;
@@ -3449,7 +3451,7 @@ function handleTableMessage(client, message) {
       if (!item || item.kind !== "note") return true;
       const history = d.texts.get(item.id) || [];
       const baseRev = Math.max(0, Math.min(history.length, Number(message.rev) || 0));
-      let o = message.ops;
+      let o = Array.isArray(message.ops) ? message.ops.map((c) => (typeof c === "string" ? normalizeMemoNewlines(c) : c)) : null;
       const valid = (op) => Array.isArray(op) && op.every((c) => (typeof c === "string" && c) || (Number.isInteger(c) && c !== 0));
       let text = null;
       if (valid(o)) {
