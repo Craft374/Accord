@@ -13649,6 +13649,7 @@ function openTableRoom(roomId) {
     arrowDraft: null,
   };
   document.body.classList.add("table-open");
+  dom.tableScroll.focus({ preventScroll: true });
   dom.tableStage.replaceChildren();
   applyTableTheme();
   centerTableView(state.table);
@@ -13856,7 +13857,7 @@ function renderTableNote(card) {
 }
 
 function editTableNote(card) {
-  if (!state.table?.writable) return;
+  if (!state.table?.writable || !card.text.readOnly) return;
   card.text.readOnly = false;
   card.text.focus();
   card.text.setSelectionRange(card.text.value.length, card.text.value.length);
@@ -14216,9 +14217,8 @@ function bindTableEvents() {
   scroll.addEventListener("pointerdown", (event) => {
     const t = state.table;
     if (!t) return;
-    // 다른 곳을 누르면 쓰던 메모지는 끝낸다(아래 preventDefault 가 포커스 이동을 막으므로 직접).
-    const active = document.activeElement;
-    if (active?.classList?.contains("table-note-text") && active !== event.target) active.blur();
+    // 보드를 누르면 포커스를 보드로 가져온다 — 쓰던 메모지는 끝나고, 붙여넣기·Delete 키가 보드로 온다.
+    if (!editable(event.target)) scroll.focus({ preventScroll: true });
     const onItem = event.target.closest(".table-card, .table-arrow");
     if (event.button === 1 || (event.button === 0 && t.tool === "select" && !onItem)) {
       // 빈 곳(또는 휠 버튼) 끌기 = 화면 이동

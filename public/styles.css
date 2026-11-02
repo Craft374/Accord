@@ -1783,6 +1783,7 @@ body.table-open .log-panel {
   isolation: isolate; /* 카드 z 는 조작마다 커지므로 모달·토스트 위로 새지 않게 가둔다 */
 }
 .table-scroll:active { cursor: grabbing; }
+.table-scroll:focus { outline: none; }
 .table-scroll.arrow-tool,
 .table-scroll.arrow-tool .table-card,
 .table-scroll.arrow-tool .table-card-head { cursor: crosshair; }
