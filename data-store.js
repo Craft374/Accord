@@ -1923,10 +1923,12 @@ function cleanTableNumber(value, min, max, fallback) {
   return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback;
 }
 
-// 화살표 끝점: 카드에 붙으면 { id }, 허공이면 { x, y }.
+// 화살표 끝점: 카드 연결점에 붙으면 { id, a }(a = 0~7, 꼭짓점·변 가운데), 카드 가장자리 자동이면 { id }, 허공이면 { x, y }.
 function cleanTableEnd(raw, fallback) {
   if (!raw || typeof raw !== "object") return fallback;
-  if (typeof raw.id === "string" && /^[a-f0-9]{12}$/.test(raw.id)) return { id: raw.id };
+  if (typeof raw.id === "string" && /^[a-f0-9]{12}$/.test(raw.id)) {
+    return Number.isInteger(raw.a) && raw.a >= 0 && raw.a < 8 ? { id: raw.id, a: raw.a } : { id: raw.id };
+  }
   return { x: cleanTableNumber(raw.x, -TABLE_WORLD, TABLE_WORLD, 0), y: cleanTableNumber(raw.y, -TABLE_WORLD, TABLE_WORLD, 0) };
 }
 
@@ -2233,6 +2235,7 @@ module.exports = {
   saveTable,
   cleanTableItem,
   TABLE_MAX_ITEMS,
+  TABLE_NOTE_TEXT_MAX,
   UPLOAD_MAX_BYTES,
   // 메모장
   getMemo,

@@ -3300,14 +3300,14 @@ function resolveDrawRoom(client, roomId) {
 
 // ===== 화이트보드 방 (내부 타입은 "table") =====
 // 파일 카드·메모지·화살표를 함께 보는 공유 작업대. 배치는 마지막에 보낸 값이 이긴다(서버 순서 = 정답).
-const tableDocs = new Map(); // roomId -> { doc, saveTimer }
+const tableDocs = new Map(); // roomId -> { doc, saveTimer, texts } — texts: 메모지 id -> 글 op 기록(메모리에만, OT 용)
 const TABLE_PERSIST_DEBOUNCE = 2000;
 const TABLE_IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]);
 
 function getTableDoc(roomId) {
   let d = tableDocs.get(roomId);
   if (!d) {
-    d = { doc: store.getTable(roomId), saveTimer: 0 };
+    d = { doc: store.getTable(roomId), saveTimer: 0, texts: new Map() };
     tableDocs.set(roomId, d);
   }
   return d;
@@ -3320,6 +3320,13 @@ function scheduleTablePersist(roomId) {
     d.saveTimer = 0;
     store.saveTable(roomId, d.doc);
   }, TABLE_PERSIST_DEBOUNCE);
+}
+
+// 메모지에는 지금 글의 OT rev 를 붙여 보낸다(저장된 item 은 건드리지 않는다).
+function sendTableState(client, roomId) {
+  const d = getTableDoc(roomId);
+  const items = d.doc.items.map((item) => (item.kind === "note" ? { ...item, rev: (d.texts.get(item.id) || []).length } : item));
+  send(client, { type: "table:state", roomId, items });
 }
 
 function broadcastTable(roomId, payload) {
@@ -3372,7 +3379,7 @@ function handleTableMessage(client, message) {
     if (client.tableRoomId !== roomId) leaveTable(client);
     client.tableRoomId = roomId;
     client.tableJoinedAt = Date.now();
-    send(client, { type: "table:state", roomId, items: getTableDoc(roomId).doc.items });
+    sendTableState(client, roomId);
     broadcastPresence();
     return true;
   }
@@ -3410,13 +3417,14 @@ function handleTableMessage(client, message) {
       }
       const item = { ...store.cleanTableItem(base, message), z: ++d.doc.seq };
       d.doc.items.push(item);
-      broadcastTable(roomId, { type: "table:item", roomId, item });
+      broadcastTable(roomId, { type: "table:item", roomId, item, by: client.id });
       break;
     }
     case "table:update": {
       const item = find();
       if (!item) return true;
-      Object.assign(item, store.cleanTableItem(item, message), { z: ++d.doc.seq });
+      // 메모지 글은 table:text(OT)로만 바뀐다 — 여기서 받으면 동시 입력이 어긋난다.
+      Object.assign(item, store.cleanTableItem(item, { ...message, text: undefined }), { z: ++d.doc.seq });
       broadcastTable(roomId, { type: "table:item", roomId, item });
       break;
     }
@@ -3429,7 +3437,34 @@ function handleTableMessage(client, message) {
         if (entry.kind === "arrow" && (gone.has(entry.from?.id) || gone.has(entry.to?.id))) gone.add(entry.id);
       }
       d.doc.items = d.doc.items.filter((entry) => !gone.has(entry.id));
-      for (const itemId of gone) broadcastTable(roomId, { type: "table:remove", roomId, itemId });
+      for (const itemId of gone) {
+        d.texts.delete(itemId);
+        broadcastTable(roomId, { type: "table:remove", roomId, itemId });
+      }
+      break;
+    }
+    case "table:text": {
+      // 메모지 동시 입력 — 메모장(memo:op)과 같은 방식: 보낸 사람이 본 rev 이후 op 들을 지나 적용한다.
+      const item = find();
+      if (!item || item.kind !== "note") return true;
+      const history = d.texts.get(item.id) || [];
+      const baseRev = Math.max(0, Math.min(history.length, Number(message.rev) || 0));
+      let o = message.ops;
+      const valid = (op) => Array.isArray(op) && op.every((c) => (typeof c === "string" && c) || (Number.isInteger(c) && c !== 0));
+      let text = null;
+      if (valid(o)) {
+        for (let i = baseRev; i < history.length; i++) o = ot.transform(o, history[i], "right");
+        const span = o.reduce((n, c) => n + (typeof c === "string" ? 0 : Math.abs(c)), 0);
+        if (span <= item.text.length) text = ot.apply(item.text, o);
+      }
+      if (text === null || text.length > store.TABLE_NOTE_TEXT_MAX) {
+        sendTableState(client, roomId); // 받을 수 없는 op — 잘라 내면 서로 어긋나니 보낸 사람을 서버 상태로 되돌린다
+        return true;
+      }
+      item.text = text;
+      history.push(o);
+      d.texts.set(item.id, history);
+      broadcastTable(roomId, { type: "table:text", roomId, itemId: item.id, rev: history.length, ops: o, by: client.id }); // 보낸 사람 포함(ack 겸용)
       break;
     }
     default:

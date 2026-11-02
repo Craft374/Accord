@@ -13509,12 +13509,13 @@ function verifyActiveDraw() {
 const TABLE_ZOOM_MIN = 0.1;
 const TABLE_ZOOM_MAX = 4;
 const TABLE_SEND_THROTTLE = 60;
-const TABLE_TEXT_THROTTLE = 250;
 const TABLE_CARD_WIDTH = 480;
 const TABLE_CARD_MIN = 80;
 const TABLE_HEAD_HEIGHT = 32;
 const TABLE_GRID = 28;
 const TABLE_ARROW_GAP = 6; // 카드 테두리와 화살표 끝 사이 여백
+const TABLE_ANCHORS = [[0, 0], [0.5, 0], [1, 0], [1, 0.5], [1, 1], [0.5, 1], [0, 1], [0, 0.5]]; // 화살표 연결점: 왼위부터 시계 방향, 꼭짓점·변 가운데
+const TABLE_SNAP = 20; // 화면 px — 카드 둘레 이만큼 안이면 가장 가까운 연결점에 붙는다
 const TABLE_PDF_RENDER_DELAY = 120;
 const TABLE_PDF_MAX_SCALE = 4;
 const TABLE_NOTE_COLORS = ["노랑", "분홍", "초록", "하늘", "보라"]; // 실제 색은 CSS(.table-note[data-color]) — 라이트/다크 따로
@@ -13612,6 +13613,7 @@ function applyTableTheme() {
 
 function setTableTool(t, tool) {
   t.tool = tool;
+  if (tool !== "arrow") showTableSnap(t, null);
   dom.tableArrowButton.classList.toggle("active", tool === "arrow");
   dom.tableScroll.classList.toggle("arrow-tool", tool === "arrow");
 }
@@ -13677,7 +13679,6 @@ function closeTableView() {
   state.table = null;
   for (const card of t.cards.values()) {
     clearTimeout(card.renderTimer);
-    clearTimeout(card.textTimer);
   }
   for (const pdf of t.pdfs.values()) pdf.then((doc) => doc.destroy()).catch(() => {});
   dom.tableStage.replaceChildren();
@@ -13703,18 +13704,34 @@ function handleTableSocketMessage(message) {
   const t = state.table;
   if (!t || t.roomId !== message.roomId) return;
   if (message.type === "table:state") {
+    // 처음 열 때, 또는 서버가 내 메모지 op 를 받지 못해 되돌릴 때 온다 — 카드를 전부 새로 만든다.
+    for (const card of t.cards.values()) clearTimeout(card.renderTimer);
+    t.cards.clear();
+    t.selected = "";
+    t.drag = null;
+    dom.tableStage.replaceChildren();
     for (const item of message.items || []) upsertTableCard(item);
     placeTableArrows(t); // 화살표가 붙은 카드보다 먼저 왔을 수 있다
-    centerTableView(t);
+    if (!t.loaded) centerTableView(t);
+    t.loaded = true;
     setTableStatus(t.cards.size ? "" : "빈 곳을 더블클릭해 메모지를 붙이거나, 파일을 끌어다 놓거나 붙여넣으세요", "muted");
   } else if (message.type === "table:item") {
+    const fresh = !t.cards.has(message.item.id);
     upsertTableCard(message.item);
     setTableStatus("");
+    // 내가 방금 붙인 메모지는 바로 쓴다. 채팅 등 다른 입력칸에서 쓰는 중이면 포커스를 뺏지 않는다.
+    const card = t.cards.get(message.item.id);
+    if (fresh && card.text && message.by === state.clientId && !document.activeElement?.closest("input, textarea, select, [contenteditable]")) {
+      selectTableItem(t, card.item.id);
+      editTableNote(card);
+    }
+  } else if (message.type === "table:text") {
+    const card = t.cards.get(message.itemId);
+    if (card?.text) applyTableNoteText(card, message);
   } else if (message.type === "table:remove") {
     const card = t.cards.get(message.itemId);
     if (!card) return;
     clearTimeout(card.renderTimer);
-    clearTimeout(card.textTimer);
     card.el.remove();
     t.cards.delete(message.itemId);
     if (t.selected === message.itemId) t.selected = "";
@@ -13730,11 +13747,10 @@ function upsertTableCard(item) {
     t.cards.set(item.id, card);
     dom.tableStage.append(card.el);
   }
-  // 끌고 있는 카드·쓰고 있는 메모지는 서버 메아리보다 내 손이 최신이다.
-  const held = t.drag?.card === card ? { x: previous.x, y: previous.y, w: previous.w, h: previous.h } : null;
-  // ponytail: 같은 메모지를 둘이 동시에 쓰면 마지막에 보낸 글이 이긴다. 자주 겹치면 메모장처럼 OT 로 바꿀 것.
-  const typing = card.text && document.activeElement === card.text ? { text: previous.text } : null;
-  card.item = { ...item, ...held, ...typing };
+  // 끌고 있는 카드·화살표는 서버 메아리보다 내 손이 최신이다. 메모지 글은 table:text(OT)로만 바뀐다.
+  const dragging = t.drag?.card === card;
+  const held = !dragging ? null : item.kind === "arrow" ? { from: previous.from, to: previous.to } : { x: previous.x, y: previous.y, w: previous.w, h: previous.h };
+  card.item = { ...item, ...held, ...(previous && card.text ? { text: card.text.value } : null) };
   placeTableCard(card);
   if (item.kind === "pdf" && (!previous || previous.page !== item.page || previous.w !== item.w)) scheduleTablePdfRender(card);
 }
@@ -13758,13 +13774,21 @@ function placeTableArrows(t, itemId) {
   }
 }
 
-// 끝점 둘을 월드 좌표로. 카드에 붙은 쪽은 카드 가운데에서 상대 쪽으로 그은 선이 테두리와 만나는 점.
+// 카드의 연결점 a(TABLE_ANCHORS 번호)를 월드 좌표로. gap 만큼 카드 바깥으로 띄운다.
+function tableAnchorPoint(item, a, gap = 0) {
+  const [fx, fy] = TABLE_ANCHORS[a];
+  return { x: item.x + item.w * fx + Math.sign(fx - 0.5) * gap, y: item.y + item.h * fy + Math.sign(fy - 0.5) * gap };
+}
+
+// 끝점 둘을 월드 좌표로. 연결점에 붙은 쪽은 그 점, 연결점 없이 카드에 붙은 쪽(예전 화살표)은
+// 카드 가운데에서 상대 쪽으로 그은 선이 테두리와 만나는 점.
 function tableArrowPoints(t, arrow) {
   const resolve = (end) => {
     if (!end) return null;
     if (!end.id) return { x: end.x, y: end.y, rect: null };
     const target = t.cards.get(end.id)?.item;
     if (!target || target.kind === "arrow") return null;
+    if (Number.isInteger(end.a)) return { ...tableAnchorPoint(target, end.a, TABLE_ARROW_GAP), rect: null };
     return { x: target.x + target.w / 2, y: target.y + target.h / 2, rect: target };
   };
   const a = resolve(arrow.from);
@@ -13797,6 +13821,10 @@ function placeTableArrow(card) {
   const line = `M${x1} ${y1}L${x2} ${y2}`;
   card.hit.setAttribute("d", line);
   card.line.setAttribute("d", `${line}M${wing(0.5)}L${x2} ${y2}L${wing(-0.5)}`);
+  card.ends.from.setAttribute("cx", x1);
+  card.ends.from.setAttribute("cy", y1);
+  card.ends.to.setAttribute("cx", x2);
+  card.ends.to.setAttribute("cy", y2);
 }
 
 function buildTableArrow(item) {
@@ -13808,8 +13836,16 @@ function buildTableArrow(item) {
   hit.classList.add("table-arrow-hit");
   const line = document.createElementNS(svgNs, "path");
   line.classList.add("table-arrow-line");
-  svg.append(hit, line);
-  return { el: svg, item, hit, line };
+  // 고른 화살표의 두 끝 손잡이 — 끌어서 다른 곳에 다시 붙인다.
+  const ends = {};
+  for (const end of ["from", "to"]) {
+    ends[end] = document.createElementNS(svgNs, "circle");
+    ends[end].classList.add("table-arrow-end");
+    ends[end].dataset.arrowEnd = end;
+    ends[end].setAttribute("r", "6");
+  }
+  svg.append(hit, line, ends.from, ends.to);
+  return { el: svg, item, hit, line, ends };
 }
 
 function buildTableNote(item) {
@@ -13842,7 +13878,9 @@ function buildTableNote(item) {
   text.readOnly = true;
   text.spellcheck = false;
   text.maxLength = 4000; // 서버 TABLE_NOTE_TEXT_MAX 와 같게
-  const card = { el: cardEl, item, tools, text, size, remove, resize: el("div", "table-card-resize"), textTimer: 0, renderTimer: 0 };
+  text.value = item.text || "";
+  // base = 서버가 확인한 글, rev = 그 글의 OT 번호, inflight = 보내고 확인을 기다리는 op(한 번에 하나)
+  const card = { el: cardEl, item, tools, text, size, remove, resize: el("div", "table-card-resize"), renderTimer: 0, base: text.value, rev: item.rev || 0, inflight: null, composing: false, queue: [] };
   cardEl.append(tools, text, card.resize);
   renderTableCardControls(card);
   return card;
@@ -13853,24 +13891,66 @@ function renderTableNote(card) {
   card.el.dataset.color = String(item.color || 0);
   text.style.fontSize = `${item.size || 16}px`;
   size.value = String(item.size || 16);
-  if (document.activeElement !== text && text.value !== (item.text || "")) text.value = item.text || "";
 }
 
 function editTableNote(card) {
   if (!state.table?.writable || !card.text.readOnly) return;
   card.text.readOnly = false;
-  card.text.focus();
+  card.text.focus({ preventScroll: true }); // 보드(overflow:hidden)가 저절로 스크롤되지 않게
   card.text.setSelectionRange(card.text.value.length, card.text.value.length);
 }
 
-function queueTableNoteText(card) {
+// 메모지 동시 입력 — 메모장과 같은 OT. 확인을 기다리는 동안 더 친 글은 따로 쌓지 않고,
+// 확인(ack)이 오면 textarea 값과 base 를 비교해 한 번에 보낸다(ot-text.js 에 compose 가 없어서).
+function flushTableNoteText(card) {
+  const t = state.table;
   card.item.text = card.text.value;
-  card.dirty = true;
-  if (card.textTimer) return;
-  card.textTimer = setTimeout(() => {
-    card.textTimer = 0;
-    if (state.table?.cards.get(card.item.id) === card) sendTableUpdate(card.item.id, { text: card.item.text });
-  }, TABLE_TEXT_THROTTLE);
+  if (card.inflight || !t?.writable) return;
+  const op = window.OTText.fromDiff(card.base, card.text.value);
+  if (!op.length) return;
+  card.inflight = op;
+  sendSocket({ type: "table:text", roomId: t.roomId, itemId: card.item.id, rev: card.rev, ops: op });
+}
+
+// 남의 op r 을 내 미확정 op(inflight)와 아직 안 보낸 글 뒤로 옮긴다. 옆 쪽 규칙은 메모장 handleMemoOp 과 같다.
+// 돌려주는 op 는 지금 textarea 값(value)에 적용할 것.
+function rebaseTableNoteText(OT, base, inflight, value, r) {
+  const pending = OT.fromDiff(inflight ? OT.apply(base, inflight) : base, value);
+  const next = { base: OT.apply(base, r), inflight };
+  if (inflight) {
+    next.inflight = OT.transform(inflight, r, "right");
+    r = OT.transform(r, inflight, "left");
+  }
+  next.op = OT.transform(r, pending, "left");
+  next.value = OT.apply(value, next.op);
+  return next;
+}
+
+function applyTableNoteText(card, message) {
+  // 한글 조합 중에 값을 바꾸면 조합이 깨지므로 끝날 때까지 미뤄 둔다(compositionend 에서 처리).
+  if (card.composing) {
+    card.queue.push(message);
+    return;
+  }
+  const OT = window.OTText;
+  card.rev = message.rev;
+  if (message.by === state.clientId) {
+    card.base = OT.apply(card.base, message.ops);
+    card.inflight = null;
+    flushTableNoteText(card); // 기다리는 동안 더 친 글
+    return;
+  }
+  const { text } = card;
+  const { selectionStart, selectionEnd } = text;
+  const next = rebaseTableNoteText(OT, card.base, card.inflight, text.value, message.ops);
+  card.base = next.base;
+  card.inflight = next.inflight;
+  // ponytail: 값을 통째로 바꿔서 남이 쓴 뒤에는 내 실행 취소(Ctrl+Z) 기록이 끊긴다.
+  text.value = next.value;
+  card.item.text = next.value;
+  if (document.activeElement === text) {
+    text.setSelectionRange(OT.transformCursor(selectionStart, next.op, "left"), OT.transformCursor(selectionEnd, next.op, "left"));
+  }
 }
 
 function addTableNote(t, at, fields) {
@@ -13937,7 +14017,7 @@ function renderTableCardControls(card) {
   card.resize.hidden = !writable;
   if (card.text) {
     card.tools.hidden = !writable;
-    card.text.placeholder = writable ? "더블클릭해서 쓰기" : "";
+    card.text.placeholder = writable ? "눌러서 쓰기" : "";
     if (!writable) card.text.readOnly = true;
   }
   card.el.querySelectorAll("[data-table-page]").forEach((button) => { button.disabled = !writable; });
@@ -13955,22 +14035,48 @@ function removeTableItem(t, itemId) {
   sendSocket({ type: "table:remove", roomId: t.roomId, itemId });
 }
 
-// 화살표 끝점: 손을 뗀 곳에 카드가 있으면 그 카드에 붙인다.
-function tableArrowEndAt(t, event) {
-  const hit = document.elementFromPoint(event.clientX, event.clientY)?.closest(".table-card");
-  if (hit && t.cards.has(hit.dataset.tableItem)) return { id: hit.dataset.tableItem };
+// 화살표 끝점: 포인터가 카드(둘레 TABLE_SNAP 화면 px 포함) 위면 맨 위 카드의 가장 가까운 연결점에, 아니면 허공 좌표.
+// except = 반대쪽 끝이 붙은 카드(같은 카드 양끝에 붙지 않게).
+function tableArrowEndAt(t, event, except) {
   const p = tableWorldPoint(t, event.clientX, event.clientY);
-  return { x: Math.round(p.x), y: Math.round(p.y) };
+  const reach = TABLE_SNAP / tableScreenScale(t);
+  let top = null;
+  for (const { item } of t.cards.values()) {
+    if (item.kind === "arrow" || item.id === except) continue;
+    const near = p.x >= item.x - reach && p.x <= item.x + item.w + reach && p.y >= item.y - reach && p.y <= item.y + item.h + reach;
+    if (near && (!top || item.z > top.z)) top = item;
+  }
+  if (!top) return { x: Math.round(p.x), y: Math.round(p.y) };
+  const dist = (a) => { const q = tableAnchorPoint(top, a); return Math.hypot(q.x - p.x, q.y - p.y); };
+  let a = 0;
+  for (let i = 1; i < TABLE_ANCHORS.length; i++) if (dist(i) < dist(a)) a = i;
+  return { id: top.id, a };
 }
 
-function finishTableArrow(t, event, cancelled) {
+// 화살표 끝을 그리거나 끄는 동안 붙을 카드의 연결점을 보여 준다(붙을 점은 채워서). end 가 허공이면 숨긴다.
+function showTableSnap(t, end) {
+  const target = end?.id && t.cards.get(end.id)?.item;
+  t.snapEl ||= el("div", "table-snap");
+  if (!target) {
+    t.snapEl.remove();
+    return;
+  }
+  t.snapEl.replaceChildren(...TABLE_ANCHORS.map((_, a) => {
+    const p = tableAnchorPoint(target, a);
+    const dot = el("i", a === end.a ? "on" : "");
+    dot.style.cssText = `left:${p.x}px;top:${p.y}px`;
+    return dot;
+  }));
+  dom.tableStage.append(t.snapEl);
+}
+
+function finishTableArrow(t, cancelled) {
   const draft = t.arrowDraft;
   t.arrowDraft = null;
   draft.el.remove();
   setTableTool(t, "select");
   if (cancelled) return;
-  const { from } = draft.item;
-  const to = tableArrowEndAt(t, event);
+  const { from, to } = draft.item;
   if (from.id && from.id === to.id) return;
   if (!from.id && !to.id && Math.hypot(from.x - to.x, from.y - to.y) < 10) return;
   sendSocket({ type: "table:add", roomId: t.roomId, kind: "arrow", from, to });
@@ -14157,7 +14263,7 @@ function bindTableEvents() {
     }
     if (editable(event.target) || outside(event.target)) return;
     if (event.key === "Escape") {
-      if (t.arrowDraft) finishTableArrow(t, null, true);
+      if (t.arrowDraft) finishTableArrow(t, true);
       setTableTool(t, "select");
       selectTableItem(t, "");
     } else if ((event.key === "Delete" || event.key === "Backspace") && t.selected && t.writable) {
@@ -14187,31 +14293,29 @@ function bindTableEvents() {
     if (!state.table || !event.target.classList.contains("table-note-size")) return;
     sendTableUpdate(event.target.closest(".table-card").dataset.tableItem, { size: Number(event.target.value) });
   });
+  const noteOf = (target) => target.classList?.contains("table-note-text") && state.table?.cards.get(target.closest(".table-card").dataset.tableItem);
   scroll.addEventListener("input", (event) => {
-    const card = event.target.classList.contains("table-note-text") && state.table?.cards.get(event.target.closest(".table-card").dataset.tableItem);
-    if (card) queueTableNoteText(card);
+    const card = noteOf(event.target);
+    if (card) flushTableNoteText(card);
+  });
+  scroll.addEventListener("compositionstart", (event) => {
+    const card = noteOf(event.target);
+    if (card) card.composing = true;
+  });
+  scroll.addEventListener("compositionend", (event) => {
+    const card = noteOf(event.target);
+    if (!card) return;
+    card.composing = false;
+    for (const message of card.queue.splice(0)) applyTableNoteText(card, message);
+    flushTableNoteText(card);
   });
   scroll.addEventListener("focusout", (event) => {
-    const t = state.table;
-    const card = event.target.classList.contains("table-note-text") && t?.cards.get(event.target.closest(".table-card").dataset.tableItem);
-    if (!card) return;
-    card.text.readOnly = true;
-    clearTimeout(card.textTimer);
-    card.textTimer = 0;
-    if (t.writable && card.dirty) sendTableUpdate(card.item.id, { text: card.text.value });
-    card.dirty = false;
+    if (event.target.classList.contains("table-note-text")) event.target.readOnly = true;
   });
-  // 메모지 더블클릭 = 쓰기, 빈 곳 더블클릭 = 새 메모지.
+  // 빈 곳 더블클릭 = 새 메모지(메모지는 한 번 누르면 바로 쓴다).
   scroll.addEventListener("dblclick", (event) => {
     const t = state.table;
-    if (!t?.writable || t.tool !== "select") return;
-    const noteEl = event.target.closest(".table-note");
-    if (noteEl) {
-      const card = t.cards.get(noteEl.dataset.tableItem);
-      if (card && !event.target.closest(".table-note-tools")) editTableNote(card);
-      return;
-    }
-    if (event.target.closest(".table-card, .table-arrow")) return;
+    if (!t?.writable || t.tool !== "select" || event.target.closest(".table-card, .table-arrow")) return;
     addTableNote(t, tableWorldPoint(t, event.clientX, event.clientY));
   });
   scroll.addEventListener("pointerdown", (event) => {
@@ -14231,8 +14335,8 @@ function bindTableEvents() {
     if (event.button !== 0) return;
     if (t.tool === "arrow") {
       if (!t.writable) return;
-      const p = tableWorldPoint(t, event.clientX, event.clientY);
-      const draft = buildTableArrow({ id: "", kind: "arrow", from: tableArrowEndAt(t, event), to: p, z: 1e9 });
+      const from = tableArrowEndAt(t, event);
+      const draft = buildTableArrow({ id: "", kind: "arrow", from, to: from, z: 1e9 });
       draft.el.classList.add("draft");
       dom.tableStage.append(draft.el);
       t.arrowDraft = draft;
@@ -14243,7 +14347,15 @@ function bindTableEvents() {
     }
     selectTableItem(t, onItem.dataset.tableItem);
     const card = t.cards.get(onItem.dataset.tableItem);
-    if (!card || card.item.kind === "arrow" || !t.writable) return;
+    if (!card || !t.writable) return;
+    if (card.item.kind === "arrow") {
+      // 끝 손잡이 = 그 끝을 다른 곳에 다시 붙이기, 선 = 화살표 옮기기(카드에 붙은 끝은 그대로 둔다)
+      const { from, to } = card.item;
+      t.drag = { card, end: event.target.closest("[data-arrow-end]")?.dataset.arrowEnd || "", startX: event.clientX, startY: event.clientY, from, to, moved: false };
+      card.el.setPointerCapture(event.pointerId);
+      event.preventDefault();
+      return;
+    }
     if (event.target.closest("button, a, select") || (event.target === card.text && !card.text.readOnly)) return;
     const resize = event.target.closest(".table-card-resize");
     if (card.item.kind !== "note" && !resize && !event.target.closest(".table-card-head")) return;
@@ -14262,8 +14374,14 @@ function bindTableEvents() {
       return;
     }
     if (t.arrowDraft) {
-      t.arrowDraft.item.to = tableWorldPoint(t, event.clientX, event.clientY);
+      const { item } = t.arrowDraft;
+      item.to = tableArrowEndAt(t, event, item.from.id);
+      showTableSnap(t, item.to);
       placeTableArrow(t.arrowDraft);
+      return;
+    }
+    if (t.tool === "arrow") {
+      showTableSnap(t, tableArrowEndAt(t, event)); // 그리기 전에도 붙을 점을 미리 보여 준다
       return;
     }
     const drag = t.drag;
@@ -14272,6 +14390,19 @@ function bindTableEvents() {
     const dx = (event.clientX - drag.startX) / scale;
     const dy = (event.clientY - drag.startY) / scale;
     const { item } = drag.card;
+    if (item.kind === "arrow") {
+      if (drag.end) {
+        item[drag.end] = tableArrowEndAt(t, event, item[drag.end === "from" ? "to" : "from"].id);
+        showTableSnap(t, item[drag.end]);
+      } else {
+        const move = (end) => (end.id ? end : { x: Math.round(end.x + dx), y: Math.round(end.y + dy) });
+        item.from = move(drag.from);
+        item.to = move(drag.to);
+      }
+      drag.moved = true;
+      placeTableArrow(drag.card); // 화살표는 손을 뗄 때 한 번만 보낸다
+      return;
+    }
     if (drag.resize) {
       item.w = Math.max(TABLE_CARD_MIN, Math.round(drag.w + dx));
       item.h = Math.max(TABLE_CARD_MIN, Math.round(drag.h + dy));
@@ -14291,14 +14422,20 @@ function bindTableEvents() {
     if (!t) return;
     t.pan = null;
     if (t.arrowDraft) {
-      finishTableArrow(t, event, event.type === "pointercancel");
+      finishTableArrow(t, event.type === "pointercancel");
       return;
     }
     if (!t.drag) return;
-    const { card, moved } = t.drag;
+    const { card, moved, resize } = t.drag;
     t.drag = null;
+    showTableSnap(t, null);
     const { item } = card;
-    if (moved) sendTableUpdate(item.id, { x: item.x, y: item.y, w: item.w, h: item.h }); // 마지막 위치 확정(서버 메아리로 맨 앞으로 올라온다)
+    if (!moved) {
+      if (card.text && !resize && event.type === "pointerup") editTableNote(card); // 메모지는 누르면 바로 쓴다(끌면 옮기기)
+      return;
+    }
+    // 마지막 위치 확정(서버 메아리로 맨 앞으로 올라온다)
+    sendTableUpdate(item.id, item.kind === "arrow" ? { from: item.from, to: item.to } : { x: item.x, y: item.y, w: item.w, h: item.h });
   };
   scroll.addEventListener("pointerup", finish);
   scroll.addEventListener("pointercancel", finish);

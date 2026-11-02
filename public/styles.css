@@ -1886,7 +1886,7 @@ body.table-open .log-panel {
   cursor: nwse-resize;
   background: linear-gradient(135deg, transparent 50%, var(--wb-line) 50%);
 }
-/* 메모지 — 아무 데나 끌어 옮기고, 더블클릭하면 쓴다 */
+/* 메모지 — 끌면 옮기고, 누르면 바로 쓴다 */
 .table-note {
   overflow: visible;
   border: 0;
@@ -1971,6 +1971,14 @@ body.table-open .log-panel {
 .table-arrow.selected .table-arrow-line { stroke: var(--blurple); }
 .table-arrow.draft path { pointer-events: none; }
 .table-arrow.draft .table-arrow-line { stroke: var(--blurple); stroke-dasharray: 6 5; }
+/* 고른 화살표는 카드 위로 올려 끝 손잡이가 가려지지 않게 */
+.table-arrow.selected { z-index: 1000000 !important; }
+.table-arrow-end { display: none; fill: var(--wb-card); stroke: var(--blurple); stroke-width: 2px; pointer-events: all; cursor: grab; }
+.table-arrow.selected .table-arrow-end { display: inline; }
+/* 화살표 연결점(꼭짓점·변 가운데) */
+.table-snap { position: absolute; left: 0; top: 0; z-index: 1000001; pointer-events: none; }
+.table-snap i { position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; border: 2px solid var(--blurple); border-radius: 50%; background: var(--wb-card); box-sizing: border-box; }
+.table-snap i.on { background: var(--blurple); }
 .draw-panel {
   display: none;
   flex-direction: column;
