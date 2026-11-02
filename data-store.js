@@ -1936,7 +1936,13 @@ function cleanTableEnd(raw, fallback) {
 // id·kind·url·name 은 item 쪽 값만 쓴다(수신 값으로 못 바꾼다).
 function cleanTableItem(item, raw) {
   if (item.kind === "arrow") {
-    return { ...item, from: cleanTableEnd(raw.from, item.from), to: cleanTableEnd(raw.to, item.to) };
+    const next = { ...item, from: cleanTableEnd(raw.from, item.from), to: cleanTableEnd(raw.to, item.to) };
+    // 휜 화살표: 곡선 가운데가 두 끝을 이은 직선 가운데에서 비켜난 거리. null 이면 곧게 편다.
+    if (raw.bend === null) delete next.bend;
+    else if (raw.bend && typeof raw.bend === "object") {
+      next.bend = { x: cleanTableNumber(raw.bend.x, -TABLE_WORLD, TABLE_WORLD, 0), y: cleanTableNumber(raw.bend.y, -TABLE_WORLD, TABLE_WORLD, 0) };
+    }
+    return next;
   }
   const next = {
     ...item,

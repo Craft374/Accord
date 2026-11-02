@@ -13754,7 +13754,7 @@ function upsertTableCard(item) {
   }
   // 끌고 있는 카드·화살표는 서버 메아리보다 내 손이 최신이다. 메모지 글은 table:text(OT)로만 바뀐다.
   const dragging = t.drag?.card === card;
-  const held = !dragging ? null : item.kind === "arrow" ? { from: previous.from, to: previous.to } : { x: previous.x, y: previous.y, w: previous.w, h: previous.h };
+  const held = !dragging ? null : item.kind === "arrow" ? { from: previous.from, to: previous.to, bend: previous.bend } : { x: previous.x, y: previous.y, w: previous.w, h: previous.h };
   card.item = { ...item, ...held, ...(previous && card.text ? { text: card.text.value } : null) };
   placeTableCard(card);
   if (item.kind === "pdf" && (!previous || previous.page !== item.page || previous.w !== item.w)) scheduleTablePdfRender(card);
@@ -13816,14 +13816,17 @@ function placeTableArrow(card) {
     return;
   }
   const [p, q] = points;
+  // 휜 화살표는 2차 곡선 — 조절점 c 를 가운데에서 bend 의 두 배만큼 옮기면 곡선 가운데가 정확히 bend 만큼 비켜 지나간다.
+  const { bend } = card.item;
+  const c = { x: (p.x + q.x) / 2 + 2 * (bend?.x || 0), y: (p.y + q.y) / 2 + 2 * (bend?.y || 0) };
   const pad = 16;
-  const left = Math.min(p.x, q.x) - pad;
-  const top = Math.min(p.y, q.y) - pad;
-  card.el.style.cssText = `left:${left}px;top:${top}px;width:${Math.abs(p.x - q.x) + pad * 2}px;height:${Math.abs(p.y - q.y) + pad * 2}px;z-index:${card.item.z || 0}`;
-  const x1 = p.x - left, y1 = p.y - top, x2 = q.x - left, y2 = q.y - top;
-  const angle = Math.atan2(y2 - y1, x2 - x1);
+  const left = Math.min(p.x, q.x, c.x) - pad;
+  const top = Math.min(p.y, q.y, c.y) - pad;
+  card.el.style.cssText = `left:${left}px;top:${top}px;width:${Math.max(p.x, q.x, c.x) - left + pad}px;height:${Math.max(p.y, q.y, c.y) - top + pad}px;z-index:${card.item.z || 0}`;
+  const x1 = p.x - left, y1 = p.y - top, x2 = q.x - left, y2 = q.y - top, cx = c.x - left, cy = c.y - top;
+  const angle = Math.atan2(y2 - cy, x2 - cx); // 화살촉은 끝에서의 곡선 방향
   const wing = (a) => `${x2 - 13 * Math.cos(angle + a)} ${y2 - 13 * Math.sin(angle + a)}`;
-  const line = `M${x1} ${y1}L${x2} ${y2}`;
+  const line = bend ? `M${x1} ${y1}Q${cx} ${cy} ${x2} ${y2}` : `M${x1} ${y1}L${x2} ${y2}`;
   card.hit.setAttribute("d", line);
   card.line.setAttribute("d", `${line}M${wing(0.5)}L${x2} ${y2}L${wing(-0.5)}`);
   card.ends.from.setAttribute("cx", x1);
@@ -13884,17 +13887,25 @@ function buildTableNote(item) {
   text.spellcheck = false;
   text.maxLength = 4000; // 서버 TABLE_NOTE_TEXT_MAX 와 같게
   text.value = item.text || "";
+  // 쓰지 않을 때 보이는 마크다운 화면(쓰는 동안은 textarea 원문). 링크가 앱 창을 옮기지 않게 눌리지 않는다.
+  const view = el("div", "table-note-view markdown-body");
   // base = 서버가 확인한 글, rev = 그 글의 OT 번호, inflight = 보내고 확인을 기다리는 op(한 번에 하나)
-  const card = { el: cardEl, item, tools, text, size, remove, resize: el("div", "table-card-resize"), renderTimer: 0, base: text.value, rev: item.rev || 0, inflight: null, composing: false, queue: [] };
-  cardEl.append(tools, text, card.resize);
+  const card = { el: cardEl, item, tools, text, view, size, remove, resize: el("div", "table-card-resize"), renderTimer: 0, base: text.value, rev: item.rev || 0, inflight: null, composing: false, queue: [] };
+  cardEl.append(tools, text, view, card.resize);
   renderTableCardControls(card);
+  renderTableNoteView(card);
   return card;
+}
+
+function renderTableNoteView(card) {
+  card.view.innerHTML = card.text.value ? renderMarkdown(card.text.value) : ""; // 이스케이프 후 변환하는 안전한 렌더러
 }
 
 function renderTableNote(card) {
   const { item, text, size } = card;
   card.el.dataset.color = String(item.color || 0);
   text.style.fontSize = `${item.size || 16}px`;
+  card.view.style.fontSize = text.style.fontSize;
   size.value = String(item.size || 16);
 }
 
@@ -13953,6 +13964,7 @@ function applyTableNoteText(card, message) {
   // ponytail: 값을 통째로 바꿔서 남이 쓴 뒤에는 내 실행 취소(Ctrl+Z) 기록이 끊긴다.
   text.value = next.value;
   card.item.text = next.value;
+  renderTableNoteView(card);
   if (document.activeElement === text) {
     text.setSelectionRange(OT.transformCursor(selectionStart, next.op, "left"), OT.transformCursor(selectionEnd, next.op, "left"));
   }
@@ -14031,7 +14043,16 @@ async function loadTableDoc(body, item) {
     const res = await fetch(`${serverUrl}${item.url}`, { headers: { range: `bytes=0-${TABLE_TEXT_PREVIEW - 1}` } });
     if (!res.ok) throw new Error(String(res.status));
     const text = (await res.text()).slice(0, TABLE_TEXT_PREVIEW);
-    if (/\.(md|markdown)$/i.test(item.url)) {
+    if (/\.html?$/i.test(item.url)) {
+      // 올린 HTML 은 격리된 iframe 에 그린다. sandbox 는 srcdoc·append 전에 걸어야 적용된다.
+      // 스크립트·폼·팝업이 다 막히고 출처도 분리된다 — allow-same-origin 은 절대 넣지 않는다(로그인 토큰 노출).
+      const frame = document.createElement("iframe");
+      frame.setAttribute("sandbox", "");
+      frame.title = item.name;
+      frame.srcdoc = text;
+      body.className = "table-card-body html";
+      body.replaceChildren(frame);
+    } else if (/\.(md|markdown)$/i.test(item.url)) {
       body.className = "table-card-body doc markdown-body";
       body.innerHTML = renderMarkdown(text); // 이스케이프 후 변환하는 안전한 렌더러
     } else {
@@ -14051,7 +14072,8 @@ function renderTableCardControls(card) {
   card.resize.hidden = !writable;
   if (card.text) {
     card.tools.hidden = !writable;
-    card.text.placeholder = writable ? "눌러서 쓰기" : "";
+    card.text.placeholder = writable ? "눌러서 쓰기 (마크다운)" : "";
+    card.view.dataset.placeholder = writable ? "눌러서 쓰기" : "";
     if (!writable) card.text.readOnly = true;
   }
   card.el.querySelectorAll("[data-table-page]").forEach((button) => { button.disabled = !writable; });
@@ -14191,6 +14213,7 @@ async function renderTablePdf(card) {
 
 // 이미지·영상은 원본 비율대로 카드를 잡는다. 글·소리는 정해 둔 크기, PDF·그 밖의 파일은 서버 기본 크기.
 async function tableCardSize(file) {
+  if (/\.html?$/i.test(file.name)) return { w: 640, h: 480 };
   if (TABLE_TEXT_RE.test(file.name)) return { w: 420, h: 360 };
   if (TABLE_AUDIO_RE.test(file.name)) return { w: 360, h: 100 };
   const video = TABLE_VIDEO_RE.test(file.name);
@@ -14371,11 +14394,20 @@ function bindTableEvents() {
     flushTableNoteText(card);
   });
   scroll.addEventListener("focusout", (event) => {
-    if (event.target.classList.contains("table-note-text")) event.target.readOnly = true;
+    const card = noteOf(event.target);
+    if (!card) return;
+    card.text.readOnly = true;
+    renderTableNoteView(card);
   });
   // 빈 곳 더블클릭 = 새 메모지(메모지는 한 번 누르면 바로 쓴다).
   scroll.addEventListener("dblclick", (event) => {
     const t = state.table;
+    // 휜 화살표 더블클릭 = 곧게 펴기
+    const arrowId = event.target.closest(".table-arrow")?.dataset.tableItem;
+    if (t?.writable && arrowId && t.cards.get(arrowId)?.item.bend) {
+      sendTableUpdate(arrowId, { bend: null });
+      return;
+    }
     if (!t?.writable || t.tool !== "select" || event.target.closest(".table-card, .table-arrow, .table-snap")) return;
     addTableNote(t, tableWorldPoint(t, event.clientX, event.clientY));
   });
@@ -14413,9 +14445,10 @@ function bindTableEvents() {
     const card = t.cards.get(onItem.dataset.tableItem);
     if (!card || !t.writable) return;
     if (card.item.kind === "arrow") {
-      // 끝 손잡이 = 그 끝을 다른 곳에 다시 붙이기, 선 = 화살표 옮기기(카드에 붙은 끝은 그대로 둔다)
-      const { from, to } = card.item;
-      t.drag = { card, end: event.target.closest("[data-arrow-end]")?.dataset.arrowEnd || "", startX: event.clientX, startY: event.clientY, from, to, moved: false };
+      // 끝 손잡이 = 그 끝을 다른 곳에 다시 붙이기. 선 = 화살표 옮기기(카드에 붙은 끝은 그대로),
+      // 양끝이 다 카드에 붙어 있으면 붙은 채로 휘기.
+      const { from, to, bend } = card.item;
+      t.drag = { card, end: event.target.closest("[data-arrow-end]")?.dataset.arrowEnd || "", startX: event.clientX, startY: event.clientY, from, to, bend, moved: false };
       card.el.setPointerCapture(event.pointerId);
       event.preventDefault();
       return;
@@ -14462,6 +14495,8 @@ function bindTableEvents() {
       if (drag.end) {
         item[drag.end] = tableArrowEndAt(t, event, item[drag.end === "from" ? "to" : "from"].id);
         showTableSnap(t, item[drag.end]);
+      } else if (drag.from.id && drag.to.id) {
+        item.bend = { x: Math.round((drag.bend?.x || 0) + dx), y: Math.round((drag.bend?.y || 0) + dy) };
       } else {
         const move = (end) => (end.id ? end : { x: Math.round(end.x + dx), y: Math.round(end.y + dy) });
         item.from = move(drag.from);
@@ -14503,7 +14538,7 @@ function bindTableEvents() {
       return;
     }
     // 마지막 위치 확정(서버 메아리로 맨 앞으로 올라온다)
-    sendTableUpdate(item.id, item.kind === "arrow" ? { from: item.from, to: item.to } : { x: item.x, y: item.y, w: item.w, h: item.h });
+    sendTableUpdate(item.id, item.kind === "arrow" ? { from: item.from, to: item.to, bend: item.bend || null } : { x: item.x, y: item.y, w: item.w, h: item.h });
   };
   scroll.addEventListener("pointerleave", () => {
     const t = state.table;

@@ -541,10 +541,13 @@ const reviews = [
       const arrow = clean({ id: "c3", kind: "arrow", from: { x: 0, y: 0 }, to: { x: 0, y: 0 } }, { from: { id: "0123456789ab", a: 3 }, to: { x: 1e9, y: -5 }, x: 5 });
       const badAnchor = clean(arrow, { to: { id: "0123456789ab", a: 8 } });
       const crlf = clean(note, { text: "a\r\nb\rc" });
+      const bent = clean(arrow, { bend: { x: 1e9, y: "7" } });
+      const straight = clean(bent, { bend: null });
       return moved.x === -300 && moved.y === 12 && moved.kind === "image" && moved.url === "/uploads/x" && !("text" in moved)
         && note.text.length === 4000 && note.color === 4 && note.size === 10
         && arrow.from.id === "0123456789ab" && arrow.from.a === 3 && arrow.to.x === 50000 && arrow.to.y === -5 && !("x" in arrow)
-        && badAnchor.from.a === 3 && !("a" in badAnchor.to) && crlf.text === "a\nb\nc";
+        && badAnchor.from.a === 3 && !("a" in badAnchor.to) && crlf.text === "a\nb\nc"
+        && bent.bend.x === 50000 && bent.bend.y === 7 && bent.from.a === 3 && !("bend" in straight) && "bend" in clean(bent, {});
     } catch { return false; }
   })(), "화이트보드 cleanTableItem: 음수 좌표 허용, kind·url 고정, 메모지·화살표 값 정리 (runtime)"],
   [app.includes("tableWorldPoint") && app.includes("buildTableNote") && app.includes("tableArrowPoints") && server.includes('message.kind === "arrow"'), "화이트보드 메모지·화살표·무한 캔버스가 연결돼 있다"],

@@ -1841,10 +1841,16 @@ body.table-open .log-panel {
   font-weight: 500;
   white-space: nowrap;
 }
+/* 내려받기(a)·지우기·쪽 넘김 버튼을 같은 상자로 — a 는 인라인이라 min-height 가 안 먹어 ↓ 가 위로 떠 보였다 */
 .table-card-head button,
 .table-card-head a {
-  min-height: 22px;
-  padding: 0 6px;
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  min-height: 0;
+  padding: 0;
+  line-height: 1;
   border: 0;
   border-radius: var(--radius-xs);
   background: transparent;
@@ -1870,6 +1876,8 @@ body.table-open .log-panel {
 }
 .table-card-body.file { background: transparent; color: var(--wb-muted); }
 .table-card-body.video { background: #000; }
+.table-card-body.html { background: #fff; }
+.table-card-body iframe { display: block; width: 100%; height: 100%; border: 0; }
 .table-card-body.audio { background: transparent; }
 .table-card-body video { width: 100%; height: 100%; object-fit: contain; }
 .table-card-body audio { width: calc(100% - 16px); }
@@ -1933,7 +1941,26 @@ body.table-open .log-panel {
   line-height: 1.35;
   cursor: text;
 }
-.table-note-text[readonly] { pointer-events: none; user-select: none; }
+/* 쓰지 않을 때는 textarea 를 숨기고 마크다운 화면을, 쓰는 동안은 원문을 보여 준다 */
+.table-note-text[readonly] { display: none; }
+.table-note-text:not([readonly]) + .table-note-view { display: none; }
+.table-note-view {
+  --text: var(--wb-note-text);
+  --heading: var(--wb-note-text);
+  --muted: var(--wb-note-text);
+  --line: rgba(127, 127, 127, 0.35);
+  --bg-surface: rgba(127, 127, 127, 0.15);
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: 14px;
+  color: var(--wb-note-text);
+  line-height: 1.35;
+  pointer-events: none;
+  user-select: none;
+}
+.table-note-view > :first-child { margin-top: 0; }
+.table-note-view:empty::before { content: attr(data-placeholder); opacity: 0.45; }
 .table-note-text::placeholder { color: inherit; opacity: 0.45; }
 /* 메모지 도구 막대 — 메모지 위 가운데에 뜨는 작은 막대(색 5개 | 글자 크기 | 지우기).
    전역 button·select 의 min-height(36~38px)를 꼭 풀어야 동그라미가 타원으로 늘어나지 않는다. */
