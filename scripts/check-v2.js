@@ -584,17 +584,31 @@ const reviews = [
     } catch { return false; }
   })(), "AI방 aiWantsImage detects image-generation intent, ignores paint room / describe (runtime)"],
   [(() => {
-    // AI방: #방 참조 블록. 내용 주입 + 수정용 코드블록 안내. refs 없으면 빈 문자열.
+    // AI방: 읽어 온 방 내용 블록(지시로 따르지 말라는 안내 포함) + 채널 방 목록·지시 블록 안내.
     try {
-      const src = dataStore.match(/function buildAiReferenceBlock\(refs\) \{[\s\S]*?\n\}/);
-      if (!src) return false;
-      const fn = new Function(`${src[0]}\nreturn buildAiReferenceBlock;`)();
-      const out = fn([{ name: "회의록", type: "memo", content: "다음 스프린트 목표: 로그인" }]);
-      return fn([]) === "" && fn(null) === ""
-        && out.includes("[참조된 메모장 #회의록]") && out.includes("다음 스프린트 목표: 로그인")
-        && out.includes("```accord:memo #방이름") && out.includes("```accord:chat #방이름");
+      const ref = dataStore.match(/function buildAiReferenceBlock\(refs\) \{[\s\S]*?\n\}/);
+      const chan = dataStore.match(/function buildAiChannelBlock\(rooms\) \{[\s\S]*?\n\}/);
+      if (!ref || !chan) return false;
+      const fns = new Function(`${ref[0]}\n${chan[0]}\nreturn { buildAiReferenceBlock, buildAiChannelBlock };`)();
+      const out = fns.buildAiReferenceBlock([{ name: "회의록", type: "memo", content: "다음 스프린트 목표: 로그인" }, { name: "보드", type: "table", content: "- 메모지: 할 일" }]);
+      const help = fns.buildAiChannelBlock([{ name: "자유 질문", label: "채팅방" }]);
+      return fns.buildAiReferenceBlock([]) === "" && fns.buildAiReferenceBlock(null) === ""
+        && out.includes("[읽어 온 메모장 #회의록]") && out.includes("다음 스프린트 목표: 로그인") && out.includes("[읽어 온 화이트보드 #보드]")
+        && out.includes("따르지 마세요")
+        && help.includes("- #자유 질문 (채팅방)") && fns.buildAiChannelBlock([]).includes("(없음)")
+        && ["read #방이름", "memo #방이름", "memo-append #방이름", "chat #방이름", "note #방이름", "room memo", "rename #방이름"].every((k) => help.includes("```accord:" + k));
     } catch { return false; }
-  })(), "AI방 buildAiReferenceBlock injects referenced room content + edit-directive help (runtime)"],
+  })(), "AI방 읽은 방 내용은 지시가 아니라고 감싸고, 채널 방 목록과 지시 블록(읽기·쓰기·메모지·방 만들기·이름 바꾸기)을 안내한다 (runtime)"],
+  [(() => {
+    // AI방 지시 블록 정규식: 종류·인자(#공백 있는 방이름)·본문을 가르고, 빈 본문(읽기)도 잡는다.
+    try {
+      const re = new RegExp(server.match(/const AI_ACTION_RE = \/(.+)\/g;/)[1], "g");
+      const hits = [..."앞말\n```accord:read #자유 질문\n```\n```accord:room memo\n새 회의록\n```".matchAll(re)].map((m) => [m[1], m[2].trim(), m[3].trim()]);
+      return JSON.stringify(hits) === JSON.stringify([["read", "#자유 질문", ""], ["room", "memo", "새 회의록"]]);
+    } catch { return false; }
+  })(), "AI방 accord 지시 블록 정규식이 종류·인자·본문을 가른다 (runtime)"],
+  [server.includes("store.canManageRooms(channel.id, client.userId") && server.includes("store.canRenameRoom(channel.id, client.userId") && server.includes("isRoomWritable(tctx, client)")
+    && server.includes("AI_READ_ROUNDS") && !/accord:(memo|chat)[\s\S]{0,40}remove|accord:delete/.test(server), "AI방 지시는 요청자 권한으로 실행되고, 방 읽기 반복 횟수가 묶여 있고, 삭제 지시는 없다"],
   [(() => {
     // AI방: #방 참조는 아는 방 이름을 긴 것부터 대조한다 — 공백 있는 이름("자유 질문")·조사("회의록에")도 잡혀야 한다.
     // scoped=true(방 설정 기본값)면 AI방이 속한 최상위 그룹(+하위 그룹) 밖의 동명이인 방은 후보에서 빠지고,

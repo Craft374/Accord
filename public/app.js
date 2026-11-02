@@ -9943,7 +9943,7 @@ function updateAiRefMenu() {
   const aiRoom = channel?.rooms?.find((r) => r.id === state.ai.roomId);
   const scopeRoot = state.ai.settings?.refScope === false ? "" : topRoomGroupId(channel, aiRoom?.groupId);
   const rooms = (channel?.rooms || []).filter((r) => {
-    if (r.type !== "memo" && r.type !== "chat") return false;
+    if (r.type === "voice") return false; // 서버 aiRefCandidates 와 같게 — 음성방 말고는 다 참조할 수 있다
     if (String(r.name || "").includes("#")) return false; // #이 든 이름은 참조 문법과 충돌
     if (scopeRoot && topRoomGroupId(channel, r.groupId) !== scopeRoot) return false; // AI방이 그룹 안이면 그 그룹 밖 방은 제외
     return !query || String(r.name).toLocaleLowerCase("ko").includes(query);

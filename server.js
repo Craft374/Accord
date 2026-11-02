@@ -2116,9 +2116,13 @@ const AI_REF_MAX = 5; // 한 메시지에서 처리하는 #방 참조 최대 개
 const AI_ATTACH_MAX = 3; // 메시지 하나에 첨부 가능한 파일 수(클라 상한과 동일)
 const AI_ATTACH_IMG_MAX = 4 * 1024 * 1024; // 이미지 첨부 원본 용량 상한 — base64 인플레이션(~33%) 감안해 요청이 안 커지게
 const AI_ATTACH_TEXT_MAX = 8000; // 첨부 텍스트 파일에서 프롬프트에 끼워 넣는 글자 수 상한
-// 모델이 참조된 방을 고칠 때 쓰는 지시 블록: ```accord:<memo|memo-append|chat> #방이름 \n 내용 ```
-// 방 이름에 공백이 있을 수 있으므로 줄 끝까지 받고, refMap 키와 앞머리 매칭으로 실제 이름을 가려낸다.
-const AI_ACTION_RE = /```accord:(memo|memo-append|chat)[ \t]+#([^#`\n]{1,40})[^\n]*\n([\s\S]*?)```/g;
+// 모델이 채널의 방을 다룰 때 쓰는 지시 블록: ```accord:<종류> <인자> \n 내용 ``` (종류·인자는 store.buildAiChannelBlock 안내 참고)
+// 인자의 #방이름은 공백이 있을 수 있으므로 줄 끝까지 받고, 아는 방 이름과 앞머리 매칭으로 실제 이름을 가려낸다.
+const AI_ACTION_RE = /```accord:([a-z-]+)[ \t]*([^\n]*)\n([\s\S]*?)```/g;
+const AI_READ_ROUNDS = 2; // 방을 읽어 다시 묻는 최대 횟수
+const AI_ACTIONS_MAX = 20; // 한 답에서 실행하는 지시 블록 수 상한
+const AI_ROOMS_MAX = 5; // 한 답에서 만들 수 있는 방 수 상한
+const AI_ROOM_TYPES = { chat: "채팅방", memo: "메모장", table: "화이트보드", draw: "그림판", voice: "음성방", ai: "AI방", log: "로그방" };
 const AI_ECHO_LINES = 12; // 적용한 내용을 채팅에 그대로 남길 줄 수 상한(문서 전체 교체면 통째로 쏟아지므로 자른다)
 
 // 지시 블록을 지우기만 하면 "다음 내용을 추가했습니다." 뒤가 비어 답변이 잘린 것처럼 보인다.
@@ -2419,14 +2423,14 @@ function topRoomGroupId(channel, groupId) {
   return "";
 }
 
-// 참조 후보: 이 채널의 memo/chat 방을 { 소문자 이름, 방 }으로, 긴 이름부터.
+// 참조 후보: 이 채널의 방(음성방 제외)을 { 소문자 이름, 방 }으로, 긴 이름부터.
 // 긴 것부터 봐야 "일반"과 "일반 공지"가 같이 있을 때 "#일반 공지"가 제대로 잡힌다.
 // scoped=true(방 설정 기본값)면 AI방이 속한 최상위 그룹 밑의 방만 — 안 그러면 채널 전체에서
 // 같은 이름의 방이 여러 그룹에 있을 때 엉뚱한 그룹의 방이 섞인다. scoped=false면 채널 전체 대상(끄면).
 function aiRefCandidates(ctx, scoped) {
   const scopeRoot = scoped ? topRoomGroupId(ctx.channel, ctx.room.groupId) : "";
   return (ctx.channel.rooms || [])
-    .filter((r) => (r.type === "memo" || r.type === "chat")
+    .filter((r) => r.type !== "voice"
       && (!scopeRoot || topRoomGroupId(ctx.channel, r.groupId) === scopeRoot))
     .map((r) => ({ key: String(r.name || "").trim().toLowerCase(), room: r }))
     .filter((c) => c.key) // 빈 이름은 모든 #에 걸려버리므로 제외
@@ -2439,26 +2443,72 @@ function matchAiRefName(str, cands) {
   return cands.find((c) => low.startsWith(c.key)) || null;
 }
 
-// 사용자가 이번 메시지에서 #으로 지정한 memo/chat 방만 해석한다(모델이 지어낸 #는 못 건드림).
+// 텍스트 안의 #방이름 들을 읽어 온다(사용자 메시지의 #참조, 모델의 accord:read 블록 공용).
 // 토큰을 잘라 이름과 맞추는 대신 아는 방 이름을 텍스트에 대조한다 —
 // 그래야 "#자유 질문"처럼 공백 있는 이름도, "#회의록에"처럼 조사가 붙은 경우도 잡힌다.
 function resolveAiRefs(text, ctx, client, scoped) {
   const cands = aiRefCandidates(ctx, scoped);
   const src = String(text);
-  const map = new Map(); // 소문자 방이름 -> { room, type }
+  const seen = new Set();
   const refs = [];
   for (let i = src.indexOf("#"); i >= 0 && refs.length < AI_REF_MAX; i = src.indexOf("#", i + 1)) {
     const hit = matchAiRefName(src.slice(i + 1), cands);
-    if (!hit || map.has(hit.key)) continue;
+    if (!hit || seen.has(hit.key)) continue;
+    seen.add(hit.key);
     const room = hit.room;
     if (!store.canAccessRoom(ctx.channel.id, room.id, client.userId, client.isAdmin)) continue;
-    const content = room.type === "memo"
-      ? (store.getMemo(room.id).text || "")
-      : store.getMessages(room.id, 60).map((m) => `${m.name || "?"}: ${m.text || ""}`).join("\n");
-    map.set(hit.key, { key: hit.key, room, type: room.type });
-    refs.push({ name: room.name, type: room.type, content });
+    refs.push({ name: room.name, type: room.type, content: aiReadRoom(ctx.channel, room) });
   }
-  return { map, refs };
+  return refs;
+}
+
+// AI가 읽는 방 내용(종류별 글로). 지금 열려 있는 실시간 문서가 있으면 그쪽이 최신이다.
+function aiReadRoom(channel, room) {
+  if (room.type === "memo") return memoDocs.get(room.id)?.text ?? (store.getMemo(room.id).text || "");
+  if (room.type === "chat") return store.getMessages(room.id, 60).map((m) => `${m.name || "?"}: ${m.text || ""}`).join("\n");
+  if (room.type === "table") {
+    const items = (tableDocs.get(room.id)?.doc || store.getTable(room.id)).items;
+    const label = (end) => {
+      const it = end?.id && items.find((x) => x.id === end.id);
+      if (!it) return "빈 곳";
+      return it.kind === "note" ? `메모지 "${String(it.text || "").split("\n")[0].slice(0, 30)}"` : `파일 ${it.name}`;
+    };
+    return items.map((it) => (it.kind === "note" ? `- 메모지: ${it.text || "(비어 있음)"}`
+      : it.kind === "arrow" ? `- 화살표: ${label(it.from)} → ${label(it.to)}`
+        : `- 파일(${it.kind}): ${it.name}`)).join("\n");
+  }
+  if (room.type === "log") {
+    return store.getChannelLog(channel.id, 60)
+      .map((e) => `${new Date(e.at).toISOString()} ${e.name || "?"} ${e.type}${e.roomName ? ` (${e.roomName})` : ""}`).join("\n");
+  }
+  return "(이 종류의 방은 내용을 읽을 수 없습니다)";
+}
+
+// 이 채널에서 요청한 사람이 볼 수 있는 방 목록(AI 안내용).
+function aiChannelRooms(ctx, client, scoped) {
+  return aiRefCandidates(ctx, scoped)
+    .filter((c) => store.canAccessRoom(ctx.channel.id, c.room.id, client.userId, client.isAdmin))
+    .map((c) => ({ name: c.room.name, label: AI_ROOM_TYPES[c.room.type] || c.room.type }));
+}
+
+// AI가 화이트보드에 메모지를 붙인다 — 지금 올라 있는 것들 오른쪽에 이어 놓는다. 모델 글은 신뢰하지 않으므로 cleanTableItem 을 거친다.
+function aiAddTableNote(roomId, text) {
+  const d = getTableDoc(roomId);
+  if (d.doc.items.length >= store.TABLE_MAX_ITEMS) throw new Error(`화이트보드에는 최대 ${store.TABLE_MAX_ITEMS}개까지 올릴 수 있습니다`);
+  const boxes = d.doc.items.filter((it) => it.kind !== "arrow");
+  const x = boxes.length ? Math.max(...boxes.map((it) => it.x + it.w)) + 40 : -110;
+  const y = boxes.length ? Math.min(...boxes.map((it) => it.y)) : -110;
+  const h = Math.min(600, 100 + 24 * String(text).split("\n").length);
+  const base = { id: crypto.randomBytes(6).toString("hex"), kind: "note", x: 0, y: 0, w: 240, h, page: 1, text: "", color: 0, size: 16 };
+  const item = { ...store.cleanTableItem(base, { x, y, text }), z: ++d.doc.seq };
+  d.doc.items.push(item);
+  if ([...clients.values()].some((c) => c.tableRoomId === roomId)) {
+    broadcastTable(roomId, { type: "table:item", roomId, item });
+    scheduleTablePersist(roomId);
+  } else {
+    store.saveTable(roomId, d.doc); // 아무도 안 보고 있으면 바로 저장하고 메모리에서 내린다
+    tableDocs.delete(roomId);
+  }
 }
 
 // 라이브 메모(편집자 있음)면 OT op 로 반영, 아니면 파일에 직접 저장.
@@ -2481,36 +2531,77 @@ function applyAiMemoWrite(roomId, mode, rawBody, client) {
   }
 }
 
-// 모델 응답의 accord: 지시 블록을 실행하고, 블록을 뺀 표시용 텍스트 + 결과 메모를 돌려준다.
-function applyAiActions(replyText, refMap, ctx, client) {
+// 모델 응답의 accord: 지시 블록을 요청한 사람(client)의 권한으로 실행하고, 블록을 뺀 표시용 텍스트 + 결과 메모를 돌려준다.
+// ponytail: 채널의 모든 방을 다룰 수 있어서, 방 내용에 심어 둔 지시를 모델이 따르면 요청자 권한으로 실행된다.
+//           읽은 내용은 "지시 아님"으로 감싸고, 실행 수를 묶고, 삭제는 막고, 한 일은 전부 결과 메모로 남긴다.
+function applyAiActions(replyText, ctx, client, scoped) {
   const notes = [];
-  // 이번 메시지에서 실제로 해석된 방만 대상 — 모델이 안 지정된 방을 건드리지 못하게 하는 경계다.
-  const refCands = [...refMap.values()].sort((a, b) => b.key.length - a.key.length);
-  const display = String(replyText || "").replace(AI_ACTION_RE, (_m, kind, name, payload) => {
+  let count = 0;
+  let created = 0;
+  const display = String(replyText || "").replace(AI_ACTION_RE, (_m, kind, rawArg, payload) => {
     const body = String(payload).replace(/\s+$/, "");
-    const target = matchAiRefName(name, refCands);
-    if (!target) { notes.push(`⚠️ #${name.trim()}: 이번 메시지에서 #로 지정한 방이 아니어서 건드리지 않았습니다.`); return ""; }
-    const tctx = { channel: ctx.channel, room: target.room };
-    if (!isRoomWritable(tctx, client)) { notes.push(`⚠️ #${target.room.name}: 쓰기 권한이 없어 건너뜀`); return ""; }
+    const arg = String(rawArg).trim();
+    if (++count > AI_ACTIONS_MAX) {
+      if (count === AI_ACTIONS_MAX + 1) notes.push(`⚠️ 한 번에 ${AI_ACTIONS_MAX}개까지만 실행해서 나머지는 건너뛰었습니다.`);
+      return "";
+    }
+    if (kind === "read") { notes.push(`⚠️ ${arg}: 읽기 횟수(${AI_READ_ROUNDS}번)를 넘어 더 읽지 못했습니다.`); return ""; }
+    const channel = store.getChannel(ctx.channel.id) || ctx.channel; // 같은 답에서 방금 만든 방도 찾게 매번 새로
+    if (kind === "room") {
+      const type = Object.keys(AI_ROOM_TYPES).find((k) => k === arg.toLowerCase() || AI_ROOM_TYPES[k] === arg);
+      const name = body.split("\n")[0].replace(/#/g, "").trim();
+      if (!type || !name) { notes.push(`⚠️ 방 만들기: 종류(${arg || "없음"})나 이름이 잘못됐습니다.`); return ""; }
+      if (!store.canManageRooms(channel.id, client.userId, client.isAdmin)) { notes.push(`⚠️ #${name}: 방을 만들 권한이 없어 건너뜀`); return ""; }
+      if (++created > AI_ROOMS_MAX) { notes.push(`⚠️ #${name}: 한 번에 방은 ${AI_ROOMS_MAX}개까지만 만듭니다.`); return ""; }
+      const r = store.addRoom(channel.id, name, type, ctx.room.groupId || "");
+      if (r.error) { notes.push(`⚠️ #${name}: ${r.error}`); return ""; }
+      notifyChannelMembers(channel.id);
+      notes.push(`✅ ${AI_ROOM_TYPES[type]} #${r.room.name} 을(를) 만들었습니다.`);
+      return "";
+    }
+    const target = arg.startsWith("#") && matchAiRefName(arg.slice(1), aiRefCandidates({ channel, room: ctx.room }, scoped));
+    if (!target) { notes.push(`⚠️ ${arg || kind}: 이 채널에서 찾지 못한 방이라 건너뜀`); return ""; }
+    const room = target.room;
+    const tctx = { channel, room };
+    if (!store.canAccessRoom(channel.id, room.id, client.userId, client.isAdmin)) { notes.push(`⚠️ #${room.name}: 접근 권한이 없어 건너뜀`); return ""; }
     try {
+      if (kind === "rename") {
+        const name = body.split("\n")[0].replace(/#/g, "").trim();
+        if (!name) { notes.push(`⚠️ #${room.name}: 새 이름이 비어 있음`); return ""; }
+        if (!store.canRenameRoom(channel.id, client.userId, client.isAdmin)) { notes.push(`⚠️ #${room.name}: 이름을 바꿀 권한이 없어 건너뜀`); return ""; }
+        const before = room.name;
+        const r = store.renameRoom(channel.id, room.id, name);
+        if (r.error) { notes.push(`⚠️ #${before}: ${r.error}`); return ""; }
+        notifyChannelMembers(channel.id);
+        notes.push(`✅ #${before} → #${r.room.name} 이름을 바꿨습니다.`);
+        return "";
+      }
+      if (!isRoomWritable(tctx, client)) { notes.push(`⚠️ #${room.name}: 쓰기 권한이 없어 건너뜀`); return ""; }
       if (kind === "chat") {
-        if (target.type !== "chat") { notes.push(`⚠️ #${target.room.name}: 채팅방이 아님`); return ""; }
+        if (room.type !== "chat") { notes.push(`⚠️ #${room.name}: 채팅방이 아님`); return ""; }
         const cu = store.findById(client.userId);
         const cmsg = {
-          id: crypto.randomBytes(8).toString("hex"), roomId: target.room.id,
+          id: crypto.randomBytes(8).toString("hex"), roomId: room.id,
           userId: client.userId, name: cu ? cu.displayName : client.name, code: cu ? cu.code : "",
           text: `🤖 (AI방 요청) ${body}`.slice(0, 4000), mentions: [], files: [], at: Date.now(),
         };
-        store.addMessage(target.room.id, cmsg);
-        broadcastChat(ctx.channel, target.room.id, { type: "chat:message", message: cmsg });
-        notes.push(`✅ #${target.room.name} 채팅에 메시지를 보냈습니다.`);
+        store.addMessage(room.id, cmsg);
+        broadcastChat(channel, room.id, { type: "chat:message", message: cmsg });
+        notes.push(`✅ #${room.name} 채팅에 메시지를 보냈습니다.`);
+      } else if (kind === "memo" || kind === "memo-append") {
+        if (room.type !== "memo") { notes.push(`⚠️ #${room.name}: 메모장이 아님`); return ""; }
+        applyAiMemoWrite(room.id, kind === "memo-append" ? "append" : "replace", body, client);
+        notes.push(`✅ #${room.name} 메모장을 ${kind === "memo-append" ? "이어썼" : "수정했"}습니다.`);
+      } else if (kind === "note") {
+        if (room.type !== "table") { notes.push(`⚠️ #${room.name}: 화이트보드가 아님`); return ""; }
+        aiAddTableNote(room.id, body);
+        notes.push(`✅ #${room.name} 화이트보드에 메모지를 붙였습니다.`);
       } else {
-        if (target.type !== "memo") { notes.push(`⚠️ #${target.room.name}: 메모장이 아님`); return ""; }
-        applyAiMemoWrite(target.room.id, kind === "memo-append" ? "append" : "replace", body, client);
-        notes.push(`✅ #${target.room.name} 메모장을 ${kind === "memo-append" ? "이어썼" : "수정했"}습니다.`);
+        notes.push(`⚠️ accord:${kind}: 모르는 지시라 건너뜀`);
+        return "";
       }
     } catch (e) {
-      notes.push(`⚠️ #${target.room.name}: 적용 실패 (${(e && e.message) || e})`);
+      notes.push(`⚠️ #${room.name}: 적용 실패 (${(e && e.message) || e})`);
       return "";
     }
     return echoAiBody(body);
@@ -2698,8 +2789,9 @@ function handleAiMessage(client, message) {
       broadcastAi(ctx.room.id, { type: "ai:message", roomId: ctx.room.id, sessionId: session.id, message: userMsg });
       broadcastAi(ctx.room.id, { type: "ai:draft", roomId: ctx.room.id, byId: client.userId, byName: client.name || "", text: "" });
 
-      // 사용자가 #으로 지정한 방(메모장/채팅) 읽어서 문맥에 넣고, 나중에 수정 대상으로도 쓴다.
-      const { map: refMap, refs } = resolveAiRefs(text, ctx, client, doc.settings.refScope);
+      // 사용자가 #으로 지정한 방은 미리 읽어 문맥에 넣는다. 그 밖의 방은 모델이 accord:read 로 읽어 간다.
+      const scoped = doc.settings.refScope;
+      const refs = resolveAiRefs(text, ctx, client, scoped);
 
       aiBusy.add(ctx.room.id);
       aiBusyUsers.add(client.userId);
@@ -2711,6 +2803,7 @@ function handleAiMessage(client, message) {
         autoNote = `🎨 그림 요청으로 보고 ${model} 모델로 답합니다`;
       }
       let system = store.buildAiSystemInstruction(doc, store.getAiGlobalPrompt());
+      system += `\n\n${store.buildAiChannelBlock(aiChannelRooms(ctx, client, scoped))}`;
       if (refs.length) system += `\n\n${store.buildAiReferenceBlock(refs)}`;
       const contents = store.toGeminiContents(session.messages, AI_CONTEXT_TURNS);
       if (files.length) {
@@ -2724,7 +2817,23 @@ function handleAiMessage(client, message) {
       }
       const provider = store.aiProviderOf(model);
       const call = { gemini: callGemini, anthropic: callClaude, openai: callOpenAi }[provider];
-      call({ apiKey: keys[provider], model, system, thinking: doc.settings.thinking, contents, channelId: ctx.channel.id })
+      const ask = () => call({ apiKey: keys[provider], model, system, thinking: doc.settings.thinking, contents, channelId: ctx.channel.id });
+      // 모델이 accord:read 를 담아 답하면 그 방들을 읽어 붙이고 다시 묻는다(그 답의 다른 블록은 버린다 — 다음 답에서 또 나와 두 번 실행되지 않게).
+      const read = [];
+      const run = async () => {
+        let reply = await ask();
+        for (let round = 0; round < AI_READ_ROUNDS && !autoNote; round++) {
+          const asked = [...String(reply.text || "").matchAll(AI_ACTION_RE)].filter((m) => m[1] === "read").map((m) => m[2]).join(" ");
+          const got = asked ? resolveAiRefs(asked, ctx, client, scoped) : [];
+          if (!got.length) break;
+          read.push(...got.map((r) => `#${r.name}`));
+          contents.push({ role: "model", parts: [{ text: reply.text }] });
+          contents.push({ role: "user", parts: [{ text: `${store.buildAiReferenceBlock(got)}\n\n위 내용을 바탕으로 원래 요청에 이어서 답하세요.` }] });
+          reply = await ask();
+        }
+        return reply;
+      };
+      run()
         .then((reply) => {
           const fresh = store.getAiDoc(ctx.room.id);
           const s = fresh.sessions.find((x) => x.id === session.id);
@@ -2738,7 +2847,8 @@ function handleAiMessage(client, message) {
             } catch (e) { console.error("[ai] 이미지 저장 실패:", e?.message || e); }
           }
           // accord: 지시 블록 실행(#으로 지정한 방만) 후, 블록을 뺀 텍스트 + 결과 요약을 남긴다.
-          const { display, notes } = applyAiActions(reply.text, refMap, ctx, client);
+          const { display, notes } = applyAiActions(reply.text, ctx, client, scoped);
+          if (read.length) notes.unshift(`📖 ${read.join(", ")} 읽음`);
           let outText = display;
           if (autoNote) notes.unshift(autoNote);
           if (reply.imageBlockReason) notes.push(`⚠️ 이미지가 생성되지 않았습니다 (사유: ${reply.imageBlockReason})`);
