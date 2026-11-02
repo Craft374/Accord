@@ -564,6 +564,7 @@ const reviews = [
     } catch { return false; }
   })(), "화이트보드 메모지 동시 입력이 서버와 같은 글로 수렴한다 (runtime)"],
   [server.includes('case "table:text"') && server.includes("text: undefined") && app.includes("TABLE_ANCHORS") && app.includes("dataset.arrowEnd"), "화이트보드 메모지 OT·화살표 연결점·끝 끌기가 연결돼 있다"],
+  [app.includes(".table-snap.hover i") && app.includes("loadTableDoc") && app.includes("TABLE_VIDEO_RE") && server.includes('"content-range"'), "화이트보드 연결점에서 화살표 끌기·글/영상 미리보기·업로드 Range 가 연결돼 있다"],
   [(() => {
     // AI방: 그림 생성 요청 자동 감지(자동 모델 선택). 동사가 있어야 하고, "그림판"·"그림 설명"은 안 걸린다.
     try {

@@ -249,7 +249,7 @@ function handleRequest(req, res) {
   }
 
   if (url.pathname.startsWith("/uploads/")) {
-    serveUpload(res, url.pathname);
+    serveUpload(req, res, url.pathname);
     return;
   }
 
@@ -367,7 +367,7 @@ function handleUpload(req, res, url) {
   });
 }
 
-function serveUpload(res, pathname) {
+function serveUpload(req, res, pathname) {
   let fileName = "";
   try {
     fileName = decodeURIComponent(pathname.slice("/uploads/".length));
@@ -389,11 +389,29 @@ function serveUpload(res, pathname) {
     // HTML/SVG/스크립트 등은 원래 콘텐츠타입으로 렌더되지 않도록 첨부(다운로드)로 강제한다.
     // (업로드한 HTML/SVG 를 직접 열어 앱 오리진에서 스크립트를 실행 → 토큰 탈취하는 공격 차단)
     const inlineSafe = isInlineSafeUpload(filePath);
-    sendCors(res, 200, {
+    const headers = {
       "content-type": inlineSafe ? getContentType(filePath) : "application/octet-stream",
       "content-disposition": inlineSafe ? "inline" : "attachment",
       "cache-control": "public, max-age=31536000, immutable",
-    });
+      "accept-ranges": "bytes",
+    };
+    // 영상 건너뛰기·화이트보드 글 미리보기는 일부 구간만 달라고 한다(bytes=a-b, bytes=a-, bytes=-n 한 구간만).
+    // ponytail: 구간 요청도 파일 전체를 읽은 뒤 잘라 보낸다. 큰 영상이 많아지면 fs.createReadStream({ start, end }) 로.
+    const range = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range || ""));
+    if (range && (range[1] || range[2])) {
+      const size = data.length;
+      const start = range[1] ? Number(range[1]) : Math.max(0, size - Number(range[2]));
+      const end = range[1] && range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
+      if (start > end || start >= size) {
+        sendCors(res, 416, { "content-range": `bytes */${size}` });
+        res.end();
+        return;
+      }
+      sendCors(res, 206, { ...headers, "content-range": `bytes ${start}-${end}/${size}`, "content-length": end - start + 1 });
+      res.end(data.subarray(start, end + 1));
+      return;
+    }
+    sendCors(res, 200, headers);
     res.end(data);
   });
 }
