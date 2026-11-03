@@ -10232,7 +10232,7 @@ function renderChatMessages() {
   let prev = null;
   let currentBody = null;
   for (const msg of state.chatMessages) {
-    const grouped = prev && prev.userId === msg.userId && (msg.at - prev.at) < CHAT_GROUP_GAP;
+    const grouped = prev && prev.userId === msg.userId && prev.by === msg.by && (msg.at - prev.at) < CHAT_GROUP_GAP; // by = AI 글을 시킨 사람
     if (!grouped) {
       const group = document.createElement("div");
       group.className = "chat-group";
@@ -14087,7 +14087,8 @@ async function loadTableDoc(card) {
     if (!res.ok) throw new Error(String(res.status));
     const text = await res.text();
     if (card.item.url !== url) return; // 그사이 새 판으로 바뀜
-    card.docCut = res.status === 206 ? Number(res.headers.get("content-range")?.split("/")[1]) > TABLE_TEXT_PREVIEW : text.length > TABLE_TEXT_PREVIEW;
+    // 전체 크기를 못 읽으면(NaN) 잘린 것으로 본다 — 고쳐 저장하면 뒤가 날아가므로 모르면 읽기만.
+    card.docCut = res.status === 206 ? !(Number(res.headers.get("content-range")?.split("/")[1]) <= TABLE_TEXT_PREVIEW) : text.length > TABLE_TEXT_PREVIEW;
     card.docText = text.slice(0, TABLE_TEXT_PREVIEW);
     renderTableDoc(card);
   } catch {
