@@ -1734,6 +1734,7 @@ body.memo-open .log-panel {
   background: var(--bg-base);
 }
 body.table-open .table-panel { display: flex; }
+.table-panel:fullscreen { border-radius: 0; }
 body.table-open .main-panel,
 body.table-open .main-empty,
 body.table-open .chat-panel,

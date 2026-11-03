@@ -3593,6 +3593,7 @@ function leaveTable(client) {
   const roomId = client.tableRoomId;
   if (!roomId) return;
   client.tableRoomId = "";
+  client.tableCursor = null;
   broadcastTable(roomId, { type: "table:cursor", roomId, clientId: client.id, leave: true }); // 남은 사람 화면에서 내 마우스를 지운다
   if (client.userId && client.tableJoinedAt) addStat(roomId, client.userId, client.name, "viewMs", Date.now() - client.tableJoinedAt);
   client.tableJoinedAt = 0;
@@ -3637,6 +3638,10 @@ function handleTableMessage(client, message) {
     client.tableRoomId = roomId;
     client.tableJoinedAt = Date.now();
     sendTableState(client, roomId);
+    // 이미 보고 있는 사람들의 마지막 마우스 위치 — 들어오자마자 보이게(table:state 뒤라 지워지지 않는다)
+    for (const c of clients.values()) {
+      if (c !== client && c.tableRoomId === roomId && c.tableCursor) send(client, c.tableCursor);
+    }
     broadcastPresence();
     return true;
   }
@@ -3647,6 +3652,7 @@ function handleTableMessage(client, message) {
     const payload = message.leave
       ? { type: "table:cursor", roomId, clientId: client.id, leave: true }
       : { type: "table:cursor", roomId, clientId: client.id, name: client.name || "게스트", x: coord(message.x), y: coord(message.y) };
+    client.tableCursor = message.leave ? null : payload;
     for (const c of clients.values()) if (c !== client && c.tableRoomId === roomId) send(c, payload);
     return true;
   }

@@ -293,6 +293,7 @@ const dom = {
   tableNoteButton: document.querySelector("#tableNoteButton"),
   tableArrowButton: document.querySelector("#tableArrowButton"),
   tableThemeButton: document.querySelector("#tableThemeButton"),
+  tableFullscreenButton: document.querySelector("#tableFullscreenButton"),
   tableAddButton: document.querySelector("#tableAddButton"),
   tableFileInput: document.querySelector("#tableFileInput"),
   tableScroll: document.querySelector("#tableScroll"),
@@ -13696,6 +13697,7 @@ function closeTableView() {
   if (!t) return;
   sendSocket({ type: "table:close" });
   state.table = null;
+  if (document.fullscreenElement === dom.tablePanel) document.exitFullscreen().catch(() => {});
   for (const card of t.cards.values()) {
     clearTimeout(card.renderTimer);
   }
@@ -14439,6 +14441,14 @@ function bindTableEvents() {
   dom.tableThemeButton?.addEventListener("click", () => {
     localStorage.setItem(TABLE_THEME_KEY, localStorage.getItem(TABLE_THEME_KEY) === "1" ? "0" : "1");
     applyTableTheme();
+  });
+  // 전체화면 — 화이트보드 칸(머리 막대 포함)만 화면 가득. 나가기는 같은 버튼이나 Esc.
+  dom.tableFullscreenButton?.addEventListener("click", () => {
+    const request = document.fullscreenElement ? document.exitFullscreen() : dom.tablePanel.requestFullscreen();
+    request.catch(() => setTableStatus("전체화면을 열 수 없습니다.", "bad"));
+  });
+  document.addEventListener("fullscreenchange", () => {
+    if (dom.tableFullscreenButton) dom.tableFullscreenButton.textContent = document.fullscreenElement === dom.tablePanel ? "나가기" : "전체화면";
   });
   dom.tableZoomIn?.addEventListener("click", () => state.table && zoomTable(state.table, state.table.zoom * 1.25));
   dom.tableZoomOut?.addEventListener("click", () => state.table && zoomTable(state.table, state.table.zoom / 1.25));
