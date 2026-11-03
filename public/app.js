@@ -14653,12 +14653,15 @@ function bindTableEvents() {
       placeTableArrow(drag.card); // 화살표는 손을 뗄 때 한 번만 보낸다
       return;
     }
+    // Shift 를 누르고 있을 때만 배경 격자 점에 맞춘다(크기 조절은 오른쪽·아래 모서리를). 점은 칸 가운데라 반 칸 비켜 있다.
+    const half = TABLE_GRID / 2;
+    const snap = (v) => (event.shiftKey ? Math.round((v - half) / TABLE_GRID) * TABLE_GRID + half : Math.round(v));
     if (drag.resize) {
-      item.w = Math.max(TABLE_CARD_MIN, Math.round(drag.w + dx));
-      item.h = Math.max(TABLE_CARD_MIN, Math.round(drag.h + dy));
+      item.w = Math.max(TABLE_CARD_MIN, snap(drag.x + drag.w + dx) - drag.x);
+      item.h = Math.max(TABLE_CARD_MIN, snap(drag.y + drag.h + dy) - drag.y);
     } else {
-      item.x = Math.round(drag.x + dx);
-      item.y = Math.round(drag.y + dy);
+      item.x = snap(drag.x + dx);
+      item.y = snap(drag.y + dy);
     }
     drag.moved = true;
     placeTableCard(drag.card);
