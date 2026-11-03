@@ -293,7 +293,6 @@ const dom = {
   tableNoteButton: document.querySelector("#tableNoteButton"),
   tableArrowButton: document.querySelector("#tableArrowButton"),
   tableThemeButton: document.querySelector("#tableThemeButton"),
-  tableFullscreenButton: document.querySelector("#tableFullscreenButton"),
   tableAddButton: document.querySelector("#tableAddButton"),
   tableFileInput: document.querySelector("#tableFileInput"),
   tableScroll: document.querySelector("#tableScroll"),
@@ -543,6 +542,7 @@ const dom = {
   chatDrawerButton: document.querySelector("#chatDrawerButton"),
   memoFocusButton: document.querySelector("#memoFocusButton"),
   drawFocusButton: document.querySelector("#drawFocusButton"),
+  tableFocusButton: document.querySelector("#tableFocusButton"),
   profileModal: document.querySelector("#profileModal"),
   profileCloseButton: document.querySelector("#profileCloseButton"),
   openProfileButton: document.querySelector("#openProfileButton"),
@@ -684,6 +684,7 @@ function bindEvents() {
   dom.chatDrawerButton?.addEventListener("click", openChatDrawerModal);
   dom.memoFocusButton?.addEventListener("click", toggleFocusMode);
   dom.drawFocusButton?.addEventListener("click", toggleFocusMode);
+  dom.tableFocusButton?.addEventListener("click", toggleFocusMode);
   dom.focusExitButton?.addEventListener("click", exitFocusMode);
   document.addEventListener("keydown", handleGlobalHotkeys);
   dom.refreshDevicesButton.addEventListener("click", () => refreshDevices());
@@ -5339,20 +5340,21 @@ function toggleProfileModal(open) {
 }
 
 // ===== 집중모드 =====
-// 채팅 · 메모장 · 그림판을 화면 가득 채우고, 상단/사이드 UI를 모두 숨긴다.
+// 채팅 · 메모장 · 그림판 · 화이트보드를 화면 가득 채우고, 상단/사이드 UI를 모두 숨긴다.
 // 상단에는 제목과 "집중모드 나가기"만 남는다.
 function focusablePanel() {
   const body = document.body.classList;
   if (body.contains("chat-open")) return { kind: "chat", name: state.activeChat?.name || "채팅방", icon: "#" };
   if (body.contains("memo-open")) return { kind: "memo", name: state.memo?.name || "메모장", icon: "📝" };
   if (body.contains("draw-open")) return { kind: "draw", name: state.draw?.name || "그림판", icon: "🎨" };
+  if (body.contains("table-open")) return { kind: "table", name: state.table?.name || "화이트보드", icon: "🧩" };
   return null;
 }
 
 function enterFocusMode() {
   const panel = focusablePanel();
   if (!panel) {
-    setMessage("집중모드는 채팅방 · 메모장 · 그림판에서 사용할 수 있습니다.");
+    setMessage("집중모드는 채팅방 · 메모장 · 그림판 · 화이트보드에서 사용할 수 있습니다.");
     return;
   }
   closeProfileCard();
@@ -13697,7 +13699,7 @@ function closeTableView() {
   if (!t) return;
   sendSocket({ type: "table:close" });
   state.table = null;
-  if (document.fullscreenElement === dom.tablePanel) document.exitFullscreen().catch(() => {});
+  exitFocusMode();
   for (const card of t.cards.values()) {
     clearTimeout(card.renderTimer);
   }
@@ -14441,14 +14443,6 @@ function bindTableEvents() {
   dom.tableThemeButton?.addEventListener("click", () => {
     localStorage.setItem(TABLE_THEME_KEY, localStorage.getItem(TABLE_THEME_KEY) === "1" ? "0" : "1");
     applyTableTheme();
-  });
-  // 전체화면 — 화이트보드 칸(머리 막대 포함)만 화면 가득. 나가기는 같은 버튼이나 Esc.
-  dom.tableFullscreenButton?.addEventListener("click", () => {
-    const request = document.fullscreenElement ? document.exitFullscreen() : dom.tablePanel.requestFullscreen();
-    request.catch(() => setTableStatus("전체화면을 열 수 없습니다.", "bad"));
-  });
-  document.addEventListener("fullscreenchange", () => {
-    if (dom.tableFullscreenButton) dom.tableFullscreenButton.textContent = document.fullscreenElement === dom.tablePanel ? "나가기" : "전체화면";
   });
   dom.tableZoomIn?.addEventListener("click", () => state.table && zoomTable(state.table, state.table.zoom * 1.25));
   dom.tableZoomOut?.addEventListener("click", () => state.table && zoomTable(state.table, state.table.zoom / 1.25));
