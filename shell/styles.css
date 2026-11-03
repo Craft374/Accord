@@ -128,3 +128,48 @@ button:hover {
 .launcher-version span + span::before {
   content: "· ";
 }
+
+/* 저장된 서버 목록 */
+.saved-servers {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.saved-servers:empty {
+  display: none;
+}
+
+.saved-servers li {
+  display: flex;
+  gap: 6px;
+}
+
+.saved-servers button {
+  min-height: 36px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.saved-servers button:hover {
+  background: #21262d;
+}
+
+.saved-server-pick {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0 12px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.saved-server-remove {
+  width: 36px;
+  color: var(--muted);
+}

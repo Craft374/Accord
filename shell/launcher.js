@@ -3,10 +3,53 @@ const input = document.querySelector("#serverInput");
 const message = document.querySelector("#message");
 const clientVersionEl = document.querySelector("#launcherClientVersion");
 const serverVersionEl = document.querySelector("#launcherServerVersion");
+const savedList = document.querySelector("#savedServers");
+const SAVED_SERVERS_KEY = "accordSavedServers";
 
 input.value = localStorage.getItem("voiceChatServerUrl") || "https://localhost:25565";
 
 showVersions();
+renderSavedServers();
+
+// 저장된 서버 목록: 들어가기를 누른 주소가 맨 앞에 쌓인다. 누르면 바로 접속, ✕ 로 삭제.
+function loadSavedServers() {
+  try {
+    const list = JSON.parse(localStorage.getItem(SAVED_SERVERS_KEY) || "[]");
+    return Array.isArray(list) ? list.filter((url) => typeof url === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveSavedServers(list) {
+  localStorage.setItem(SAVED_SERVERS_KEY, JSON.stringify(list));
+  renderSavedServers();
+}
+
+function renderSavedServers() {
+  savedList.replaceChildren(
+    ...loadSavedServers().map((url) => {
+      const item = document.createElement("li");
+      const pick = document.createElement("button");
+      pick.type = "button";
+      pick.className = "saved-server-pick";
+      pick.textContent = url.replace(/^https?:\/\//i, "");
+      pick.title = url;
+      pick.addEventListener("click", () => {
+        input.value = url;
+        form.requestSubmit();
+      });
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "saved-server-remove";
+      remove.textContent = "✕";
+      remove.setAttribute("aria-label", `${url} 삭제`);
+      remove.addEventListener("click", () => saveSavedServers(loadSavedServers().filter((saved) => saved !== url)));
+      item.append(pick, remove);
+      return item;
+    })
+  );
+}
 
 // 좌하단 버전 표시: 클라이언트 버전은 앱에서, 서버 버전은 저장된 주소에 물어본다(실패하면 생략).
 function showVersions() {
@@ -33,6 +76,7 @@ form.addEventListener("submit", async (event) => {
   }
 
   localStorage.setItem("voiceChatServerUrl", url);
+  saveSavedServers([url, ...loadSavedServers().filter((saved) => saved !== url)]);
   message.textContent = "연결 중...";
   const submitButton = form.querySelector("button[type=submit], button:not([type])");
   if (submitButton) submitButton.disabled = true;
