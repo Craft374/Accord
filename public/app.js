@@ -10252,6 +10252,17 @@ function renderChatMessages() {
       time.className = "chat-msg-time";
       time.textContent = formatChatTime(msg.at);
       head.append(name, time);
+      // AI방이 보낸 글 — 사람이 아니라 "AI" 멤버. 프로필이 없으니 눌리지 않고, 누가 시켰는지 옆에 적는다.
+      if (msg.ai) {
+        for (const node of [avatar, name]) {
+          node.classList.remove("profile-link");
+          delete node.dataset.profileUser;
+        }
+        avatar.classList.add("chat-ai-avatar");
+        avatar.textContent = "🤖";
+        name.after(el("span", "chat-ai-badge", "AI"));
+        if (msg.by) time.append(` · ${msg.by} 요청`);
+      }
       currentBody.append(head);
       group.append(avatar, currentBody);
       container.append(group);
@@ -13757,6 +13768,12 @@ function upsertTableCard(item) {
   const held = !dragging ? null : item.kind === "arrow" ? { from: previous.from, to: previous.to, bend: previous.bend } : { x: previous.x, y: previous.y, w: previous.w, h: previous.h };
   card.item = { ...item, ...held, ...(previous && card.text ? { text: card.text.value } : null) };
   placeTableCard(card);
+  // 누가 원문을 고쳐 새 파일로 바뀜 — 다시 받아 그린다. 내가 저장한 판이거나 내가 고치는 중이면 그대로 둔다.
+  if (previous && card.open && previous.url !== item.url) {
+    card.open.href = `${serverUrl}${item.url}`;
+    const editing = card.rawEl && card.rawEl.value !== card.docText;
+    if (card.savedUrl !== item.url && !editing) loadTableDoc(card);
+  }
   if (item.kind === "pdf" && (!previous || previous.page !== item.page || previous.w !== item.w)) scheduleTablePdfRender(card);
 }
 
@@ -13907,13 +13924,22 @@ function renderTableNote(card) {
   text.style.fontSize = `${item.size || 16}px`;
   card.view.style.fontSize = text.style.fontSize;
   size.value = String(item.size || 16);
+  fitTableNoteText(card);
 }
 
 function editTableNote(card) {
   if (!state.table?.writable || !card.text.readOnly) return;
   card.text.readOnly = false;
+  fitTableNoteText(card);
   card.text.focus({ preventScroll: true }); // 보드(overflow:hidden)가 저절로 스크롤되지 않게
   card.text.setSelectionRange(card.text.value.length, card.text.value.length);
+}
+
+// 쓰는 칸을 글 높이만큼만 — 그 아래 빈 곳은 눌러서 바로 끌 수 있게 남긴다(메모지보다 길면 칸 안에서 스크롤).
+function fitTableNoteText(card) {
+  if (card.text.readOnly) return;
+  card.text.style.height = "auto";
+  card.text.style.height = `${card.text.scrollHeight}px`;
 }
 
 // 메모지 동시 입력 — 메모장과 같은 OT. 확인을 기다리는 동안 더 친 글은 따로 쌓지 않고,
@@ -13965,6 +13991,7 @@ function applyTableNoteText(card, message) {
   text.value = next.value;
   card.item.text = next.value;
   renderTableNoteView(card);
+  fitTableNoteText(card);
   if (document.activeElement === text) {
     text.setSelectionRange(OT.transformCursor(selectionStart, next.op, "left"), OT.transformCursor(selectionEnd, next.op, "left"));
   }
@@ -14009,7 +14036,22 @@ function buildTableCard(item) {
   remove.title = "화이트보드에서 내리기";
   remove.setAttribute("aria-label", "화이트보드에서 내리기");
   remove.textContent = "×";
-  head.append(open, remove);
+  // md·html 은 보기 ↔ 원문(고치기)을 오간다. md 원문에서는 바로 메모방으로 만들 수 있다.
+  const headButton = (text, title, key) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "table-card-text-button";
+    b.textContent = text;
+    b.title = title;
+    b.dataset[key] = item.id;
+    return b;
+  };
+  if (item.kind === "file" && /\.(md|markdown|html?)$/i.test(item.url)) {
+    if (/\.(md|markdown)$/i.test(item.url)) card.memoButton = headButton("메모방으로", "이 내용으로 메모방 만들기", "tableMemo");
+    card.rawButton = headButton("원문", "원문 ↔ 보기", "tableRaw");
+  }
+  head.append(...[card.memoButton, card.rawButton].filter(Boolean), open, remove);
+  card.open = open;
   // 일반 파일도 영상·소리는 바로 재생하고, 글 파일은 내용을 보여 준다. 나머지는 이름만.
   const media = item.kind === "file" && (TABLE_VIDEO_RE.test(item.url) ? "video" : TABLE_AUDIO_RE.test(item.url) ? "audio" : "");
   const doc = item.kind === "file" && !media && TABLE_TEXT_RE.test(item.url);
@@ -14026,10 +14068,9 @@ function buildTableCard(item) {
       view.draggable = false;
     }
     body.append(view);
-  } else if (doc) {
-    loadTableDoc(body, item);
   }
   card.body = body;
+  if (doc) loadTableDoc(card);
   card.remove = remove;
   card.resize = el("div", "table-card-resize");
   cardEl.append(head, body, card.resize);
@@ -14038,30 +14079,89 @@ function buildTableCard(item) {
 }
 
 // 글 파일 미리보기 — 앞부분만 받아 md 는 메모장과 같은 렌더러로, 나머지는 글 그대로 보여 준다.
-async function loadTableDoc(body, item) {
+// 앞부분만 받았으면(docCut) 원문을 고치거나 메모방으로 옮기지 못하게 한다 — 저장하면 뒤가 잘려 나간다.
+async function loadTableDoc(card) {
+  const { url } = card.item;
   try {
-    const res = await fetch(`${serverUrl}${item.url}`, { headers: { range: `bytes=0-${TABLE_TEXT_PREVIEW - 1}` } });
+    const res = await fetch(`${serverUrl}${url}`, { headers: { range: `bytes=0-${TABLE_TEXT_PREVIEW - 1}` } });
     if (!res.ok) throw new Error(String(res.status));
-    const text = (await res.text()).slice(0, TABLE_TEXT_PREVIEW);
-    if (/\.html?$/i.test(item.url)) {
-      // 올린 HTML 은 격리된 iframe 에 그린다. sandbox 는 srcdoc·append 전에 걸어야 적용된다.
-      // 스크립트·폼·팝업이 다 막히고 출처도 분리된다 — allow-same-origin 은 절대 넣지 않는다(로그인 토큰 노출).
-      const frame = document.createElement("iframe");
-      frame.setAttribute("sandbox", "");
-      frame.title = item.name;
-      frame.srcdoc = text;
-      body.className = "table-card-body html";
-      body.replaceChildren(frame);
-    } else if (/\.(md|markdown)$/i.test(item.url)) {
-      body.className = "table-card-body doc markdown-body";
-      body.innerHTML = renderMarkdown(text); // 이스케이프 후 변환하는 안전한 렌더러
-    } else {
-      body.className = "table-card-body doc";
-      body.replaceChildren(el("pre", "", text));
-    }
+    const text = await res.text();
+    if (card.item.url !== url) return; // 그사이 새 판으로 바뀜
+    card.docCut = res.status === 206 ? Number(res.headers.get("content-range")?.split("/")[1]) > TABLE_TEXT_PREVIEW : text.length > TABLE_TEXT_PREVIEW;
+    card.docText = text.slice(0, TABLE_TEXT_PREVIEW);
+    renderTableDoc(card);
   } catch {
-    body.textContent = "미리보기를 불러오지 못했습니다.";
+    card.body.textContent = "미리보기를 불러오지 못했습니다.";
   }
+}
+
+// 원문을 고칠 수 있나: 쓰기 + 파일 올리기 권한(고친 글은 새 파일로 올라간다) + 파일 전체를 받았을 때.
+function tableDocEditable(card) {
+  return Boolean(state.table?.writable) && !dom.tableAddButton.hidden && !card.docCut;
+}
+
+function renderTableDoc(card) {
+  const { body, item } = card;
+  const text = card.docText;
+  card.rawEl = null;
+  if (card.rawButton) card.rawButton.textContent = card.raw ? "보기" : "원문";
+  if (card.memoButton) {
+    const channel = state.channels.find((c) => c.id === state.table?.channelId);
+    card.memoButton.hidden = !card.raw || !canManageRooms(channel);
+    card.memoButton.disabled = Boolean(card.docCut);
+    card.memoButton.title = card.docCut ? "파일이 너무 커서 메모방으로 만들 수 없습니다" : "이 내용으로 메모방 만들기";
+  }
+  if (card.raw) {
+    // 원문 — 고치고 칸을 벗어나면(change) 새 파일로 저장한다.
+    const area = document.createElement("textarea");
+    area.className = "table-doc-raw";
+    area.spellcheck = false;
+    area.value = text;
+    area.readOnly = !tableDocEditable(card);
+    if (card.docCut) area.title = "파일이 커서 앞부분만 보여 줍니다(고칠 수 없음)";
+    body.className = "table-card-body doc raw";
+    body.replaceChildren(area);
+    card.rawEl = area;
+  } else if (/\.html?$/i.test(item.url)) {
+    // 올린 HTML 은 격리된 iframe 에 그린다. sandbox 는 srcdoc·append 전에 걸어야 적용된다.
+    // 스크립트·폼·팝업이 다 막히고 출처도 분리된다 — allow-same-origin 은 절대 넣지 않는다(로그인 토큰 노출).
+    const frame = document.createElement("iframe");
+    frame.setAttribute("sandbox", "");
+    frame.title = item.name;
+    frame.srcdoc = text;
+    body.className = "table-card-body html";
+    body.replaceChildren(frame);
+  } else if (/\.(md|markdown)$/i.test(item.url)) {
+    body.className = "table-card-body doc markdown-body";
+    body.innerHTML = renderMarkdown(text); // 이스케이프 후 변환하는 안전한 렌더러
+  } else {
+    body.className = "table-card-body doc";
+    body.replaceChildren(el("pre", "", text));
+  }
+}
+
+// 고친 원문을 같은 이름의 새 파일로 올리고 카드가 그 파일을 가리키게 한다(table:file).
+async function saveTableDoc(card) {
+  const t = state.table;
+  const { item } = card;
+  try {
+    setTableStatus(`${item.name} 저장 중…`, "muted");
+    const file = new File([card.docText], item.name, { type: /\.html?$/i.test(item.url) ? "text/html" : "text/markdown" });
+    const result = await uploadChatFile(file);
+    card.savedUrl = result.url; // 내 저장의 메아리로 다시 받아 오지 않게
+    sendSocket({ type: "table:file", roomId: t.roomId, itemId: item.id, url: result.url });
+    if (state.table === t) setTableStatus(`${item.name} 저장했습니다.`, "ok");
+  } catch (error) {
+    if (state.table === t) setTableStatus(error.message || "저장하지 못했습니다.", "bad");
+  }
+}
+
+function tableDocToMemo(t, card) {
+  const channel = state.channels.find((c) => c.id === t.channelId);
+  const room = channel?.rooms.find((r) => r.id === t.roomId);
+  const name = card.item.name.replace(/\.[^.]+$/, "") || "메모";
+  sendSocket({ type: "channel:add-room", channelId: t.channelId, name, roomType: "memo", parentGroupId: room?.groupId || "", text: card.docText });
+  setTableStatus(`'${name}' 메모방을 만들었습니다. 방 목록에서 열 수 있습니다.`, "ok");
 }
 
 // 읽기 전용이면 보기만 한다(페이지는 쓸 수 있는 사람을 따라간다).
@@ -14077,6 +14177,7 @@ function renderTableCardControls(card) {
     if (!writable) card.text.readOnly = true;
   }
   card.el.querySelectorAll("[data-table-page]").forEach((button) => { button.disabled = !writable; });
+  if (card.rawEl) card.rawEl.readOnly = !tableDocEditable(card);
 }
 
 // patch 에 담은 값만 보낸다 — 남이 동시에 바꾼 다른 값(위치·글 등)을 내 옛 값으로 덮지 않게.
@@ -14136,12 +14237,15 @@ function showTableSnap(t, end, hover = false) {
   t.snapEl.dataset.key = key;
   t.snapEl.dataset.target = target.id;
   t.snapEl.classList.toggle("hover", hover);
-  t.snapEl.replaceChildren(...TABLE_ANCHORS.map((_, a) => {
+  // 고르기 도구(hover)에서는 변 가운데 점에서만 화살표를 시작한다 — 꼭짓점은 크기 조절 손잡이·카드 모서리와 겹친다.
+  // 꼭짓점에서 시작하려면 화살표 도구를 고른다. 끝을 붙일 때는 꼭짓점도 된다(hover 가 아닐 때).
+  t.snapEl.replaceChildren(...TABLE_ANCHORS.flatMap((_, a) => {
+    if (hover && a % 2 === 0) return [];
     const p = tableAnchorPoint(target, a, TABLE_ARROW_GAP);
     const dot = el("i", a === end.a ? "on" : "");
     dot.dataset.anchor = String(a);
     dot.style.cssText = `left:${p.x}px;top:${p.y}px`;
-    return dot;
+    return [dot];
   }));
   dom.tableStage.append(t.snapEl);
 }
@@ -14333,7 +14437,7 @@ function bindTableEvents() {
   scroll.addEventListener("wheel", (event) => {
     const t = state.table;
     if (!t) return;
-    const doc = event.target.closest?.(".table-card-body.doc");
+    const doc = event.target.closest?.(".table-doc-raw, .table-card-body.doc");
     if (doc && !event.ctrlKey && doc.scrollHeight > doc.clientHeight) return; // 글 미리보기는 휠로 스크롤
     event.preventDefault();
     const delta = event.deltaY * (event.deltaMode === 1 ? 16 : 1);
@@ -14383,17 +14487,42 @@ function bindTableEvents() {
       sendTableUpdate(swatch.closest(".table-card").dataset.tableItem, { color: Number(swatch.dataset.noteColor) });
       return;
     }
+    const raw = event.target.closest("[data-table-raw]");
+    const rawCard = raw && t.cards.get(raw.dataset.tableRaw);
+    if (rawCard) {
+      if (rawCard.docText === undefined) return; // 아직 불러오는 중
+      rawCard.raw = !rawCard.raw;
+      renderTableDoc(rawCard);
+      return;
+    }
+    const memo = event.target.closest("[data-table-memo]");
+    if (memo) {
+      const card = t.cards.get(memo.dataset.tableMemo);
+      if (card) tableDocToMemo(t, card);
+      return;
+    }
     const remove = event.target.closest("[data-table-remove]");
     if (remove) removeTableItem(t, remove.dataset.tableRemove);
   });
   scroll.addEventListener("change", (event) => {
+    // 원문을 고치고 칸을 벗어나면 저장(보기 버튼을 눌러도 먼저 칸을 벗어나므로 여기로 온다)
+    if (state.table && event.target.classList.contains("table-doc-raw")) {
+      const card = state.table.cards.get(event.target.closest(".table-card").dataset.tableItem);
+      if (card && !event.target.readOnly && event.target.value !== card.docText) {
+        card.docText = event.target.value;
+        saveTableDoc(card);
+      }
+      return;
+    }
     if (!state.table || !event.target.classList.contains("table-note-size")) return;
     sendTableUpdate(event.target.closest(".table-card").dataset.tableItem, { size: Number(event.target.value) });
   });
   const noteOf = (target) => target.classList?.contains("table-note-text") && state.table?.cards.get(target.closest(".table-card").dataset.tableItem);
   scroll.addEventListener("input", (event) => {
     const card = noteOf(event.target);
-    if (card) flushTableNoteText(card);
+    if (!card) return;
+    flushTableNoteText(card);
+    fitTableNoteText(card);
   });
   scroll.addEventListener("compositionstart", (event) => {
     const card = noteOf(event.target);
@@ -14472,7 +14601,9 @@ function bindTableEvents() {
     const resize = event.target.closest(".table-card-resize");
     if (card.item.kind !== "note" && !resize && !event.target.closest(".table-card-head")) return;
     const { x, y, w, h } = card.item;
-    t.drag = { card, resize: Boolean(resize), startX: event.clientX, startY: event.clientY, x, y, w, h, sentAt: 0, moved: false };
+    // 메모지는 글자 부분을 눌렀을 때만 쓰기로 들어간다(보기 화면은 글 높이만큼이라 그 아래 빈 곳은 끌기·고르기만).
+    const onText = Boolean(card.text) && card.text.readOnly && event.clientY <= card.view.getBoundingClientRect().bottom;
+    t.drag = { card, resize: Boolean(resize), onText, startX: event.clientX, startY: event.clientY, x, y, w, h, sentAt: 0, moved: false };
     card.el.setPointerCapture(event.pointerId);
     event.preventDefault();
   });
@@ -14544,12 +14675,12 @@ function bindTableEvents() {
       return;
     }
     if (!t.drag) return;
-    const { card, moved, resize } = t.drag;
+    const { card, moved, resize, onText } = t.drag;
     t.drag = null;
     showTableSnap(t, null);
     const { item } = card;
     if (!moved) {
-      if (card.text && !resize && event.type === "pointerup") editTableNote(card); // 메모지는 누르면 바로 쓴다(끌면 옮기기)
+      if (onText && !resize && event.type === "pointerup") editTableNote(card); // 글자를 누르면 쓰기(끌면 옮기기)
       return;
     }
     // 마지막 위치 확정(서버 메아리로 맨 앞으로 올라온다)

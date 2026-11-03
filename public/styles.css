@@ -708,6 +708,17 @@ body.chat-open .log-panel {
   color: var(--muted);
   font-size: 11px;
 }
+/* AI방이 보낸 채팅 — 사람 멤버와 구분되는 "AI" 멤버 */
+.chat-avatar.chat-ai-avatar { background: var(--blurple); font-size: 16px; }
+.chat-ai-badge {
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--blurple);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+}
 .chat-msg-text {
   color: var(--text);
   font-size: 14px;
@@ -1896,6 +1907,26 @@ body.table-open .log-panel {
   user-select: text;
   cursor: text;
 }
+/* md·html 원문 — 카드를 꽉 채우는 고치기 칸 */
+.table-card-body.doc.raw { padding: 0; overflow: hidden; }
+.table-doc-raw {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 10px 14px;
+  border: 0;
+  border-radius: 0;
+  outline: none;
+  resize: none;
+  box-sizing: border-box;
+  box-shadow: none;
+  background: transparent;
+  color: inherit;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.table-card-head .table-card-text-button { width: auto; padding: 0 7px; font-size: 12px; font-weight: 600; }
+.table-card-head .table-card-text-button:disabled { opacity: 0.5; cursor: default; }
 .table-card-body.doc pre { margin: 0; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .table-card-body img,
 .table-card-body canvas {
@@ -1928,7 +1959,7 @@ body.table-open .log-panel {
 .table-note[data-color="3"] { background: var(--wb-note-3); }
 .table-note[data-color="4"] { background: var(--wb-note-4); }
 .table-note-text {
-  flex: 1;
+  flex: 0 1 auto; /* 높이는 글만큼(fitTableNoteText) — 아래 빈 곳은 끌기 자리 */
   width: 100%;
   min-height: 0;
   padding: 14px;
@@ -1950,8 +1981,8 @@ body.table-open .log-panel {
   --muted: var(--wb-note-text);
   --line: rgba(127, 127, 127, 0.35);
   --bg-surface: rgba(127, 127, 127, 0.15);
-  flex: 1;
-  min-height: 0;
+  flex: 0 1 auto; /* 글만큼만 — 이 아래를 누르면 쓰기 대신 바로 끌기 */
+  min-height: min(calc(1.35em + 28px), 100%); /* 빈 메모지도 한 줄은 눌러서 쓸 수 있게 */
   overflow: hidden;
   padding: 14px;
   color: var(--wb-note-text);

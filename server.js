@@ -1392,6 +1392,8 @@ function handleChannelMessage(client, message) {
       return roomManageAction(client, message.channelId, () => {
         const r = store.addRoom(message.channelId, message.name, message.roomType, message.parentGroupId);
         if (r.error) return channelError(client, r.error);
+        // 화이트보드 md 파일 "메모방으로 만들기" — 처음 내용을 함께 받는다(길이는 saveMemo 가 자른다).
+        if (r.room.type === "memo" && typeof message.text === "string" && message.text) store.saveMemo(r.room.id, normalizeMemoNewlines(message.text), client.userId);
         notifyChannelMembers(message.channelId);
         return true;
       });
@@ -2491,6 +2493,83 @@ function aiChannelRooms(ctx, client, scoped) {
     .map((c) => ({ name: c.room.name, label: AI_ROOM_TYPES[c.room.type] || c.room.type }));
 }
 
+// 방 구조·통계용 후보: 범위 설정과 상관없이 채널 전체(음성방 포함), 요청한 사람이 볼 수 있는 방만. 긴 이름부터.
+function aiAllRoomCandidates(channel, client) {
+  return (channel.rooms || [])
+    .filter((r) => String(r.name || "").trim() && store.canAccessRoom(channel.id, r.id, client.userId, client.isAdmin))
+    .map((r) => ({ key: String(r.name).trim().toLowerCase(), room: r }))
+    .sort((a, b) => b.key.length - a.key.length);
+}
+
+// AI에게 보여 줄 방 구조 — 사이드바 순서 그대로, 그룹 안은 들여쓰기. 요청한 사람이 못 보는 방은 뺀다.
+function aiRoomTree(channel, client) {
+  const roomById = new Map(channel.rooms.map((r) => [r.id, r]));
+  const groupById = new Map((channel.roomGroups || []).map((g) => [g.id, g]));
+  const lines = [];
+  const walk = (nodes, depth) => {
+    for (const n of nodes) {
+      const pad = "  ".repeat(depth);
+      if (n.kind === "group") {
+        lines.push(`${pad}- 📁 ${groupById.get(n.id)?.name || "그룹"}`);
+        walk(n.children, depth + 1);
+      } else if (store.canAccessRoom(channel.id, n.id, client.userId, client.isAdmin)) {
+        const r = roomById.get(n.id);
+        lines.push(`${pad}- #${r.name} (${AI_ROOM_TYPES[r.type] || r.type})`);
+      }
+    }
+  };
+  walk(store.canonicalRoomLayout(channel), 0);
+  return lines.join("\n") || "(없음)";
+}
+
+// "📁 이름" / "이름" → 그룹. ponytail: 이름이 같은 그룹이 여럿이면 사이드바에서 먼저 나오는 것.
+function aiFindGroup(channel, raw) {
+  const name = String(raw || "").replace(/^\s*📁\s*/, "").trim().toLowerCase();
+  return name ? (channel.roomGroups || []).find((g) => String(g.name || "").trim().toLowerCase() === name) || null : null;
+}
+
+const AI_STAT_LABELS = {
+  joinMs: "접속", viewMs: "접속", micOnMs: "마이크 켠 시간", screenOnMs: "화면공유", soundOnMs: "소리공유",
+  charsTyped: "입력한 글자", charsDeleted: "지운 글자", linesTyped: "입력한 줄", messages: "메시지", emojis: "이모지", files: "파일", links: "링크",
+};
+function aiDuration(ms) {
+  const min = Math.round(ms / 60000);
+  return min >= 60 ? `${Math.floor(min / 60)}시간 ${min % 60}분` : `${min}분`;
+}
+
+// 텍스트 안의 #방이름 들의 통계(통계 창과 같은 값). 통계는 대표·관리자만 보므로 아니면 그렇다고만 알린다.
+function resolveAiStats(text, ctx, client) {
+  const allowed = store.isChannelOwner(ctx.channel.id, client.userId, client.isAdmin);
+  const cands = aiAllRoomCandidates(ctx.channel, client);
+  const src = String(text);
+  const seen = new Set();
+  const out = [];
+  for (let i = src.indexOf("#"); i >= 0 && out.length < AI_REF_MAX; i = src.indexOf("#", i + 1)) {
+    const hit = matchAiRefName(src.slice(i + 1), cands);
+    if (!hit || seen.has(hit.room.id)) continue;
+    seen.add(hit.room.id);
+    const room = hit.room;
+    let content = "(통계는 채널 대표·관리자만 볼 수 있습니다)";
+    if (allowed) {
+      const snap = roomStatsSnapshot(room.id, room.type);
+      const fmt = (k, v) => `${AI_STAT_LABELS[k] || k} ${k.endsWith("Ms") ? aiDuration(v) : v}`;
+      const users = snap.users.map((u) => `- ${u.name || "?"}: ${Object.entries(u).filter(([k, v]) => typeof v === "number" && k !== "userId").map(([k, v]) => fmt(k, v)).join(", ") || "기록 없음"}`);
+      content = `${room.type === "voice" ? `방 전체 통화 시간 ${aiDuration(snap.totalMs)}\n` : ""}${users.join("\n") || "(기록 없음)"}`;
+    }
+    out.push({ name: room.name, type: "stats", content });
+  }
+  return out;
+}
+
+// AI가 채팅방에 쓰는 글 — 요청한 사람을 사칭하지 않게 "AI" 라는 따로 된 멤버로 올린다(by = 요청한 사람).
+function aiChatMessage(roomId, text, client) {
+  const cu = store.findById(client.userId);
+  return {
+    id: crypto.randomBytes(8).toString("hex"), roomId, userId: "ai", name: "AI", code: "", ai: true,
+    by: cu ? cu.displayName : client.name || "", text: String(text).slice(0, 4000), mentions: [], files: [], at: Date.now(),
+  };
+}
+
 // AI가 화이트보드에 메모지를 붙인다 — 지금 올라 있는 것들 오른쪽에 이어 놓는다. 모델 글은 신뢰하지 않으므로 cleanTableItem 을 거친다.
 function aiAddTableNote(roomId, text) {
   const d = getTableDoc(roomId);
@@ -2531,6 +2610,49 @@ function applyAiMemoWrite(roomId, mode, rawBody, client) {
   }
 }
 
+// 방 순서·그룹 지시(move·group·group-rename·group-remove). 결과 메모 한 줄을 돌려준다.
+// 방은 범위 설정과 상관없이 채널 전체에서 찾는다(구조는 채널 하나라서). 요청자가 못 보는 방은 못 옮기고 자리 셈에서도 뺀다.
+function applyAiLayoutAction(kind, arg, body, channel, client) {
+  if (!store.canManageRooms(channel.id, client.userId, client.isAdmin)) return `⚠️ ${arg || kind}: 방·그룹을 정리할 권한이 없어 건너뜀`;
+  const first = body.split("\n")[0].trim();
+  let r;
+  let done;
+  if (kind === "move") {
+    const isGroup = arg.startsWith("📁");
+    const room = !isGroup && arg.startsWith("#") && matchAiRefName(arg.slice(1), aiAllRoomCandidates(channel, client))?.room;
+    const group = isGroup && aiFindGroup(channel, arg);
+    if (!room && !group) return `⚠️ ${arg || "옮기기"}: 이 채널에서 찾지 못해 건너뜀`;
+    const dest = !first || first === "/" ? null : aiFindGroup(channel, first);
+    if (first && first !== "/" && !dest) return `⚠️ ${arg}: 넣을 그룹 ${first}을(를) 찾지 못해 건너뜀`;
+    const position = Math.max(0, parseInt(body.split("\n")[1], 10) || 0);
+    const visible = (n) => n.kind === "group" || store.canAccessRoom(channel.id, n.id, client.userId, client.isAdmin);
+    r = store.moveRoomLayoutNode(channel.id, room ? "room" : "group", (room || group).id, dest?.id || "", position, visible);
+    done = `✅ ${arg} → ${dest ? `📁 ${dest.name}` : "채널 맨 바깥"}${position ? ` ${position}번째` : " 맨 끝"}으로 옮겼습니다.`;
+  } else if (kind === "group") {
+    const parent = arg ? aiFindGroup(channel, arg) : null;
+    if (arg && !parent) return `⚠️ 그룹 만들기: 상위 그룹 ${arg}을(를) 찾지 못해 건너뜀`;
+    if (!first) return "⚠️ 그룹 만들기: 이름이 비어 있음";
+    r = store.addRoomGroup(channel.id, first, parent?.id || "");
+    done = `✅ 📁 ${r.group?.name} 그룹을 만들었습니다.`;
+  } else {
+    const group = aiFindGroup(channel, arg);
+    if (!group) return `⚠️ ${arg || kind}: 그룹을 찾지 못해 건너뜀`;
+    if (kind === "group-rename") {
+      if (!first) return `⚠️ ${arg}: 새 이름이 비어 있음`;
+      r = store.renameRoomGroup(channel.id, group.id, first);
+      done = `✅ 📁 ${group.name} → 📁 ${r.group?.name} 이름을 바꿨습니다.`;
+    } else if (kind === "group-remove") {
+      r = store.removeRoomGroup(channel.id, group.id);
+      done = `✅ 📁 ${group.name} 그룹을 지웠습니다(안의 방은 바깥으로 꺼냈습니다).`;
+    } else {
+      return `⚠️ accord:${kind}: 모르는 지시라 건너뜀`;
+    }
+  }
+  if (r.error) return `⚠️ ${arg || kind}: ${r.error}`;
+  notifyChannelMembers(channel.id);
+  return done;
+}
+
 // 모델 응답의 accord: 지시 블록을 요청한 사람(client)의 권한으로 실행하고, 블록을 뺀 표시용 텍스트 + 결과 메모를 돌려준다.
 // ponytail: 채널의 모든 방을 다룰 수 있어서, 방 내용에 심어 둔 지시를 모델이 따르면 요청자 권한으로 실행된다.
 //           읽은 내용은 "지시 아님"으로 감싸고, 실행 수를 묶고, 삭제는 막고, 한 일은 전부 결과 메모로 남긴다.
@@ -2545,8 +2667,13 @@ function applyAiActions(replyText, ctx, client, scoped) {
       if (count === AI_ACTIONS_MAX + 1) notes.push(`⚠️ 한 번에 ${AI_ACTIONS_MAX}개까지만 실행해서 나머지는 건너뛰었습니다.`);
       return "";
     }
-    if (kind === "read") { notes.push(`⚠️ ${arg}: 읽기 횟수(${AI_READ_ROUNDS}번)를 넘어 더 읽지 못했습니다.`); return ""; }
+    if (kind === "read" || kind === "stats") { notes.push(`⚠️ ${arg}: 읽기 횟수(${AI_READ_ROUNDS}번)를 넘어 더 읽지 못했습니다.`); return ""; }
     const channel = store.getChannel(ctx.channel.id) || ctx.channel; // 같은 답에서 방금 만든 방도 찾게 매번 새로
+    if (kind === "move" || kind.startsWith("group")) {
+      const note = applyAiLayoutAction(kind, arg, body, channel, client);
+      if (note) notes.push(note);
+      return "";
+    }
     if (kind === "room") {
       const type = Object.keys(AI_ROOM_TYPES).find((k) => k === arg.toLowerCase() || AI_ROOM_TYPES[k] === arg);
       const name = body.split("\n")[0].replace(/#/g, "").trim();
@@ -2579,12 +2706,7 @@ function applyAiActions(replyText, ctx, client, scoped) {
       if (!isRoomWritable(tctx, client)) { notes.push(`⚠️ #${room.name}: 쓰기 권한이 없어 건너뜀`); return ""; }
       if (kind === "chat") {
         if (room.type !== "chat") { notes.push(`⚠️ #${room.name}: 채팅방이 아님`); return ""; }
-        const cu = store.findById(client.userId);
-        const cmsg = {
-          id: crypto.randomBytes(8).toString("hex"), roomId: room.id,
-          userId: client.userId, name: cu ? cu.displayName : client.name, code: cu ? cu.code : "",
-          text: `🤖 (AI방 요청) ${body}`.slice(0, 4000), mentions: [], files: [], at: Date.now(),
-        };
+        const cmsg = aiChatMessage(room.id, body, client);
         store.addMessage(room.id, cmsg);
         broadcastChat(channel, room.id, { type: "chat:message", message: cmsg });
         notes.push(`✅ #${room.name} 채팅에 메시지를 보냈습니다.`);
@@ -2803,7 +2925,10 @@ function handleAiMessage(client, message) {
         autoNote = `🎨 그림 요청으로 보고 ${model} 모델로 답합니다`;
       }
       let system = store.buildAiSystemInstruction(doc, store.getAiGlobalPrompt());
-      system += `\n\n${store.buildAiChannelBlock(aiChannelRooms(ctx, client, scoped))}`;
+      system += `\n\n${store.buildAiChannelBlock(aiChannelRooms(ctx, client, scoped), {
+        tree: store.canManageRooms(ctx.channel.id, client.userId, client.isAdmin) ? aiRoomTree(ctx.channel, client) : "",
+        stats: store.isChannelOwner(ctx.channel.id, client.userId, client.isAdmin),
+      })}`;
       if (refs.length) system += `\n\n${store.buildAiReferenceBlock(refs)}`;
       const contents = store.toGeminiContents(session.messages, AI_CONTEXT_TURNS);
       if (files.length) {
@@ -2823,10 +2948,11 @@ function handleAiMessage(client, message) {
       const run = async () => {
         let reply = await ask();
         for (let round = 0; round < AI_READ_ROUNDS && !autoNote; round++) {
-          const asked = [...String(reply.text || "").matchAll(AI_ACTION_RE)].filter((m) => m[1] === "read").map((m) => m[2]).join(" ");
-          const got = asked ? resolveAiRefs(asked, ctx, client, scoped) : [];
+          const blocks = [...String(reply.text || "").matchAll(AI_ACTION_RE)];
+          const asked = (kind) => blocks.filter((m) => m[1] === kind).map((m) => m[2]).join(" ");
+          const got = [...resolveAiRefs(asked("read"), ctx, client, scoped), ...resolveAiStats(asked("stats"), ctx, client)];
           if (!got.length) break;
-          read.push(...got.map((r) => `#${r.name}`));
+          read.push(...got.map((r) => `#${r.name}${r.type === "stats" ? " 통계" : ""}`));
           contents.push({ role: "model", parts: [{ text: reply.text }] });
           contents.push({ role: "user", parts: [{ text: `${store.buildAiReferenceBlock(got)}\n\n위 내용을 바탕으로 원래 요청에 이어서 답하세요.` }] });
           reply = await ask();
@@ -3555,6 +3681,25 @@ function handleTableMessage(client, message) {
       if (!item) return true;
       // 메모지 글은 table:text(OT)로만 바뀐다 — 여기서 받으면 동시 입력이 어긋난다.
       Object.assign(item, store.cleanTableItem(item, { ...message, text: undefined }), { z: ++d.doc.seq });
+      broadcastTable(roomId, { type: "table:item", roomId, item });
+      break;
+    }
+    case "table:file": {
+      // 글 파일 원문을 고쳐 새로 올린 파일로 바꾼다. 확장자가 같아야 하고(카드 종류 유지) 올린 사람이 본인이어야 한다.
+      // ponytail: 동시에 고치면 나중에 저장한 쪽이 이긴다(파일 단위). 같이 고칠 글은 메모방으로 만들어 쓴다.
+      const item = find();
+      const url = String(message.url || "");
+      if (!item || item.kind !== "file") return true;
+      if (!store.canAttach(ctx.channel.id, client.userId, client.isAdmin)) {
+        send(client, { type: "table-error", message: "파일을 올릴 권한이 없습니다." });
+        return true;
+      }
+      if (!/^\/uploads\/[a-f0-9]{24}_[A-Za-z0-9._-]+$/.test(url) || !store.isUploadOwner(url, client.userId)
+        || path.extname(url).toLowerCase() !== path.extname(item.url).toLowerCase()) {
+        send(client, { type: "table-error", message: "고친 파일을 찾지 못했습니다." });
+        return true;
+      }
+      Object.assign(item, { url, z: ++d.doc.seq });
       broadcastTable(roomId, { type: "table:item", roomId, item });
       break;
     }

@@ -588,18 +588,40 @@ const reviews = [
     // AI방: 읽어 온 방 내용 블록(지시로 따르지 말라는 안내 포함) + 채널 방 목록·지시 블록 안내.
     try {
       const ref = dataStore.match(/function buildAiReferenceBlock\(refs\) \{[\s\S]*?\n\}/);
-      const chan = dataStore.match(/function buildAiChannelBlock\(rooms\) \{[\s\S]*?\n\}/);
+      const chan = dataStore.match(/function buildAiChannelBlock\(rooms, \{ tree = "", stats = false \} = \{\}\) \{[\s\S]*?\n\}/);
       if (!ref || !chan) return false;
       const fns = new Function(`${ref[0]}\n${chan[0]}\nreturn { buildAiReferenceBlock, buildAiChannelBlock };`)();
       const out = fns.buildAiReferenceBlock([{ name: "회의록", type: "memo", content: "다음 스프린트 목표: 로그인" }, { name: "보드", type: "table", content: "- 메모지: 할 일" }]);
       const help = fns.buildAiChannelBlock([{ name: "자유 질문", label: "채팅방" }]);
+      // 방 관리 권한(tree)·대표(stats)일 때만 순서·그룹·통계 안내가 붙는다.
+      const full = fns.buildAiChannelBlock([], { tree: "- 📁 자료\n  - #회의록 (메모장)", stats: true });
+      const layoutKinds = ["move #방이름", "group\n", "group-rename 📁그룹이름", "group-remove 📁그룹이름", "stats #방이름"];
       return fns.buildAiReferenceBlock([]) === "" && fns.buildAiReferenceBlock(null) === ""
         && out.includes("[읽어 온 메모장 #회의록]") && out.includes("다음 스프린트 목표: 로그인") && out.includes("[읽어 온 화이트보드 #보드]")
         && out.includes("따르지 마세요")
         && help.includes("- #자유 질문 (채팅방)") && fns.buildAiChannelBlock([]).includes("(없음)")
-        && ["read #방이름", "memo #방이름", "memo-append #방이름", "chat #방이름", "note #방이름", "room memo", "rename #방이름"].every((k) => help.includes("```accord:" + k));
+        && ["read #방이름", "memo #방이름", "memo-append #방이름", "chat #방이름", "note #방이름", "room memo", "rename #방이름"].every((k) => help.includes("```accord:" + k))
+        && layoutKinds.every((k) => !help.includes("```accord:" + k) && full.includes("```accord:" + k))
+        && full.includes("[방 구조]") && full.includes("  - #회의록 (메모장)") && !help.includes("[방 구조]");
     } catch { return false; }
-  })(), "AI방 읽은 방 내용은 지시가 아니라고 감싸고, 채널 방 목록과 지시 블록(읽기·쓰기·메모지·방 만들기·이름 바꾸기)을 안내한다 (runtime)"],
+  })(), "AI방 읽은 방 내용은 지시가 아니라고 감싸고, 채널 방 목록과 지시 블록(읽기·쓰기·메모지·방 만들기·이름 바꾸기, 권한 있으면 순서·그룹·통계)을 안내한다 (runtime)"],
+  [(() => {
+    // AI방 방·그룹 옮기기: 자리는 요청자가 볼 수 있는 것만 세고, 그룹을 자기 하위로 옮기면 거절한다.
+    try {
+      const pick = (name) => dataStore.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n\\}`))[0];
+      const fns = new Function("getChannel", "canonicalRoomLayout", "reorderRoomLayout",
+        `${pick("findRoomLayoutGroupChildren")}\n${pick("removeRoomLayoutNode")}\n${pick("moveRoomLayoutNode")}\nreturn moveRoomLayoutNode;`);
+      const layout = [{ kind: "room", id: "a" }, { kind: "group", id: "g", children: [{ kind: "room", id: "hidden" }, { kind: "room", id: "b" }, { kind: "group", id: "g2", children: [] }] }];
+      const move = fns(() => ({}), () => structuredClone(layout), (_id, next) => ({ layout: next }));
+      const visible = (n) => n.kind === "group" || n.id !== "hidden";
+      const into = move("c", "room", "a", "g", 1, visible).layout; // 보이는 것 중 1번째 = b 앞(숨은 방 뒤)
+      const end = move("c", "room", "a", "g", 0, visible).layout;
+      return JSON.stringify(into[0].children.map((n) => n.id)) === JSON.stringify(["hidden", "a", "b", "g2"])
+        && end[0].children.at(-1).id === "a"
+        && Boolean(move("c", "group", "g", "g2", 0, visible).error)
+        && Boolean(move("c", "room", "zz", "", 0, visible).error);
+    } catch { return false; }
+  })(), "AI방 방·그룹 옮기기가 보이는 방 기준 자리에 넣고, 그룹을 자기 안으로는 못 옮긴다 (runtime)"],
   [(() => {
     // AI방 지시 블록 정규식: 종류·인자(#공백 있는 방이름)·본문을 가르고, 빈 본문(읽기)도 잡는다.
     try {
