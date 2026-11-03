@@ -13576,6 +13576,7 @@ function tableViewCenter(t) {
 
 function applyTableView(t) {
   dom.tableStage.style.transform = `translate(${t.panX}px, ${t.panY}px) scale(${t.zoom})`;
+  dom.tableStage.style.setProperty("--table-zoom", t.zoom); // 다른 사람 마우스는 확대해도 같은 크기로
   const grid = TABLE_GRID * t.zoom;
   dom.tableScroll.style.backgroundSize = `${grid}px ${grid}px`;
   dom.tableScroll.style.backgroundPosition = `${t.panX}px ${t.panY}px`;
@@ -13665,6 +13666,8 @@ function openTableRoom(roomId) {
     drag: null,
     pan: null,
     arrowDraft: null,
+    cursors: new Map(), // clientId -> 다른 사람 마우스 요소
+    cursorSentAt: 0,
   };
   document.body.classList.add("table-open");
   dom.tableScroll.focus({ preventScroll: true });
@@ -13725,6 +13728,7 @@ function handleTableSocketMessage(message) {
     t.cards.clear();
     t.selected = "";
     t.drag = null;
+    t.cursors.clear();
     dom.tableStage.replaceChildren();
     for (const item of message.items || []) upsertTableCard(item);
     placeTableArrows(t); // 화살표가 붙은 카드보다 먼저 왔을 수 있다
@@ -13743,6 +13747,8 @@ function handleTableSocketMessage(message) {
       selectTableItem(t, card.item.id);
       editTableNote(card);
     }
+  } else if (message.type === "table:cursor") {
+    showTableCursor(t, message);
   } else if (message.type === "table:text") {
     const card = t.cards.get(message.itemId);
     if (card?.text) applyTableNoteText(card, message);
@@ -13999,6 +14005,28 @@ function applyTableNoteText(card, message) {
   if (document.activeElement === text) {
     text.setSelectionRange(OT.transformCursor(selectionStart, next.op, "left"), OT.transformCursor(selectionEnd, next.op, "left"));
   }
+}
+
+// 다른 사람 마우스 — 보드 좌표에 두어 화면을 옮기거나 확대해도 제자리에 있다. 색은 접속(clientId)마다 고정.
+function showTableCursor(t, message) {
+  let cur = t.cursors.get(message.clientId);
+  if (message.leave) {
+    cur?.remove();
+    t.cursors.delete(message.clientId);
+    return;
+  }
+  if (!cur) {
+    cur = el("div", "table-cursor");
+    let hash = 0;
+    for (const ch of message.clientId) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+    cur.style.setProperty("--cursor-color", `hsl(${hash % 360} 75% 50%)`);
+    cur.append(el("span", "table-cursor-name"));
+    t.cursors.set(message.clientId, cur);
+    dom.tableStage.append(cur);
+  }
+  cur.lastChild.textContent = message.name || "게스트";
+  cur.style.left = `${message.x}px`;
+  cur.style.top = `${message.y}px`;
 }
 
 function addTableNote(t, at, fields) {
@@ -14621,6 +14649,12 @@ function bindTableEvents() {
   scroll.addEventListener("pointermove", (event) => {
     const t = state.table;
     if (!t) return;
+    // 내 마우스 위치를 같은 보드를 보는 사람에게(초당 20번까지)
+    if (t.loaded && event.timeStamp - t.cursorSentAt > 50) {
+      t.cursorSentAt = event.timeStamp;
+      const p = tableWorldPoint(t, event.clientX, event.clientY);
+      sendSocket({ type: "table:cursor", roomId: t.roomId, x: Math.round(p.x), y: Math.round(p.y) });
+    }
     if (t.pan) {
       t.panX = t.pan.panX + (event.clientX - t.pan.x) / t.pan.k;
       t.panY = t.pan.panY + (event.clientY - t.pan.y) / t.pan.k;
@@ -14702,6 +14736,7 @@ function bindTableEvents() {
   };
   scroll.addEventListener("pointerleave", () => {
     const t = state.table;
+    if (t?.loaded) sendSocket({ type: "table:cursor", roomId: t.roomId, leave: true });
     if (t && !t.arrowDraft && !t.drag) showTableSnap(t, null);
   });
   scroll.addEventListener("pointerup", finish);
