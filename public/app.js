@@ -14109,6 +14109,19 @@ function tableArrowEndAt(t, event, except) {
   return { id: top.id, a };
 }
 
+// 포인터 밑의 화살표 끝. 안 고른 화살표는 끝 손잡이가 숨어 있고, 카드에 붙은 끝은 연결점 점에 덮여서
+// 손잡이만으로는 바로 끌 수 없다 — 그래서 위치로 찾는다.
+function tableArrowEndNear(t, event) {
+  const p = tableWorldPoint(t, event.clientX, event.clientY);
+  const reach = 10 / tableScreenScale(t);
+  for (const card of t.cards.values()) {
+    if (card.item.kind !== "arrow") continue;
+    const i = tableArrowPoints(t, card.item)?.findIndex((q) => Math.hypot(q.x - p.x, q.y - p.y) <= reach) ?? -1;
+    if (i >= 0) return { card, end: i ? "to" : "from" };
+  }
+  return null;
+}
+
 // 카드의 연결점(화살표 끝이 닿는 자리)을 보여 준다. 붙을 점(end.a)은 채워서. end 가 허공이면 숨긴다.
 // hover = 마우스만 올린 상태 — 점을 눌러 끌면 그 점에서 화살표를 그린다.
 function showTableSnap(t, end, hover = false) {
@@ -14416,8 +14429,10 @@ function bindTableEvents() {
     if (!t) return;
     // 보드를 누르면 포커스를 보드로 가져온다 — 쓰던 메모지는 끝나고, 붙여넣기·Delete 키가 보드로 온다.
     if (!editable(event.target)) scroll.focus({ preventScroll: true });
-    const onItem = event.target.closest(".table-card, .table-arrow");
-    const dot = event.target.closest(".table-snap.hover i");
+    // 화살표 끝을 누르면 (고르지 않았어도) 그 끝을 다시 붙이기 — 같은 자리의 연결점 점보다 먼저
+    const near = event.button === 0 && t.writable && t.tool === "select" ? tableArrowEndNear(t, event) : null;
+    const onItem = near?.card.el || event.target.closest(".table-card, .table-arrow");
+    const dot = !near && event.target.closest(".table-snap.hover i");
     if (event.button === 0 && t.writable && (t.tool === "arrow" || dot)) {
       // 화살표 그리기: 화살표 도구로 아무 데서나, 또는 카드에 마우스를 올리면 나오는 연결점을 눌러 끌어서
       const from = dot ? { id: t.snapEl.dataset.target, a: Number(dot.dataset.anchor) } : tableArrowEndAt(t, event);
@@ -14448,7 +14463,7 @@ function bindTableEvents() {
       // 끝 손잡이 = 그 끝을 다른 곳에 다시 붙이기. 선 = 화살표 옮기기(카드에 붙은 끝은 그대로),
       // 양끝이 다 카드에 붙어 있으면 붙은 채로 휘기.
       const { from, to, bend } = card.item;
-      t.drag = { card, end: event.target.closest("[data-arrow-end]")?.dataset.arrowEnd || "", startX: event.clientX, startY: event.clientY, from, to, bend, moved: false };
+      t.drag = { card, end: near?.end || event.target.closest("[data-arrow-end]")?.dataset.arrowEnd || "", startX: event.clientX, startY: event.clientY, from, to, bend, moved: false };
       card.el.setPointerCapture(event.pointerId);
       event.preventDefault();
       return;
