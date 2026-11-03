@@ -13733,6 +13733,8 @@ function handleTableSocketMessage(message) {
     setTableStatus(t.cards.size ? "" : "빈 곳을 더블클릭해 메모지를 붙이거나, 파일을 끌어다 놓거나 붙여넣으세요", "muted");
   } else if (message.type === "table:item") {
     const fresh = !t.cards.has(message.item.id);
+    const mineEcho = message.by === state.clientId && t.cards.get(message.item.id);
+    if (mineEcho?.unacked) mineEcho.unacked -= 1;
     upsertTableCard(message.item);
     setTableStatus("");
     // 내가 방금 붙인 메모지는 바로 쓴다. 채팅 등 다른 입력칸에서 쓰는 중이면 포커스를 뺏지 않는다.
@@ -13763,9 +13765,11 @@ function upsertTableCard(item) {
     t.cards.set(item.id, card);
     dom.tableStage.append(card.el);
   }
-  // 끌고 있는 카드·화살표는 서버 메아리보다 내 손이 최신이다. 메모지 글은 table:text(OT)로만 바뀐다.
-  const dragging = t.drag?.card === card;
-  const held = !dragging ? null : item.kind === "arrow" ? { from: previous.from, to: previous.to, bend: previous.bend } : { x: previous.x, y: previous.y, w: previous.w, h: previous.h };
+  // 끌고 있는 카드·화살표는 서버 메아리보다 내 손이 최신이다. 손을 뗀 뒤에도 끌면서 보낸 위치의 메아리가 늦게 오므로
+  // 그게 다 돌아올 때까지 내 위치를 둔다 — 안 그러면 놓은 자리에서 잠깐 뒤로 튀었다 돌아온다.
+  // 메아리가 안 오는 경우(서버가 버림)에 갇히지 않게 2초가 지나면 서버 값을 받는다. 메모지 글은 table:text(OT)로만 바뀐다.
+  const mine = t.drag?.card === card || (card.unacked > 0 && Date.now() - card.sentAt < 2000);
+  const held = !mine ? null : item.kind === "arrow" ? { from: previous.from, to: previous.to, bend: previous.bend } : { x: previous.x, y: previous.y, w: previous.w, h: previous.h };
   card.item = { ...item, ...held, ...(previous && card.text ? { text: card.text.value } : null) };
   placeTableCard(card);
   // 누가 원문을 고쳐 새 파일로 바뀜 — 다시 받아 그린다. 내가 저장한 판이거나 내가 고치는 중이면 그대로 둔다.
@@ -14182,7 +14186,13 @@ function renderTableCardControls(card) {
 }
 
 // patch 에 담은 값만 보낸다 — 남이 동시에 바꾼 다른 값(위치·글 등)을 내 옛 값으로 덮지 않게.
+// 보낸 수(unacked)를 세어 두고, 내 메아리가 다 돌아올 때까지는 내 화면의 위치·크기를 그대로 둔다(upsertTableCard).
 function sendTableUpdate(itemId, patch) {
+  const card = state.table.cards.get(itemId);
+  if (card) {
+    card.unacked = (card.unacked || 0) + 1;
+    card.sentAt = Date.now();
+  }
   sendSocket({ ...patch, type: "table:update", roomId: state.table.roomId, itemId });
 }
 

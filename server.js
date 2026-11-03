@@ -3681,7 +3681,7 @@ function handleTableMessage(client, message) {
       if (!item) return true;
       // 메모지 글은 table:text(OT)로만 바뀐다 — 여기서 받으면 동시 입력이 어긋난다.
       Object.assign(item, store.cleanTableItem(item, { ...message, text: undefined }), { z: ++d.doc.seq });
-      broadcastTable(roomId, { type: "table:item", roomId, item });
+      broadcastTable(roomId, { type: "table:item", roomId, item, by: client.id }); // by = 보낸 사람이 자기 메아리를 셈(끌기 뒤 튐 방지)
       break;
     }
     case "table:file": {
