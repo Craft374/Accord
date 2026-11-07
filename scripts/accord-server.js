@@ -1,13 +1,13 @@
 // 터미널용 Accord 서버 관리 도구. 서버를 켜 두고 이 창에서 명령으로 계정을 미리 만든다.
 //   npm run host                    서버 켜기(포트는 PORT 환경변수 또는 --port, 기본 25565)
-//   npm run host -- --no-signup     새 가입을 막고 여기서 만든 계정만 쓰게 하기
+//   npm run host -- --no-signup     새 가입을 막기(이미 있는 계정과 여기서 만든 계정만 로그인)
 //   npm run host -- --mode link     접속 방식: basic(기본) | link(인터넷 링크, cloudflared 필요) | campus(학교·회사망)
 // 서버 설정(TURN 등)은 지금처럼 server.env 를 읽고, 데이터는 server-data/ 에 그대로 쌓인다.
 const readline = require("node:readline");
 const { ServerHost, MODES } = require("../server-app/core.js");
 
 const HELP = `명령:
-  users                          여기서 만든 계정 목록
+  users                          계정 목록(IP·접속 기록 제외)
   add <아이디> <비밀번호> [표시 이름]  계정 만들기
   passwd <아이디> <새 비밀번호>      비밀번호 바꾸기(모든 기기에서 로그아웃)
   del <아이디>                    계정 지우기
@@ -58,7 +58,7 @@ process.on("SIGTERM", quit);
 async function findUser(username) {
   const { users } = await host.request("host:list-users");
   const user = users.find((u) => u.username === String(username || "").toLowerCase());
-  if (!user) throw new Error(`여기서 만든 계정 중에 "${username}"이(가) 없습니다.`);
+  if (!user) throw new Error(`"${username}" 계정이 없습니다.`);
   return user;
 }
 
@@ -71,8 +71,8 @@ async function run(line) {
       return console.log(HELP);
     case "users": {
       const { users } = await host.request("host:list-users");
-      if (!users.length) return console.log("아직 만든 계정이 없습니다.");
-      return console.log(users.map((u) => `  ${u.username}  #${u.code}  ${u.displayName}`).join("\n"));
+      if (!users.length) return console.log("아직 계정이 없습니다.");
+      return console.log(users.map((u) => `  ${u.username}  #${u.code}  ${u.displayName}  (${u.isAdmin ? "관리자" : u.hostCreated ? "미리 만듦" : "직접 가입"})`).join("\n"));
     }
     case "add": {
       const [username, password, ...name] = rest;

@@ -14,7 +14,7 @@ app.setPath("userData", path.join(app.getPath("appData"), "Accord Server"));
 if (process.platform === "win32") app.setAppUserModelId("craft374.accord.server"); // 없으면 윈도우 알림이 안 뜬다
 const HOME = app.getPath("userData");
 const CONFIG_FILE = path.join(HOME, "config.json");
-// 가입은 기본으로 닫는다: 서버 앱에는 관리자가 없어서 모르는 사람이 직접 가입하면 지울 방법이 없다.
+// 가입은 기본으로 닫는다: 인터넷 링크로 열면 링크를 아는 누구나 가입할 수 있어서, 여는 쪽을 고르게 한다.
 // dataDir: 비우면 앱 데이터 폴더. 이미 쓰던 Accord 의 server-data 폴더를 고르면 그 계정·채팅을 그대로 쓴다.
 const DEFAULT_CONFIG = { port: 25565, allowSignup: false, openAtLogin: false, mode: "basic", dataDir: "" };
 const isMac = process.platform === "darwin";

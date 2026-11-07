@@ -242,7 +242,7 @@ function createUser({ username, password, displayName, email, avatar, hostCreate
     banner: "",
     bannerGradient: "",
     isAdmin: false,
-    ...(hostCreated ? { hostCreated: true } : {}), // 서버 앱/CLI 에서 미리 만든 계정(호스트는 이것만 보고 관리한다)
+    ...(hostCreated ? { hostCreated: true } : {}), // 서버 앱/CLI 에서 미리 만든 계정(목록에 '미리 만듦'으로 표시)
     createdAt: Date.now(),
     lastLoginAt: 0,
     lastIp: "",
@@ -374,9 +374,12 @@ function listUsers() {
   return db.users.map(sanitizeUserAdmin);
 }
 
-// 호스트(서버 앱)용: 호스트가 만든 계정만, IP·접속 기록 없이.
+// 호스트(서버 주인)용 계정 목록: 자체 호스팅 메신저의 서버 운영자 수준.
+// 계정 자체는 다 보이지만 개인정보(IP·접속 기록·이메일)는 빼고 준다.
 function listHostUsers() {
-  return db.users.filter((u) => u.hostCreated && !u.isAdmin).map(({ id, username, displayName, code, createdAt }) => ({ id, username, displayName, code, createdAt }));
+  return db.users.map(({ id, username, displayName, code, createdAt, isAdmin, hostCreated }) => ({
+    id, username, displayName, code, createdAt, isAdmin: Boolean(isAdmin), hostCreated: Boolean(hostCreated),
+  }));
 }
 
 // 이전 비밀번호 없이 재설정(호스트용). 모든 기기 로그인을 끊는다.

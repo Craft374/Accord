@@ -147,11 +147,19 @@ function renderUsers(highlightId) {
     return;
   }
   if (!users.length) {
-    list.replaceChildren(h("div", { className: "empty", textContent: "아직 만든 계정이 없습니다.\n친구에게 줄 계정을 미리 만들어 두세요." }));
+    list.replaceChildren(h("div", { className: "empty", textContent: "아직 계정이 없습니다.\n친구에게 줄 계정을 미리 만들어 두세요." }));
     list.firstChild.style.whiteSpace = "pre-line";
     return;
   }
   list.replaceChildren(...users.map((u) => {
+    const sub = `${u.username} · #${u.code} · ${u.isAdmin ? "관리자" : u.hostCreated ? "미리 만듦" : "직접 가입"}`;
+    const row = (...actions) => h("div", { className: `row has-avatar${u.id === highlightId ? " enter" : ""}` },
+      h("span", { className: "avatar", textContent: (u.displayName || u.username).slice(0, 1).toUpperCase() }),
+      h("span", { className: "row-text" },
+        h("span", { className: "row-title", textContent: u.displayName }),
+        h("span", { className: "row-sub", textContent: sub })),
+      h("span", { className: "row-actions" }, ...actions));
+    if (u.isAdmin) return row(); // 관리자 계정은 서버 앱 권한 밖
     const pw = h("button", { className: "tinted small", textContent: "비밀번호" });
     pw.addEventListener("click", () => openSheet("password", u));
     const del = h("button", { className: "tinted small destructive", textContent: "삭제" });
@@ -174,12 +182,7 @@ function renderUsers(highlightId) {
       }
       renderUsers();
     });
-    return h("div", { className: `row has-avatar${u.id === highlightId ? " enter" : ""}` },
-      h("span", { className: "avatar", textContent: (u.displayName || u.username).slice(0, 1).toUpperCase() }),
-      h("span", { className: "row-text" },
-        h("span", { className: "row-title", textContent: u.displayName }),
-        h("span", { className: "row-sub", textContent: `${u.username} · #${u.code}` })),
-      h("span", { className: "row-actions" }, pw, del));
+    return row(pw, del);
   }));
 }
 

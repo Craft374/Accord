@@ -987,7 +987,8 @@ function kickUser(userId) {
 // ===== 호스트(서버 앱·CLI) =====
 // server-app/core.js 가 띄웠을 때(ACCORD_HOST=1)만 열리는 IPC 채널이다. 네트워크로는 노출되지 않는다.
 // 서버 앱은 Electron utilityProcess(process.parentPort), CLI 는 child_process.fork(process.send).
-// 관리자보다 약한 권한: 호스트가 만든 계정만 보고(IP·접속 기록 제외)·만들고·지우고·비밀번호를 바꾼다.
+// 관리자보다 약한 "서버 주인" 권한: 계정 목록(IP·접속 기록·이메일 제외)을 보고, 계정을 만들고,
+// 관리자가 아닌 계정의 비밀번호 재설정·삭제만 한다. 관리자 지정·코드 변경·관리자 계정 수정은 못 한다.
 const HOST_PORT = process.env.ACCORD_HOST === "1" ? process.parentPort || (process.send ? process : null) : null;
 function hostSend(msg) {
   if (HOST_PORT === process) process.connected && process.send(msg);
@@ -1013,7 +1014,7 @@ if (HOST_PORT) {
 function handleHostRequest(msg) {
   const hostUser = (id) => {
     const user = store.findById(String(id || ""));
-    return user?.hostCreated && !user.isAdmin ? user : null; // 나중에 관리자가 된 계정은 호스트가 못 건드린다
+    return user && !user.isAdmin ? user : null; // 관리자 계정은 호스트가 못 건드린다
   };
   switch (msg.type) {
     case "host:status":
@@ -1026,7 +1027,7 @@ function handleHostRequest(msg) {
     }
     case "host:set-password": {
       const user = hostUser(msg.userId);
-      if (!user) return { error: "서버 앱에서 만든 계정만 바꿀 수 있습니다." };
+      if (!user) return { error: "관리자 계정은 여기서 바꿀 수 없습니다." };
       const result = store.resetPassword(user.id, msg.password);
       if (result.error) return { error: result.error };
       kickUser(user.id);
@@ -1034,7 +1035,7 @@ function handleHostRequest(msg) {
     }
     case "host:delete-user": {
       const user = hostUser(msg.userId);
-      if (!user) return { error: "서버 앱에서 만든 계정만 지울 수 있습니다." };
+      if (!user) return { error: "관리자 계정은 여기서 지울 수 없습니다." };
       const result = store.deleteUser(user.id);
       if (result.error) return { error: result.error };
       kickUser(user.id);
