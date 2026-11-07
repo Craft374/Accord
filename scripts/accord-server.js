@@ -1,9 +1,10 @@
 // 터미널용 Accord 서버 관리 도구. 서버를 켜 두고 이 창에서 명령으로 계정을 미리 만든다.
 //   npm run host                    서버 켜기(포트는 PORT 환경변수 또는 --port, 기본 25565)
 //   npm run host -- --no-signup     새 가입을 막고 여기서 만든 계정만 쓰게 하기
+//   npm run host -- --mode link     접속 방식: basic(기본) | link(인터넷 링크, cloudflared 필요) | campus(학교·회사망)
 // 서버 설정(TURN 등)은 지금처럼 server.env 를 읽고, 데이터는 server-data/ 에 그대로 쌓인다.
 const readline = require("node:readline");
-const { ServerHost } = require("../server-app/core.js");
+const { ServerHost, MODES } = require("../server-app/core.js");
 
 const HELP = `명령:
   users                          여기서 만든 계정 목록
@@ -19,10 +20,23 @@ const env = {};
 const portIndex = args.indexOf("--port");
 if (portIndex >= 0) env.PORT = args[portIndex + 1];
 if (args.includes("--no-signup")) env.ALLOW_SIGNUP = "0";
+const modeIndex = args.indexOf("--mode");
+const mode = modeIndex >= 0 ? args[modeIndex + 1] : "basic";
+if (!MODES[mode]) {
+  console.error(`알 수 없는 접속 방식입니다: ${mode} (basic | link | campus)`);
+  process.exit(1);
+}
+Object.assign(env, MODES[mode]);
 
 const host = new ServerHost();
 host.on("log", (line) => console.log(line));
-host.on("state", ({ state, info, error }) => {
+let lastState = "";
+let lastTunnel = "";
+host.on("state", ({ state, info, error, tunnel }) => {
+  if (tunnel.status && tunnel.status !== lastTunnel) console.log(tunnel.status);
+  lastTunnel = tunnel.status;
+  if (state === lastState) return;
+  lastState = state;
   if (state === "running") console.log(`\n서버가 켜졌습니다.\n${info.urls.map((u) => `  ${u.label}: ${u.url}`).join("\n")}\n\n${HELP}\n`);
   if (state === "stopped" && error) {
     console.error(`\n${error}`);

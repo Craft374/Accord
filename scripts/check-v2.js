@@ -190,6 +190,8 @@ const checks = [
   [dataStore.includes("process.env.ACCORD_DATA_DIR") && dataStore.includes("function listHostUsers"), "data dir is overridable and host user list hides others"],
   [hostCore.includes("windowsHide: true") && hostCore.includes("host:shutdown") && serverAppMain.includes("utilityProcess.fork("), "server host launches server.js without console/busy cursor and stops it gracefully"],
   [server.includes('process.env.ACCORD_HOST === "1"') && hostCore.includes('ACCORD_HOST: "1"'), "host IPC opens only when launched by server-app/core.js"],
+  [hostCore.includes('link: { HOST: "127.0.0.1", ACCORD_TUNNEL: "1" }') && hostCore.includes('campus: { NODE_TLS_REJECT_UNAUTHORIZED: "0" }') && hostCore.includes("(?!api\\.)"), "server host offers basic/link(Cloudflare)/campus modes and ignores cloudflared's API host"],
+  [server.includes('process.env.ACCORD_TUNNEL === "1"') && server.includes('req.headers["cf-connecting-ip"]'), "link mode uses the visitor IP from Cloudflare for per-IP limits"],
   [serverAppMain.includes('app.setPath("userData"') && serverAppMain.indexOf('app.setPath("userData"') < serverAppMain.indexOf("requestSingleInstanceLock") && serverAppMain.includes("win.hide()"), "server app keeps its own data/lock and hides instead of quitting while running"],
   [pkg.scripts["server:https"] && startHttps.includes("VOICE_CHAT_REQUIRE_HTTPS") && startHttps.includes("getLanIp"), "https server script uses secure LAN mode"],
   [requiredLaunchers.every((file) => fs.existsSync(file)), "required bat and command launchers exist"],

@@ -1,10 +1,12 @@
 // Accord Server — 뉴비도 딸깍 한 번으로 자기 Accord 서버를 띄우는 데스크톱 앱(윈도우·맥).
 // 서버는 이 앱의 자식 프로세스(core.js)로 돌고, 창을 닫아도 트레이/메뉴 막대에 남아 계속 돈다.
 // 메인 프로세스에서는 동기 I/O 를 하지 않는다(윈도우 "응답 없음"·모래시계 커서 방지).
-const { app, BrowserWindow, Menu, Notification, Tray, clipboard, ipcMain, nativeImage, nativeTheme, shell, utilityProcess } = require("electron");
+const { app, BrowserWindow, Menu, Notification, Tray, clipboard, ipcMain, nativeImage, nativeTheme, net, shell, utilityProcess } = require("electron");
+const { execFile } = require("node:child_process");
 const fs = require("node:fs/promises");
 const path = require("node:path");
-const { ServerHost } = require("./core.js");
+const { promisify } = require("node:util");
+const { ServerHost, MODES } = require("./core.js");
 
 // 클라이언트 앱(이름 accord)과 데이터·단일 실행 잠금이 겹치지 않게 이름을 먼저 정한다.
 app.setName("Accord Server");
@@ -13,7 +15,7 @@ if (process.platform === "win32") app.setAppUserModelId("craft374.accord.server"
 const HOME = app.getPath("userData");
 const CONFIG_FILE = path.join(HOME, "config.json");
 // 가입은 기본으로 닫는다: 서버 앱에는 관리자가 없어서 모르는 사람이 직접 가입하면 지울 방법이 없다.
-const DEFAULT_CONFIG = { port: 25565, allowSignup: false, openAtLogin: false };
+const DEFAULT_CONFIG = { port: 25565, allowSignup: false, openAtLogin: false, mode: "basic" };
 const isMac = process.platform === "darwin";
 
 // utilityProcess: Chromium 이 자식 프로세스로 띄워서 윈도우 모래시계 커서·콘솔 창이 없고, 맥 독에도 안 뜬다.
@@ -28,7 +30,58 @@ const host = new ServerHost({
       on: (event, fn) => child.on(event, fn),
     };
   },
+  cloudflared: cloudflaredPath,
 });
+
+// 인터넷 링크 모드용 cloudflared. 처음 한 번 Cloudflare 공식 GitHub 릴리스에서 받아 앱 데이터 폴더에 둔다(약 40MB).
+// net.fetch: 크로미움 네트워크(OS 인증서 저장소)를 써서 학교·회사망 인증서도 통한다.
+const CLOUDFLARED = path.join(HOME, "bin", process.platform === "win32" ? "cloudflared.exe" : "cloudflared");
+let downloading = null;
+let reportDownload = () => {};
+async function cloudflaredPath(onStatus) {
+  if (await fs.access(CLOUDFLARED).then(() => true, () => false)) return CLOUDFLARED;
+  // 받는 도중 서버를 다시 켜도 같은 파일을 두 번 받지 않게 하나로 묶고, 진행률은 마지막으로 물어본 쪽에 보낸다.
+  reportDownload = onStatus;
+  downloading ??= downloadCloudflared((text) => reportDownload(text)).finally(() => { downloading = null; });
+  return downloading;
+}
+
+async function downloadCloudflared(onStatus) {
+  const arch = process.arch === "arm64" && isMac ? "arm64" : "amd64";
+  const asset = process.platform === "win32" ? "cloudflared-windows-amd64.exe" : `cloudflared-darwin-${arch}.tgz`;
+  const res = await net.fetch(`https://github.com/cloudflare/cloudflared/releases/latest/download/${asset}`, { signal: AbortSignal.timeout(5 * 60000) });
+  if (!res.ok || !res.body) throw new Error(`cloudflared 를 내려받지 못했습니다(${res.status}).`);
+  const total = Number(res.headers.get("content-length")) || 0;
+  // 다 받고 확인한 뒤에만 최종 경로로 옮긴다 — 중간에 끊기면 잘린 파일이 캐시로 남지 않게.
+  const work = path.join(path.dirname(CLOUDFLARED), ".download");
+  await fs.rm(work, { recursive: true, force: true });
+  await fs.mkdir(work, { recursive: true });
+  const tmp = path.join(work, asset);
+  const file = await fs.open(tmp, "w");
+  let got = 0;
+  let shown = -1;
+  try {
+    for await (const chunk of res.body) {
+      await file.write(chunk);
+      got += chunk.length;
+      const pct = total ? Math.floor((got / total) * 100) : -1;
+      if (pct !== shown && pct % 5 === 0) onStatus(`링크 도구(cloudflared) 내려받는 중… ${(shown = pct)}%`);
+    }
+  } finally {
+    await file.close();
+  }
+  if (total && got !== total) throw new Error("cloudflared 내려받기가 중간에 끊겼습니다.");
+  let bin = tmp;
+  if (asset.endsWith(".tgz")) {
+    await promisify(execFile)("tar", ["-xzf", tmp, "-C", work]);
+    bin = path.join(work, "cloudflared");
+  }
+  await fs.chmod(bin, 0o755);
+  await fs.rename(bin, CLOUDFLARED);
+  await fs.rm(work, { recursive: true, force: true });
+  return CLOUDFLARED;
+}
+
 let config = { ...DEFAULT_CONFIG };
 let win = null;
 let tray = null;
@@ -74,6 +127,7 @@ function serverEnv() {
     ACCORD_DATA_DIR: path.join(HOME, "server-data"),
     SSL_CERT_FILE: path.join(HOME, "cert", "cert.pem"),
     SSL_KEY_FILE: path.join(HOME, "cert", "key.pem"),
+    ...MODES[config.mode],
   };
 }
 
@@ -170,6 +224,7 @@ async function readJson(file) {
 async function saveConfig(patch) {
   const port = Number(patch.port ?? config.port);
   if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("포트는 1024~65535 사이 숫자여야 합니다.");
+  if (patch.mode !== undefined && !MODES[patch.mode]) throw new Error("알 수 없는 접속 방식입니다.");
   config = { ...config, ...patch, port };
   if ("openAtLogin" in patch) app.setLoginItemSettings({ openAtLogin: Boolean(config.openAtLogin), args: ["--autostart"] });
   await fs.mkdir(HOME, { recursive: true });

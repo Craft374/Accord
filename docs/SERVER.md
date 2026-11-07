@@ -18,10 +18,14 @@ Accord 서버(`server.js`)는 시그널링(WebSocket)과 통화 UI(`public/`)를
 - 서버가 예기치 않게 꺼지면 자동으로 다시 켭니다. 끌 때는 메모·그림판 등 저장 대기 중인 내용을 먼저 저장합니다.
 - `계정` 탭에서 친구 계정을 미리 만들 수 있습니다(관리자보다 약한 권한: 여기서 만든 계정만 보이고, IP·접속 기록은 안 보입니다).
 - `설정`에서 포트, 가입 허용(끄면 미리 만든 계정만 로그인), 컴퓨터 켜질 때 자동 시작을 고릅니다.
+- `설정 → 접속 방식`
+  - **기본**: 같은 와이파이, 또는 공유기 포트포워딩.
+  - **인터넷 링크**: 포트포워딩 없이 Cloudflare 임시 터널로 `https://….trycloudflare.com` 주소를 만듭니다(`start-server-cloudflare.command` 와 같은 방식). 처음 한 번 `cloudflared` 를 공식 GitHub 릴리스에서 내려받고, 켤 때마다 주소가 바뀝니다.
+  - **학교·회사망**: 인증서를 가로채는 망에서 서버의 바깥 연결 인증서 검사를 끕니다(`start-server-dorm.command` 와 같은 방식). 필요할 때만 쓰세요.
 - 데이터는 사용자 폴더(`Accord Server/server-data`)에 저장됩니다.
 - 소스에서 실행: `npm run server-app` · 빌드: `npm run build:server-mac` / `npm run build:server-win`
 
-**터미널** — `npm run host` (옵션 `-- --port 25565`, `-- --no-signup`)
+**터미널** — `npm run host` (옵션 `-- --port 25565`, `-- --no-signup`, `-- --mode basic|link|campus`. `link` 는 `cloudflared` 가 설치돼 있어야 합니다)
 서버를 켠 채로 같은 창에서 `users`, `add <아이디> <비밀번호> [이름]`, `passwd`, `del`, `status`, `restart`, `quit` 을 입력합니다.
 데이터·`server.env` 는 지금처럼 저장소 폴더의 것을 씁니다.
 

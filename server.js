@@ -1118,7 +1118,10 @@ function cleanIp(value) {
 
 function clientIpOf(req) {
   const ip = cleanIp(req.socket.remoteAddress);
-  if (!TRUST_PROXY || (ip !== "127.0.0.1" && ip !== "::1")) return ip;
+  if (ip !== "127.0.0.1" && ip !== "::1") return ip;
+  // 인터넷 링크 모드(서버 앱): 루프백으로만 열려 있고 모든 접속이 cloudflared 를 거치므로 Cloudflare 가 붙인 실제 IP 를 쓴다.
+  if (process.env.ACCORD_TUNNEL === "1") return cleanIp(String(req.headers["cf-connecting-ip"] || "").trim()) || ip;
+  if (!TRUST_PROXY) return ip;
   return cleanIp(String(req.headers["x-real-ip"] || "").trim()) || ip;
 }
 

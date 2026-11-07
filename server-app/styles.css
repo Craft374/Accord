@@ -309,6 +309,20 @@ h3 { font-size: 17px; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 16p
   transition: transform 0.32s var(--ease);
 }
 .switch:checked { background: var(--green); }
+/* 목록형 단일 선택: 고른 줄에만 체크 표시(iOS 설정 앱 방식) */
+.check {
+  appearance: none;
+  flex: none;
+  width: 14px;
+  height: 8px;
+  margin: 0 4px 4px 0;
+  border-left: 2.5px solid var(--blue);
+  border-bottom: 2.5px solid var(--blue);
+  transform: rotate(-45deg) scale(0.6);
+  opacity: 0;
+  transition: opacity 0.15s, transform 0.3s var(--ease);
+}
+.check:checked { opacity: 1; transform: rotate(-45deg); }
 .switch:checked::after { transform: translateX(18px); }
 
 .error { color: var(--red); font-size: 13px; margin: 14px 0 0; }

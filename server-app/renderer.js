@@ -80,14 +80,23 @@ function render(next) {
   $("error").textContent = snap.error;
   $("addUser").disabled = snap.state !== "running";
 
-  const urls = snap.info?.urls || [];
+  const tunnel = snap.tunnel || { url: "", status: "" };
+  const urls = [...(snap.info?.urls || [])];
+  // 인터넷 링크 모드: 링크가 생기기 전에는 진행 상황(내려받는 중·만드는 중)을 주소 자리에 보여 준다.
+  if (snap.state === "running" && (tunnel.url || tunnel.status)) urls.push({ label: "인터넷 링크", url: tunnel.url, status: tunnel.status });
   $("addresses").hidden = !urls.length;
-  $("urlList").replaceChildren(...urls.map(({ label, url }) => {
-    const copy = h("button", { className: "tinted small", textContent: "복사" });
+  $("urlList").replaceChildren(...urls.map(({ label, url, status }) => {
+    const copy = h("button", { className: "tinted small", textContent: "복사", disabled: !url });
     copy.addEventListener("click", () => { window.host.copy(url); toast("주소를 복사했습니다."); });
-    return h("div", { className: "row" }, h("span", { className: "row-text" }, h("span", { className: "row-sub", textContent: label }), h("span", { className: "value", textContent: url })), copy);
+    return h("div", { className: "row" }, h("span", { className: "row-text" }, h("span", { className: "row-sub", textContent: label }), h("span", { className: "value", textContent: url || status })), copy);
   }));
-  lastUrl = urls.find((u) => u.label === "같은 네트워크")?.url || "";
+  const linkFailed = tunnel.status.startsWith("링크를 만들지 못했습니다");
+  $("addressNote").textContent = linkFailed
+    ? "자세한 이유는 기록 탭에서 볼 수 있습니다. 서버를 다시 켜면 링크를 다시 만듭니다."
+    : tunnel.url || tunnel.status
+    ? `친구에게 인터넷 링크를 보내 주세요. Accord 앱의 서버 주소 칸에 넣으면 됩니다. 서버를 다시 켜면 주소가 바뀝니다.${config.allowSignup ? " 지금은 가입 허용이 켜져 있어 링크를 아는 누구나 가입할 수 있습니다." : ""}`
+    : "Accord 앱의 서버 주소 칸에 입력하면 들어올 수 있습니다. 밖에 있는 친구가 들어오려면 공유기에서 이 포트를 열어(포트포워딩) 공인 IP 주소로 접속하거나, 설정에서 '인터넷 링크'를 고르세요.";
+  lastUrl = tunnel.url || urls.find((u) => u.label === "같은 네트워크")?.url || "";
 
   if (snap.state === "stopped") settingsDirty = false; // 다시 켜면 새 설정으로 뜬다
   if (snap.state === "running") {
@@ -256,6 +265,10 @@ function fillSettings() {
   $("port").value = config.port;
   $("allowSignup").checked = config.allowSignup;
   $("openAtLogin").checked = config.openAtLogin;
+  for (const radio of document.querySelectorAll('input[name="mode"]')) radio.checked = radio.value === config.mode;
+}
+for (const radio of document.querySelectorAll('input[name="mode"]')) {
+  radio.addEventListener("change", () => saveSetting({ mode: radio.value }, true));
 }
 $("port").addEventListener("change", () => saveSetting({ port: Number($("port").value) }, true));
 $("port").addEventListener("keydown", (e) => { if (e.key === "Enter") $("port").blur(); });
