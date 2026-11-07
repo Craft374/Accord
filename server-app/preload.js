@@ -16,6 +16,8 @@ contextBridge.exposeInMainWorld("host", {
   request: (type, payload) => call("request", type, payload),
   copy: (text) => call("copy", text),
   openDataDir: () => call("openDataDir"),
+  chooseDataDir: () => call("chooseDataDir"),
+  resetDataDir: () => call("resetDataDir"),
   onState: (fn) => ipcRenderer.on("state", (_event, snap) => fn(snap)),
   onLog: (fn) => ipcRenderer.on("log", (_event, line) => fn(line)),
 });

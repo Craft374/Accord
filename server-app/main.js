@@ -1,7 +1,7 @@
 // Accord Server — 뉴비도 딸깍 한 번으로 자기 Accord 서버를 띄우는 데스크톱 앱(윈도우·맥).
 // 서버는 이 앱의 자식 프로세스(core.js)로 돌고, 창을 닫아도 트레이/메뉴 막대에 남아 계속 돈다.
 // 메인 프로세스에서는 동기 I/O 를 하지 않는다(윈도우 "응답 없음"·모래시계 커서 방지).
-const { app, BrowserWindow, Menu, Notification, Tray, clipboard, ipcMain, nativeImage, nativeTheme, net, shell, utilityProcess } = require("electron");
+const { app, BrowserWindow, Menu, Notification, Tray, clipboard, dialog, ipcMain, nativeImage, nativeTheme, net, shell, utilityProcess } = require("electron");
 const { execFile } = require("node:child_process");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -15,7 +15,8 @@ if (process.platform === "win32") app.setAppUserModelId("craft374.accord.server"
 const HOME = app.getPath("userData");
 const CONFIG_FILE = path.join(HOME, "config.json");
 // 가입은 기본으로 닫는다: 서버 앱에는 관리자가 없어서 모르는 사람이 직접 가입하면 지울 방법이 없다.
-const DEFAULT_CONFIG = { port: 25565, allowSignup: false, openAtLogin: false, mode: "basic" };
+// dataDir: 비우면 앱 데이터 폴더. 이미 쓰던 Accord 의 server-data 폴더를 고르면 그 계정·채팅을 그대로 쓴다.
+const DEFAULT_CONFIG = { port: 25565, allowSignup: false, openAtLogin: false, mode: "basic", dataDir: "" };
 const isMac = process.platform === "darwin";
 
 // utilityProcess: Chromium 이 자식 프로세스로 띄워서 윈도우 모래시계 커서·콘솔 창이 없고, 맥 독에도 안 뜬다.
@@ -124,11 +125,32 @@ function serverEnv() {
   return {
     PORT: String(config.port),
     ALLOW_SIGNUP: config.allowSignup ? "1" : "0",
-    ACCORD_DATA_DIR: path.join(HOME, "server-data"),
+    ACCORD_DATA_DIR: dataDir(),
     SSL_CERT_FILE: path.join(HOME, "cert", "cert.pem"),
     SSL_KEY_FILE: path.join(HOME, "cert", "key.pem"),
     ...MODES[config.mode],
   };
+}
+
+function dataDir() {
+  return config.dataDir || path.join(HOME, "server-data");
+}
+
+// 다른 폴더를 데이터 폴더로 쓴다. 엉뚱한 폴더(저장소 루트 등)에 데이터를 흩뿌리지 않게
+// Accord 데이터 폴더(users.json 이 있는 곳)나 빈 폴더만 받는다.
+async function chooseDataDir() {
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+    title: "Accord 데이터 폴더 고르기",
+    message: "이미 쓰던 Accord 의 server-data 폴더, 또는 빈 폴더를 골라 주세요.",
+    properties: ["openDirectory", "createDirectory"],
+  });
+  if (canceled || !filePaths[0]) return config;
+  const dir = filePaths[0];
+  const entries = await fs.readdir(dir);
+  if (!entries.includes("users.json") && entries.some((name) => !name.startsWith("."))) {
+    throw new Error("Accord 데이터 폴더(users.json 이 들어 있는 server-data)나 빈 폴더를 골라 주세요.");
+  }
+  return saveConfig({ dataDir: dir });
 }
 
 function startServer() {
@@ -241,7 +263,9 @@ const handlers = {
   setConfig: (patch) => saveConfig(patch),
   request: (type, payload) => host.request(type, payload),
   copy: (text) => clipboard.writeText(String(text)),
-  openDataDir: () => shell.openPath(HOME),
+  openDataDir: () => shell.openPath(dataDir()),
+  chooseDataDir,
+  resetDataDir: () => saveConfig({ dataDir: "" }),
 };
 for (const [name, fn] of Object.entries(handlers)) {
   ipcMain.handle(name, async (_event, ...args) => {

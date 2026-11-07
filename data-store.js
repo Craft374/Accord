@@ -51,6 +51,7 @@ let uploadOwners = {}; // 파일명 -> 올린 userId
 
 function init() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
+  lockDataDir();
   db = readJson(USERS_FILE, { users: [], codeCounter: 0 });
   if (!Array.isArray(db.users)) db.users = [];
   if (!Number.isFinite(db.codeCounter)) db.codeCounter = 0;
@@ -62,6 +63,32 @@ function init() {
   dmThreads = Array.isArray(dm) ? dm : [];
   uploadOwners = readJson(UPLOAD_OWNERS_FILE, {});
   if (!uploadOwners || typeof uploadOwners !== "object") uploadOwners = {};
+}
+
+// 같은 데이터 폴더를 서버 둘이 동시에 쓰면(서버 앱 + npm run server 등) 서로 덮어써서 데이터가 깨진다.
+// 먼저 켠 서버의 PID 를 server.lock 에 적어 두고, 그 프로세스가 살아 있으면 뒤에 켠 서버는 시작하지 않는다.
+function lockDataDir() {
+  const lockFile = path.join(DATA_DIR, "server.lock");
+  const owner = Number(readJson(lockFile, 0));
+  if (owner && owner !== process.pid && isProcessAlive(owner)) {
+    console.error(`이 데이터 폴더를 다른 Accord 서버(PID ${owner})가 쓰고 있습니다: ${DATA_DIR}`);
+    process.exit(1);
+  }
+  fs.writeFileSync(lockFile, String(process.pid));
+  process.on("exit", () => {
+    try {
+      if (Number(fs.readFileSync(lockFile, "utf8")) === process.pid) fs.rmSync(lockFile);
+    } catch {}
+  });
+}
+
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
 }
 
 function readJson(file, fallback) {

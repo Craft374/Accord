@@ -249,10 +249,10 @@ $("sheetForm").addEventListener("submit", async (e) => {
 });
 
 // ===== 설정 =====
-async function saveSetting(patch, needsRestart) {
+async function saveSetting(patch, needsRestart, action = () => window.host.setConfig(patch)) {
   $("settingsError").hidden = true;
   try {
-    config = await window.host.setConfig(patch);
+    config = await action();
     if (needsRestart && snap.state !== "stopped") settingsDirty = true;
     $("restartBanner").hidden = !(settingsDirty && snap.state === "running");
   } catch (error) {
@@ -266,6 +266,9 @@ function fillSettings() {
   $("allowSignup").checked = config.allowSignup;
   $("openAtLogin").checked = config.openAtLogin;
   for (const radio of document.querySelectorAll('input[name="mode"]')) radio.checked = radio.value === config.mode;
+  $("dataDir").textContent = config.dataDir || "기본 (앱 데이터 폴더)";
+  $("dataDir").title = config.dataDir;
+  $("resetDataDir").hidden = !config.dataDir;
 }
 for (const radio of document.querySelectorAll('input[name="mode"]')) {
   radio.addEventListener("change", () => saveSetting({ mode: radio.value }, true));
@@ -276,6 +279,15 @@ $("allowSignup").addEventListener("change", () => saveSetting({ allowSignup: $("
 $("openAtLogin").addEventListener("change", () => saveSetting({ openAtLogin: $("openAtLogin").checked }, false));
 $("restart").addEventListener("click", () => window.host.restart());
 $("openData").addEventListener("click", () => window.host.openDataDir());
+// 데이터 폴더는 고르는 창(dialog)이 main 에 있어 setConfig 대신 따로 부른다. 결과 처리는 saveSetting 과 같다.
+async function changeDataDir(action) {
+  const before = config.dataDir;
+  await saveSetting(null, false, action);
+  if (config.dataDir !== before && snap.state !== "stopped") settingsDirty = true;
+  $("restartBanner").hidden = !(settingsDirty && snap.state === "running");
+}
+$("chooseDataDir").addEventListener("click", () => changeDataDir(window.host.chooseDataDir));
+$("resetDataDir").addEventListener("click", () => changeDataDir(window.host.resetDataDir));
 
 // ===== 기록 — 줄은 모아 두었다가 한 프레임에 한 번만 붙인다 =====
 let queued = [];
