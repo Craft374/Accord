@@ -44,8 +44,9 @@ if (!app.requestSingleInstanceLock()) {
     config = { ...DEFAULT_CONFIG, ...(await readJson(CONFIG_FILE)) };
     const atLogin = process.argv.includes("--autostart") || app.getLoginItemSettings().wasOpenedAtLogin;
     createTray();
-    if (atLogin) startServer(); // 컴퓨터를 켜면 창 없이 서버만 켠다
-    else createWindow();
+    // 자동 시작을 켜 두면 실행할 때마다 서버를 켠다(맥 13+ 는 로그인 실행 여부를 못 알아낼 수 있어서). 로그인 실행이면 창은 안 띄운다.
+    if (config.openAtLogin || atLogin) startServer();
+    if (!atLogin) createWindow();
   });
   app.on("activate", showWindow);
   app.on("window-all-closed", () => {}); // 창이 없어도 트레이에 남는다(종료는 아래 close 처리에서)
