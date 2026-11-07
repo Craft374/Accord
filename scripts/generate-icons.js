@@ -11,13 +11,33 @@ const POLYGONS = [
   { fill: "#35d9b8", points: [[96, 182], [116, 154], [140, 154], [160, 182], [142, 194], [128, 176], [114, 194]] },
 ];
 
+// 서버 앱(Accord Server) 아이콘: 같은 방패를 초록으로 칠하고 오른쪽 아래에 서버 랙 배지를 붙여 클라이언트와 구분한다.
+const rect = (fill, x1, y1, x2, y2) => ({ fill, points: [[x1, y1], [x2, y1], [x2, y2], [x1, y2]] });
+const SERVER_POLYGONS = [
+  { ...POLYGONS[0], fill: "#2fbf71" },
+  POLYGONS[1],
+  POLYGONS[2],
+  { ...POLYGONS[3], fill: "#5867e8" },
+  rect("#f6f8fa", 140, 140, 248, 248),
+  rect("#101525", 150, 150, 238, 238),
+  rect("#3b4560", 162, 164, 226, 188),
+  rect("#3b4560", 162, 200, 226, 224),
+  rect("#2fbf71", 208, 170, 220, 182),
+  rect("#2fbf71", 208, 206, 220, 218),
+];
+
 fs.mkdirSync(OUT_DIR, { recursive: true });
 
 function main() {
-  fs.writeFileSync(path.join(OUT_DIR, "icon.svg"), makeSvg());
-  fs.writeFileSync(path.join(OUT_DIR, "icon.png"), makePng(1024));
-  fs.writeFileSync(path.join(OUT_DIR, "icon.ico"), makeIco([16, 32, 48, 64, 128, 256]));
-  fs.writeFileSync(path.join(OUT_DIR, "icon.icns"), makeIcns([
+  writeIconSet("icon", POLYGONS);
+  writeIconSet("server-icon", SERVER_POLYGONS);
+}
+
+function writeIconSet(name, polygons) {
+  fs.writeFileSync(path.join(OUT_DIR, `${name}.svg`), makeSvg(polygons));
+  fs.writeFileSync(path.join(OUT_DIR, `${name}.png`), makePng(1024, polygons));
+  fs.writeFileSync(path.join(OUT_DIR, `${name}.ico`), makeIco([16, 32, 48, 64, 128, 256], polygons));
+  fs.writeFileSync(path.join(OUT_DIR, `${name}.icns`), makeIcns([
     ["icp4", 16],
     ["icp5", 32],
     ["icp6", 64],
@@ -25,21 +45,21 @@ function main() {
     ["ic08", 256],
     ["ic09", 512],
     ["ic10", 1024],
-  ]));
+  ], polygons));
 }
 
-function makeSvg() {
-  const shapes = POLYGONS.map((polygon) => {
+function makeSvg(polygons) {
+  const shapes = polygons.map((polygon) => {
     const points = polygon.points.map((point) => point.join(",")).join(" ");
     return `  <polygon fill="${polygon.fill}" points="${points}" />`;
   }).join("\n");
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${VIEWBOX} ${VIEWBOX}" role="img" aria-label="Accord">\n${shapes}\n</svg>\n`;
 }
 
-function makePng(size) {
+function makePng(size, polygons) {
   const stride = size * 4 + 1;
   const raw = Buffer.alloc(stride * size);
-  const colors = POLYGONS.map((polygon) => hexToRgba(polygon.fill));
+  const colors = polygons.map((polygon) => hexToRgba(polygon.fill));
 
   for (let y = 0; y < size; y += 1) {
     raw[y * stride] = 0;
@@ -47,8 +67,8 @@ function makePng(size) {
       const vx = ((x + 0.5) / size) * VIEWBOX;
       const vy = ((y + 0.5) / size) * VIEWBOX;
       let color = null;
-      for (let index = 0; index < POLYGONS.length; index += 1) {
-        if (isPointInPolygon(vx, vy, POLYGONS[index].points)) color = colors[index];
+      for (let index = 0; index < polygons.length; index += 1) {
+        if (isPointInPolygon(vx, vy, polygons[index].points)) color = colors[index];
       }
       if (!color) continue;
       const offset = y * stride + 1 + x * 4;
@@ -62,8 +82,8 @@ function makePng(size) {
   return makePngFile(size, size, raw);
 }
 
-function makeIco(sizes) {
-  const images = sizes.map((size) => ({ size, data: makePng(size) }));
+function makeIco(sizes, polygons) {
+  const images = sizes.map((size) => ({ size, data: makePng(size, polygons) }));
   const headerSize = 6 + images.length * 16;
   let offset = headerSize;
   const header = Buffer.alloc(headerSize);
@@ -88,9 +108,9 @@ function makeIco(sizes) {
   return Buffer.concat([header, ...images.map((image) => image.data)]);
 }
 
-function makeIcns(entries) {
+function makeIcns(entries, polygons) {
   const blocks = entries.map(([type, size]) => {
-    const data = makePng(size);
+    const data = makePng(size, polygons);
     const block = Buffer.alloc(8);
     block.write(type, 0, 4, "ascii");
     block.writeUInt32BE(data.length + 8, 4);

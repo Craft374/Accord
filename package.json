@@ -44,6 +44,7 @@
       "!electron/bin/**",
       "shell/**/*",
       "assets/**/*",
+      "!assets/server-icon.*",
       "package.json"
     ],
     "mac": {

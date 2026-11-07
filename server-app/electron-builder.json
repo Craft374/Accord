@@ -3,7 +3,7 @@
   "productName": "Accord Server",
   "asar": false,
   "directories": { "output": "dist/server" },
-  "icon": "assets/icon",
+  "icon": "assets/server-icon",
   "afterPack": "scripts/mac-resign.js",
   "extraMetadata": { "main": "server-app/main.js", "name": "accord-server" },
   "files": [
@@ -12,8 +12,8 @@
     "public/**/*",
     "server-app/**/*",
     "!server-app/electron-builder.json",
-    "assets/icon.png",
-    "assets/icon.ico",
+    "assets/server-icon.png",
+    "assets/server-icon.ico",
     "package.json"
   ],
   "mac": {

@@ -93,7 +93,7 @@ function createWindow() {
     titleBarStyle: isMac ? "hiddenInset" : "default",
     vibrancy: isMac ? "under-window" : undefined,
     visualEffectState: "followWindow",
-    icon: path.join(__dirname, "..", "assets", "icon.png"),
+    icon: path.join(__dirname, "..", "assets", "server-icon.png"),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -139,7 +139,7 @@ async function quitApp() {
 
 function createTray() {
   // 윈도우는 여러 크기가 든 .ico 를 그대로 줘서 125~200% 배율에서도 흐리지 않게 한다.
-  const image = nativeImage.createFromPath(path.join(__dirname, "..", "assets", isMac ? "icon.png" : "icon.ico"));
+  const image = nativeImage.createFromPath(path.join(__dirname, "..", "assets", isMac ? "server-icon.png" : "server-icon.ico"));
   tray = new Tray(isMac && !image.isEmpty() ? image.resize({ width: 18, height: 18, quality: "best" }) : image);
   tray.on("click", showWindow);
   updateTray();
