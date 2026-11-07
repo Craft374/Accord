@@ -5,7 +5,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 
-const DATA_DIR = path.join(__dirname, "server-data");
+// 서버 앱(server-app)은 앱 폴더가 읽기 전용이라 ACCORD_DATA_DIR 로 쓰기 가능한 곳을 넘긴다.
+const DATA_DIR = path.resolve(process.env.ACCORD_DATA_DIR || path.join(__dirname, "server-data"));
 const USERS_FILE = path.join(DATA_DIR, "users.json");
 const SESSIONS_FILE = path.join(DATA_DIR, "sessions.json");
 const CHANNELS_FILE = path.join(DATA_DIR, "channels.json");
@@ -194,7 +195,7 @@ function findById(id) {
   return db.users.find((x) => x.id === id) || null;
 }
 
-function createUser({ username, password, displayName, email, avatar }) {
+function createUser({ username, password, displayName, email, avatar, hostCreated }) {
   const uname = normalizeUsername(username);
   const unameError = validateUsername(uname);
   if (unameError) return { error: unameError };
@@ -214,6 +215,7 @@ function createUser({ username, password, displayName, email, avatar }) {
     banner: "",
     bannerGradient: "",
     isAdmin: false,
+    ...(hostCreated ? { hostCreated: true } : {}), // 서버 앱/CLI 에서 미리 만든 계정(호스트는 이것만 보고 관리한다)
     createdAt: Date.now(),
     lastLoginAt: 0,
     lastIp: "",
@@ -343,6 +345,23 @@ function seedAdmin({ username, password, displayName }) {
 
 function listUsers() {
   return db.users.map(sanitizeUserAdmin);
+}
+
+// 호스트(서버 앱)용: 호스트가 만든 계정만, IP·접속 기록 없이.
+function listHostUsers() {
+  return db.users.filter((u) => u.hostCreated && !u.isAdmin).map(({ id, username, displayName, code, createdAt }) => ({ id, username, displayName, code, createdAt }));
+}
+
+// 이전 비밀번호 없이 재설정(호스트용). 모든 기기 로그인을 끊는다.
+function resetPassword(userId, newPassword) {
+  const user = findById(userId);
+  if (!user) return { error: "계정을 찾을 수 없습니다." };
+  const pwError = validatePassword(newPassword);
+  if (pwError) return { error: pwError };
+  user.passwordHash = hashPassword(newPassword);
+  persistUsers();
+  destroyUserSessions(userId);
+  return { user };
 }
 
 function setAdmin(userId, value) {
@@ -2191,6 +2210,8 @@ module.exports = {
   findById,
   seedAdmin,
   listUsers,
+  listHostUsers,
+  resetPassword,
   setAdmin,
   setUserCode,
   deleteUser,

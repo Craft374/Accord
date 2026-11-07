@@ -4,7 +4,6 @@ const https = require("node:https");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const vm = require("node:vm");
-const { spawnSync } = require("node:child_process");
 const os = require("node:os");
 const store = require("./data-store");
 const ot = require("./public/ot-text.js");
@@ -24,6 +23,8 @@ const PUBLIC_URL = cleanPublicUrl(process.env.PUBLIC_URL || "", PUBLIC_HOST, POR
 const REQUIRE_HTTPS = process.env.VOICE_CHAT_REQUIRE_HTTPS === "1" || process.env.HTTPS === "1";
 // nginx 같은 리버스 프록시 뒤에서만 1 로 둔다: 루프백 연결의 X-Real-IP 를 실제 접속 IP로 쓴다(IP별 제한용).
 const TRUST_PROXY = process.env.TRUST_PROXY === "1";
+// 0 이면 새 가입을 막는다(서버 주인이 서버 앱/CLI 로 미리 만든 계정만 로그인).
+const ALLOW_SIGNUP = process.env.ALLOW_SIGNUP !== "0";
 const MAX_ROOM_LIMIT = 8;
 const MEMO_MAX_OPEN = 2; // 분할보기로 한 연결이 동시에 볼 수 있는 메모 수
 const PUBLIC_DIR = path.join(__dirname, "public");
@@ -179,7 +180,7 @@ function finalizeMediaStats(client, roomId) {
 }
 const tlsOptions = loadTlsOptions();
 if (!tlsOptions && REQUIRE_HTTPS) {
-  console.error("HTTPS certificate was not created. Install openssl or set SSL_CERT_FILE and SSL_KEY_FILE.");
+  console.error("HTTPS certificate could not be loaded. Check SSL_CERT_FILE and SSL_KEY_FILE (or delete .cert/ to regenerate).");
   process.exit(1);
 }
 const server = tlsOptions
@@ -199,10 +200,11 @@ server.listen(PORT, HOST, () => {
   console.log(`Friend: ${PUBLIC_URL || `${protocol}://YOUR_PUBLIC_IP:${PORT}`}`);
   if (!tlsOptions) {
     console.log("Warning: HTTPS certificate was not created. Remote browsers may block microphone and AudioWorklet.");
-    console.log("Run `npm run server:https` after installing openssl, or set SSL_CERT_FILE and SSL_KEY_FILE.");
+    console.log("Check SSL_CERT_FILE and SSL_KEY_FILE, or delete .cert/ to regenerate.");
   }
   printTurnStatus();
   console.log("");
+  hostSend({ type: "host:ready", version: VERSION, port: PORT, protocol });
 });
 
 // 잘못된 URL 인코딩(%C0)·Host 헤더·널 바이트 경로 등은 URL/decodeURIComponent/fs 에서 동기 예외를 던진다.
@@ -770,6 +772,10 @@ function authRateLimited(client) {
 function handleAuthMessage(client, message) {
   switch (message.type) {
     case "register": {
+      if (!ALLOW_SIGNUP) {
+        send(client, { type: "auth-error", action: "register", message: "이 서버는 새 가입을 받지 않습니다. 서버 주인에게 계정을 받아 주세요." });
+        return true;
+      }
       if (authRateLimited(client)) {
         send(client, { type: "auth-error", action: "register", message: "시도가 너무 많습니다. 잠시 후 다시 시도해 주세요." });
         return true;
@@ -930,11 +936,7 @@ function handleAdminMessage(client, message) {
         send(client, { type: "admin-error", message: result.error });
         return true;
       }
-      for (const c of [...clients.values()]) {
-        if (c.userId !== userId) continue;
-        send(c, { type: "auth-expired" });
-        closeClient(c);
-      }
+      kickUser(userId);
       for (const id of result.channelIds) notifyChannelMembers(id);
       sendAdminUsers(client);
       return true;
@@ -973,6 +975,102 @@ function handleAdminMessage(client, message) {
       return false;
   }
 }
+
+function kickUser(userId) {
+  for (const c of [...clients.values()]) {
+    if (c.userId !== userId) continue;
+    send(c, { type: "auth-expired" });
+    closeClient(c);
+  }
+}
+
+// ===== 호스트(서버 앱·CLI) =====
+// server-app/core.js 가 띄웠을 때(ACCORD_HOST=1)만 열리는 IPC 채널이다. 네트워크로는 노출되지 않는다.
+// 서버 앱은 Electron utilityProcess(process.parentPort), CLI 는 child_process.fork(process.send).
+// 관리자보다 약한 권한: 호스트가 만든 계정만 보고(IP·접속 기록 제외)·만들고·지우고·비밀번호를 바꾼다.
+const HOST_PORT = process.env.ACCORD_HOST === "1" ? process.parentPort || (process.send ? process : null) : null;
+function hostSend(msg) {
+  if (HOST_PORT === process) process.connected && process.send(msg);
+  else HOST_PORT?.postMessage(msg);
+}
+if (HOST_PORT) {
+  HOST_PORT.on("message", (event) => {
+    const msg = HOST_PORT === process ? event : event?.data;
+    if (!msg || typeof msg.type !== "string" || !msg.type.startsWith("host:")) return;
+    let reply;
+    try {
+      reply = handleHostRequest(msg);
+    } catch (error) {
+      reply = { error: error.message };
+    }
+    hostSend({ ...reply, replyTo: msg.id });
+    if (msg.type === "host:shutdown") shutdown();
+  });
+  // 부모(CLI)가 죽으면 고아로 남지 않게 저장하고 끈다. utilityProcess 는 부모와 함께 정리된다.
+  if (HOST_PORT === process) process.on("disconnect", shutdown);
+}
+
+function handleHostRequest(msg) {
+  const hostUser = (id) => {
+    const user = store.findById(String(id || ""));
+    return user?.hostCreated && !user.isAdmin ? user : null; // 나중에 관리자가 된 계정은 호스트가 못 건드린다
+  };
+  switch (msg.type) {
+    case "host:status":
+      return { online: onlineUserIds().length };
+    case "host:list-users":
+      return { users: store.listHostUsers() };
+    case "host:create-user": {
+      const result = store.createUser({ username: msg.username, password: msg.password, displayName: msg.displayName, hostCreated: true });
+      return result.error ? { error: result.error } : { users: store.listHostUsers() };
+    }
+    case "host:set-password": {
+      const user = hostUser(msg.userId);
+      if (!user) return { error: "서버 앱에서 만든 계정만 바꿀 수 있습니다." };
+      const result = store.resetPassword(user.id, msg.password);
+      if (result.error) return { error: result.error };
+      kickUser(user.id);
+      return { ok: true };
+    }
+    case "host:delete-user": {
+      const user = hostUser(msg.userId);
+      if (!user) return { error: "서버 앱에서 만든 계정만 지울 수 있습니다." };
+      const result = store.deleteUser(user.id);
+      if (result.error) return { error: result.error };
+      kickUser(user.id);
+      for (const id of result.channelIds) notifyChannelMembers(id);
+      return { users: store.listHostUsers() };
+    }
+    case "host:shutdown":
+      return { ok: true };
+    default:
+      return { error: `알 수 없는 요청: ${msg.type}` };
+  }
+}
+
+// 디바운스로 미뤄 둔 저장(메모·그림판·화이트보드·통계)을 지금 쓰고 끈다. 그냥 죽이면 마지막 1~2초 편집이 날아간다.
+let shuttingDown = false;
+function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  for (const [roomId, s] of statsCache) {
+    if (!s.saveTimer) continue;
+    clearTimeout(s.saveTimer);
+    store.saveRoomStats(roomId, { totalMs: s.totalMs, users: s.users });
+  }
+  for (const [roomId, d] of memoDocs) if (d.saveTimer) flushMemoPersist(roomId, d.saveBy);
+  for (const [roomId, d] of drawDocs) if (d.saveTimer) flushDrawPersist(roomId);
+  for (const [roomId, d] of tableDocs) {
+    if (!d.saveTimer) continue;
+    clearTimeout(d.saveTimer);
+    store.saveTable(roomId, d.doc);
+  }
+  process.exit(0);
+}
+process.on("SIGTERM", shutdown);
+process.on("SIGHUP", shutdown);
+// 호스트 아래서는 터미널 Ctrl+C 가 자식에게도 가므로 무시하고, 호스트가 IPC 로 끄게 둔다(안 그러면 죽은 줄 알고 재시작한다).
+process.on("SIGINT", HOST_PORT ? () => {} : shutdown);
 
 function sendAdminUsers(client) {
   const channels = store.listChannelsForUser("", true).map(({ id, name, ownerId, memberIds }) => ({ id, name, ownerId, memberIds }));
@@ -3049,6 +3147,7 @@ function scheduleMemoPersist(roomId, userId) {
   const d = memoDocs.get(roomId);
   if (!d) return;
   if (d.saveTimer) clearTimeout(d.saveTimer);
+  d.saveBy = userId;
   d.saveTimer = setTimeout(() => {
     d.saveTimer = 0;
     store.saveMemo(roomId, d.text, userId, d.font);
@@ -4191,53 +4290,53 @@ function loadTlsOptions() {
   }
 }
 
+// 자체서명 인증서를 Node 만으로 만든다(openssl 이 없는 윈도우에서도 HTTPS 가 되게).
+// X.509 v3, RSA 2048 + SHA-256, SAN 에 localhost·127.0.0.1·LAN IP, 10년.
 function createCertificate() {
   fs.mkdirSync(CERT_DIR, { recursive: true });
   fs.mkdirSync(path.dirname(KEY_FILE), { recursive: true });
-  const configPath = path.join(CERT_DIR, "openssl.cnf");
-  const hosts = ["localhost", "127.0.0.1", "::1", getLanIp()].filter(Boolean);
-  const altNames = hosts
-    .map((host, index) => {
-      const key = /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(":") ? "IP" : "DNS";
-      return `${key}.${index + 1} = ${host}`;
-    })
-    .join("\n");
-
-  fs.writeFileSync(configPath, [
-    "[req]",
-    "default_bits = 2048",
-    "prompt = no",
-    "default_md = sha256",
-    "distinguished_name = dn",
-    "x509_extensions = v3_req",
-    "[dn]",
-    "CN = Accord Local",
-    "[v3_req]",
-    "subjectAltName = @alt_names",
-    "[alt_names]",
-    altNames,
-    "",
-  ].join("\n"));
-
-  const result = spawnSync("openssl", [
-    "req",
-    "-x509",
-    "-newkey",
-    "rsa:2048",
-    "-nodes",
-    "-days",
-    "3650",
-    "-keyout",
-    KEY_FILE,
-    "-out",
-    CERT_FILE,
-    "-config",
-    configPath,
-  ], { stdio: "ignore" });
-
-  if (result.status !== 0) {
-    throw new Error("openssl certificate generation failed");
-  }
+  const { privateKey, publicKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const der = (tag, ...parts) => {
+    const body = Buffer.concat(parts);
+    const len = [];
+    for (let n = body.length; n > 0; n >>= 8) len.unshift(n & 0xff);
+    const head = body.length < 0x80 ? [body.length] : [0x80 | len.length, ...len];
+    return Buffer.concat([Buffer.from([tag, ...head]), body]);
+  };
+  const oid = (dotted) => {
+    const [a, b, ...rest] = dotted.split(".").map(Number);
+    const bytes = [a * 40 + b];
+    for (const v of rest) {
+      const chunk = [v & 0x7f];
+      for (let x = v >> 7; x > 0; x >>= 7) chunk.unshift(0x80 | (x & 0x7f));
+      bytes.push(...chunk);
+    }
+    return der(0x06, Buffer.from(bytes));
+  };
+  const seq = (...parts) => der(0x30, ...parts);
+  const utcTime = (date) => der(0x17, Buffer.from(date.toISOString().replace(/[-:T]/g, "").slice(2, 14) + "Z"));
+  const name = seq(der(0x31, seq(oid("2.5.4.3"), der(0x0c, Buffer.from("Accord Local")))));
+  const sha256WithRsa = seq(oid("1.2.840.113549.1.1.11"), der(0x05));
+  const serial = crypto.randomBytes(16);
+  serial[0] = (serial[0] & 0x7f) | 0x40; // 양수 + 첫 바이트 0 아님
+  const lanIp = getLanIp();
+  const altNames = [der(0x82, Buffer.from("localhost")), der(0x87, Buffer.from([127, 0, 0, 1]))];
+  if (lanIp) altNames.push(der(0x87, Buffer.from(lanIp.split(".").map(Number))));
+  const now = new Date();
+  const tbs = seq(
+    der(0xa0, der(0x02, Buffer.from([2]))), // v3
+    der(0x02, serial),
+    sha256WithRsa,
+    name,
+    seq(utcTime(new Date(now.getTime() - 86400000)), utcTime(new Date(now.getTime() + 3650 * 86400000))),
+    name,
+    publicKey.export({ type: "spki", format: "der" }),
+    der(0xa3, seq(seq(oid("2.5.29.17"), der(0x04, seq(...altNames))))),
+  );
+  const cert = seq(tbs, sha256WithRsa, der(0x03, Buffer.from([0]), crypto.sign("sha256", tbs, privateKey)));
+  const pem = cert.toString("base64").match(/.{1,64}/g).join("\n");
+  fs.writeFileSync(KEY_FILE, privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o600 });
+  fs.writeFileSync(CERT_FILE, `-----BEGIN CERTIFICATE-----\n${pem}\n-----END CERTIFICATE-----\n`);
 }
 
 function getLanIp() {

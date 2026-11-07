@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'">
+<meta name="color-scheme" content="light dark">
+<title>Accord Server</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="titlebar">Accord Server</header>
+
+<nav class="segmented" role="tablist">
+  <span class="thumb" aria-hidden="true"></span>
+  <button role="tab" data-pane="server" aria-selected="true">서버</button>
+  <button role="tab" data-pane="users">계정</button>
+  <button role="tab" data-pane="settings">설정</button>
+  <button role="tab" data-pane="logs">기록</button>
+</nav>
+
+<main>
+  <section class="pane active" id="pane-server">
+    <div class="card hero">
+      <div class="orb" id="orb" data-state="stopped"><span></span></div>
+      <h1 id="statusTitle">서버가 꺼져 있습니다</h1>
+      <p class="secondary" id="statusSub">버튼 하나로 나만의 Accord 서버를 켤 수 있습니다.</p>
+      <button class="primary" id="power"><span class="spinner" aria-hidden="true"></span><span id="powerLabel">서버 켜기</span></button>
+      <p class="error" id="error" hidden></p>
+    </div>
+
+    <div class="group reveal" id="addresses" hidden>
+      <h2>접속 주소</h2>
+      <div class="list" id="urlList"></div>
+      <p class="footnote">Accord 앱의 서버 주소 칸에 입력하면 들어올 수 있습니다. 밖에 있는 친구가 들어오려면 공유기에서 이 포트를 열어(포트포워딩) 공인 IP 주소로 접속해야 합니다.</p>
+    </div>
+    <p class="footnote center">창을 닫아도 서버는 계속 켜져 있습니다.</p>
+  </section>
+
+  <section class="pane" id="pane-users">
+    <div class="group">
+      <div class="group-head">
+        <h2>미리 만든 계정</h2>
+        <button class="tinted" id="addUser">계정 추가</button>
+      </div>
+      <div class="list" id="userList"></div>
+      <p class="footnote">여기서 만든 계정만 보입니다. 다른 사람이 직접 가입한 계정이나 접속 기록은 보이지 않습니다.</p>
+    </div>
+  </section>
+
+  <section class="pane" id="pane-settings">
+    <div class="banner reveal" id="restartBanner" hidden>
+      <span>바뀐 설정은 서버를 다시 켜야 적용됩니다.</span>
+      <button class="tinted" id="restart">다시 켜기</button>
+    </div>
+    <div class="group">
+      <h2>서버</h2>
+      <div class="list">
+        <label class="row">
+          <span class="row-title">포트</span>
+          <input class="field" id="port" type="number" min="1024" max="65535" inputmode="numeric">
+        </label>
+        <label class="row">
+          <span class="row-text"><span class="row-title">누구나 가입 가능</span><span class="row-sub">끄면 여기서 만든 계정으로만 들어올 수 있습니다. 직접 가입한 계정은 여기서 관리할 수 없습니다.</span></span>
+          <input class="switch" id="allowSignup" type="checkbox">
+        </label>
+        <label class="row">
+          <span class="row-text"><span class="row-title">컴퓨터를 켜면 서버 자동 시작</span><span class="row-sub">창 없이 트레이/메뉴 막대에서 조용히 켜집니다.</span></span>
+          <input class="switch" id="openAtLogin" type="checkbox">
+        </label>
+      </div>
+      <p class="error" id="settingsError" hidden></p>
+    </div>
+    <div class="group">
+      <h2>데이터</h2>
+      <div class="list">
+        <button class="row link" id="openData"><span class="row-title">데이터 폴더 열기</span><span class="chevron" aria-hidden="true"></span></button>
+      </div>
+      <p class="footnote">계정·채팅·메모가 이 폴더에 저장됩니다. 옮기거나 백업할 때는 서버를 끈 뒤 폴더째 복사해 주세요.</p>
+    </div>
+  </section>
+
+  <section class="pane" id="pane-logs">
+    <pre class="logs" id="logs"></pre>
+  </section>
+</main>
+
+<div class="scrim" id="sheet" hidden>
+  <form class="sheet" id="sheetForm" autocomplete="off">
+    <h3 id="sheetTitle">계정 추가</h3>
+    <label class="input" id="usernameField"><span>아이디</span><input id="fUsername" spellcheck="false" autocapitalize="off"></label>
+    <label class="input"><span>비밀번호</span>
+      <span class="input-row"><input id="fPassword" spellcheck="false" autocapitalize="off"><button type="button" class="tinted small" id="genPassword">자동 생성</button></span>
+    </label>
+    <label class="input" id="nameField"><span>표시 이름 (선택)</span><input id="fName" spellcheck="false"></label>
+    <p class="error" id="sheetError" hidden></p>
+    <div class="sheet-actions">
+      <button type="button" class="plain" id="sheetCancel">취소</button>
+      <button type="submit" class="primary" id="sheetSubmit">만들기</button>
+    </div>
+  </form>
+</div>
+
+<div class="toast" id="toast" role="status"></div>
+
+<script src="renderer.js"></script>
+</body>
+</html>

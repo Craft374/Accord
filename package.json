@@ -9,6 +9,8 @@
     "server": "node server.js",
     "server:https": "node scripts/start-https.js",
     "server:open": "node scripts/start-server.js",
+    "host": "node scripts/accord-server.js",
+    "server-app": "electron server-app/main.js",
     "client": "electron .",
     "check": "node scripts/check-v2.js",
     "build:memo-editor": "esbuild client/memo-editor.js --bundle --minify --format=iife --outfile=public/memo-editor.bundle.js",
@@ -16,6 +18,8 @@
     "icons": "node scripts/generate-icons.js",
     "build:mac": "node scripts/fix-mac-builder-permissions.js && npm run icons && node node_modules/electron-builder/cli.js --mac zip --arm64",
     "build:win": "node scripts/build-windows-helper.js && npm run icons && node node_modules/electron-builder/cli.js --win nsis --x64",
+    "build:server-mac": "node scripts/fix-mac-builder-permissions.js && node node_modules/electron-builder/cli.js --config server-app/electron-builder.json --mac zip --arm64",
+    "build:server-win": "node node_modules/electron-builder/cli.js --config server-app/electron-builder.json --win nsis --x64",
     "build": "npm run check && npm run build:mac && npm run build:win && node scripts/prune-dist.js"
   },
   "devDependencies": {

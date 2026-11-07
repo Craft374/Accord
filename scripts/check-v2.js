@@ -15,6 +15,11 @@ const syntaxTargets = [
   "scripts/start-https.js",
   "scripts/build-windows-helper.js",
   "scripts/prune-dist.js",
+  "scripts/accord-server.js",
+  "server-app/core.js",
+  "server-app/main.js",
+  "server-app/preload.js",
+  "server-app/renderer.js",
 ];
 
 let failed = false;
@@ -46,6 +51,8 @@ const launcherJs = fs.readFileSync("shell/launcher.js", "utf8");
 const launcherHtml = fs.readFileSync("shell/index.html", "utf8");
 const pruneDist = fs.readFileSync("scripts/prune-dist.js", "utf8");
 const startHttps = fs.readFileSync("scripts/start-https.js", "utf8");
+const hostCore = fs.readFileSync("server-app/core.js", "utf8");
+const serverAppMain = fs.readFileSync("server-app/main.js", "utf8");
 const buildWindowsBat = fs.readFileSync("scripts/win/build-windows.bat", "utf8");
 const buildWindowsCommand = fs.readFileSync("scripts/win/build-windows.command", "utf8");
 const buildMacCommand = fs.readFileSync("scripts/mac/build-mac.command", "utf8");
@@ -176,6 +183,14 @@ const checks = [
   [html.includes("statSetup") && app.includes("getSetupStatusText"), "setup risk status view exists"],
   [html.includes("statSecurity") && app.includes("updateSecurityStatus"), "secure context status view exists"],
   [server.includes("secure: Boolean(tlsOptions)") && server.includes("protocol:"), "server exposes TLS status"],
+  [!server.includes("openssl\", [") && server.includes('crypto.sign("sha256", tbs, privateKey)'), "self-signed cert is generated in pure Node (works on Windows without openssl)"],
+  [server.includes('process.on("SIGTERM", shutdown)') && /function shutdown\(\)[\s\S]*?flushMemoPersist[\s\S]*?flushDrawPersist[\s\S]*?store\.saveTable[\s\S]*?process\.exit\(0\)/.test(server), "server flushes debounced saves before exiting"],
+  [server.includes('process.on("disconnect", shutdown)') && server.includes("function handleHostRequest") && server.includes("user?.hostCreated"), "host IPC only manages host-created accounts"],
+  [server.includes('process.env.ALLOW_SIGNUP !== "0"') && server.includes("if (!ALLOW_SIGNUP)"), "server can close signups"],
+  [dataStore.includes("process.env.ACCORD_DATA_DIR") && dataStore.includes("function listHostUsers"), "data dir is overridable and host user list hides others"],
+  [hostCore.includes("windowsHide: true") && hostCore.includes("host:shutdown") && serverAppMain.includes("utilityProcess.fork("), "server host launches server.js without console/busy cursor and stops it gracefully"],
+  [server.includes('process.env.ACCORD_HOST === "1"') && hostCore.includes('ACCORD_HOST: "1"'), "host IPC opens only when launched by server-app/core.js"],
+  [serverAppMain.includes('app.setPath("userData"') && serverAppMain.indexOf('app.setPath("userData"') < serverAppMain.indexOf("requestSingleInstanceLock") && serverAppMain.includes("win.hide()"), "server app keeps its own data/lock and hides instead of quitting while running"],
   [pkg.scripts["server:https"] && startHttps.includes("VOICE_CHAT_REQUIRE_HTTPS") && startHttps.includes("getLanIp"), "https server script uses secure LAN mode"],
   [requiredLaunchers.every((file) => fs.existsSync(file)), "required bat and command launchers exist"],
   [

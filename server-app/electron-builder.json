@@ -1,0 +1,29 @@
+{
+  "appId": "craft374.accord.server",
+  "productName": "Accord Server",
+  "asar": false,
+  "icon": "assets/icon",
+  "afterPack": "scripts/mac-resign.js",
+  "extraMetadata": { "main": "server-app/main.js", "name": "accord-server" },
+  "files": [
+    "server.js",
+    "data-store.js",
+    "public/**/*",
+    "server-app/**/*",
+    "!server-app/electron-builder.json",
+    "assets/icon.png",
+    "assets/icon.ico",
+    "package.json"
+  ],
+  "mac": {
+    "target": ["zip"],
+    "artifactName": "Accord Server Mac ${arch}.${ext}",
+    "category": "public.app-category.utilities",
+    "identity": null
+  },
+  "win": {
+    "target": ["nsis"],
+    "artifactName": "Accord Server Windows ${arch} Setup.${ext}"
+  },
+  "nsis": { "perMachine": false }
+}

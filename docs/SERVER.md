@@ -7,9 +7,23 @@ Accord 서버(`server.js`)는 시그널링(WebSocket)과 통화 UI(`public/`)를
 
 - 기본 포트: `25565` (환경변수 `PORT` 로 변경 가능)
 - 서버가 켜지면 콘솔에 로컬 / LAN / 외부용 접속 주소가 출력됩니다.
-- 인증서는 처음 HTTPS로 실행할 때 `.cert/` 에 자기서명으로 자동 생성됩니다(브라우저 경고는 "고급 → 계속 진행"으로 통과).
+- 인증서는 처음 실행할 때 `.cert/` 에 자기서명으로 자동 생성됩니다(openssl 불필요, 브라우저 경고는 "고급 → 계속 진행"으로 통과).
 
 ---
+
+## 0. 서버 앱 / 서버 관리 터미널 (윈도우·맥)
+
+**Accord Server 앱** — Node 설치 없이 `서버 켜기` 버튼 하나로 엽니다.
+- 창을 닫아도 서버는 트레이(맥은 메뉴 막대)에 남아 계속 돕니다. 완전히 끄려면 트레이 메뉴의 `종료`.
+- 서버가 예기치 않게 꺼지면 자동으로 다시 켭니다. 끌 때는 메모·그림판 등 저장 대기 중인 내용을 먼저 저장합니다.
+- `계정` 탭에서 친구 계정을 미리 만들 수 있습니다(관리자보다 약한 권한: 여기서 만든 계정만 보이고, IP·접속 기록은 안 보입니다).
+- `설정`에서 포트, 가입 허용(끄면 미리 만든 계정만 로그인), 컴퓨터 켜질 때 자동 시작을 고릅니다.
+- 데이터는 사용자 폴더(`Accord Server/server-data`)에 저장됩니다.
+- 소스에서 실행: `npm run server-app` · 빌드: `npm run build:server-mac` / `npm run build:server-win`
+
+**터미널** — `npm run host` (옵션 `-- --port 25565`, `-- --no-signup`)
+서버를 켠 채로 같은 창에서 `users`, `add <아이디> <비밀번호> [이름]`, `passwd`, `del`, `status`, `restart`, `quit` 을 입력합니다.
+데이터·`server.env` 는 지금처럼 저장소 폴더의 것을 씁니다.
 
 ## 1. 스크립트로 바로 열기 (원클릭)
 
@@ -36,14 +50,14 @@ Docker Desktop을 확인·실행하고 → coturn TURN 서버를 띄우고 → `
 
 > 필요한 것: Node.js 18+, Docker Desktop. 외부(인터넷) 접속까지 하려면 [외부 접속 설정](#외부인터넷-접속)을 먼저 읽어 주세요.
 
-### Windows — 로컬 테스트 서버 (HTTP)
+### Windows — 간단한 서버 (HTTPS)
 
 루트의 **`start-server-win.bat` 더블클릭**.
 
-이 PC에서 `http://localhost:25565` 로 바로 접속되는 간단한 서버입니다(localhost는 HTTP여도 마이크가 됩니다).
+이 PC에서 `https://localhost:25565` 로 접속되는 간단한 서버입니다(자체서명 인증서는 처음 실행할 때 자동 생성).
 끄려면 창에서 `Ctrl+C`.
 
-> 다른 기기·외부에서 접속하거나 마이크를 쓰려면 HTTPS가 필요합니다 → 아래 "직접 명령으로 열기 · Windows" 참고.
+> 버튼으로 켜고 계정까지 관리하려면 위의 **Accord Server 앱**을 쓰세요.
 
 ---
 
@@ -56,18 +70,17 @@ Docker Desktop을 확인·실행하고 → coturn TURN 서버를 띄우고 → `
 ```bash
 ./scripts/mac/start-mac-server.sh   # TURN 포함 (Docker 필요, 위 원클릭과 동일)
 node scripts/start-https.js         # HTTPS 서버만 (TURN 없이)
-node server.js                      # HTTP 서버 (localhost 테스트용)
+node server.js                      # HTTPS 서버(자체서명 인증서 자동 생성)
 ```
 
 ### Windows
 
 ```bash
-node scripts/start-https.js         # HTTPS (LAN/외부용) — openssl 필요
-node server.js                      # HTTP (localhost 테스트용)
+node scripts/start-https.js         # HTTPS (LAN/외부용)
+node server.js                      # HTTPS (자체서명 인증서 자동 생성, openssl 불필요)
 ```
 
-`node scripts/start-https.js` 는 자기서명 인증서를 만들 때 **openssl** 을 씁니다. cmd/PowerShell PATH에 openssl이 없으면
-Git Bash에서 실행하거나, 이미 있는 인증서를 환경변수로 지정하세요:
+이미 있는 인증서를 쓰려면 환경변수로 지정하세요:
 
 ```bash
 SSL_CERT_FILE=경로/cert.pem SSL_KEY_FILE=경로/key.pem node server.js
@@ -77,7 +90,7 @@ SSL_CERT_FILE=경로/cert.pem SSL_KEY_FILE=경로/key.pem node server.js
 
 ```bash
 node scripts/start-https.js         # HTTPS
-node server.js                      # HTTP
+node server.js                      # HTTPS (자체서명 인증서 자동 생성)
 ```
 
 TURN이 필요하면 coturn을 직접 띄우고 `server.env` 에 값을 채웁니다(아래 참고).
