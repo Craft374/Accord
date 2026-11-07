@@ -2,6 +2,7 @@
   "appId": "craft374.accord.server",
   "productName": "Accord Server",
   "asar": false,
+  "directories": { "output": "dist/server" },
   "icon": "assets/icon",
   "afterPack": "scripts/mac-resign.js",
   "extraMetadata": { "main": "server-app/main.js", "name": "accord-server" },
