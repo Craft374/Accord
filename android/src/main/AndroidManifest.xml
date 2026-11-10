@@ -3,11 +3,15 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 카메라 공유용. 카메라가 없는 기기(일부 태블릿)에도 설치되게 필수는 아니다. -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <!-- usesCleartextTraffic: PC 앱처럼 http LAN 서버도 들어갈 수 있게 한다(마이크는 https 에서만 된다). -->
     <application
@@ -34,7 +38,7 @@
         <service
             android:name=".CallService"
             android:exported="false"
-            android:foregroundServiceType="microphone|mediaProjection"
+            android:foregroundServiceType="microphone|mediaPlayback|mediaProjection"
             android:stopWithTask="true" />
     </application>
 </manifest>

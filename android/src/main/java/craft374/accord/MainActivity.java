@@ -47,11 +47,22 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 import android.widget.Toast;
+import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.URL;
+import java.security.cert.CertificateException;
+import java.security.cert.X509Certificate;
+import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.X509TrustManager;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import org.json.JSONObject;
 
 // PC 앱(electron/main.js)과 같은 역할: 서버 주소 입력 화면(shell/)을 띄우고, 고른 서버의 웹 클라이언트를 그대로 연다.
@@ -63,6 +74,7 @@ public class MainActivity extends Activity {
     private static final int REQ_FILES = 2;
     private static final int REQ_PROJECTION = 3;
     private static final int SAMPLE_RATE = 48000;
+    private static final long PROJECTION_KEEP_MS = 3000;
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private FrameLayout root;
@@ -121,8 +133,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
-        stopSoundShare(false);
-        stopService(new Intent(this, CallService.class));
+        stopCallService();
         CallService.onProjection = null;
         closeControl();
         web.destroy();
@@ -151,10 +162,15 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void backToLauncher() {
+    private void stopCallService() {
         stopSoundShare(false);
+        releaseProjection.run();
         stopService(new Intent(this, CallService.class));
         keepPageAwake = false;
+    }
+
+    private void backToLauncher() {
+        stopCallService();
         closeControl();
         serverOrigin = "";
         web.loadUrl(LAUNCHER_URL);
@@ -246,11 +262,17 @@ public class MainActivity extends Activity {
 
     private static String fingerprint(SslError error) {
         try {
-            byte[] der = error.getCertificate().getX509Certificate().getEncoded();
-            byte[] hash = MessageDigest.getInstance("SHA-256").digest(der);
-            return Base64.encodeToString(hash, Base64.NO_WRAP);
+            return sha256(error.getCertificate().getX509Certificate().getEncoded());
         } catch (Exception e) {
             return null;
+        }
+    }
+
+    private static String sha256(byte[] der) {
+        try {
+            return Base64.encodeToString(MessageDigest.getInstance("SHA-256").digest(der), Base64.NO_WRAP);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e); // SHA-256 은 모든 안드로이드에 있다
         }
     }
 
@@ -259,22 +281,28 @@ public class MainActivity extends Activity {
     private class Chrome extends WebChromeClient {
         @Override
         public void onPermissionRequest(PermissionRequest request) {
-            // 마이크만, 고른 서버 페이지에만 준다(PC 의 isTrustedPage). 카메라·다른 오리진 iframe 은 거부.
-            boolean wantsMic = Arrays.asList(request.getResources()).contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE);
-            if (!wantsMic || serverOrigin.isEmpty() || !serverOrigin.equals(originOf(request.getOrigin()))) {
+            // 마이크·카메라만, 고른 서버 페이지에만 준다(PC 의 isTrustedPage). 다른 오리진 iframe 은 거부.
+            List<String> asked = Arrays.asList(request.getResources());
+            boolean wantsMic = asked.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE);
+            boolean wantsCam = asked.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE);
+            if ((!wantsMic && !wantsCam) || serverOrigin.isEmpty() || !serverOrigin.equals(originOf(request.getOrigin()))) {
                 request.deny();
                 return;
             }
-            if (hasMicPermission()) {
-                grantMic(request);
+            // 빠진 안드로이드 권한을 한 번에 묻고, 결과로 허용된 것만 준다(onRequestPermissionsResult).
+            List<String> missing = new ArrayList<>();
+            if (wantsMic && !hasMicPermission()) missing.add(Manifest.permission.RECORD_AUDIO);
+            if (wantsCam && !hasPermission(Manifest.permission.CAMERA)) missing.add(Manifest.permission.CAMERA);
+            if (missing.isEmpty()) {
+                grantMedia(request);
                 return;
+            }
+            if (Build.VERSION.SDK_INT >= 33 && !hasPermission(Manifest.permission.POST_NOTIFICATIONS)) {
+                missing.add(Manifest.permission.POST_NOTIFICATIONS);
             }
             if (pendingMic != null) pendingMic.deny();
             pendingMic = request;
-            String[] perms = Build.VERSION.SDK_INT >= 33
-                    ? new String[]{Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS}
-                    : new String[]{Manifest.permission.RECORD_AUDIO};
-            requestPermissions(perms, REQ_MIC);
+            requestPermissions(missing.toArray(new String[0]), REQ_MIC);
         }
 
         @Override
@@ -323,15 +351,33 @@ public class MainActivity extends Activity {
         }
     }
 
+    private boolean hasPermission(String permission) {
+        return checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED;
+    }
+
     private boolean hasMicPermission() {
-        return checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
+        return hasPermission(Manifest.permission.RECORD_AUDIO);
     }
 
-    private void grantMic(PermissionRequest request) {
-        request.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
-        startCallService();
+    // 요청 중 안드로이드 권한이 있는 것만 준다. 하나도 없으면 거부.
+    private void grantMedia(PermissionRequest request) {
+        List<String> asked = Arrays.asList(request.getResources());
+        List<String> grant = new ArrayList<>();
+        if (asked.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE) && hasMicPermission()) {
+            grant.add(PermissionRequest.RESOURCE_AUDIO_CAPTURE);
+        }
+        if (asked.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE) && hasPermission(Manifest.permission.CAMERA)) {
+            grant.add(PermissionRequest.RESOURCE_VIDEO_CAPTURE);
+        }
+        if (grant.isEmpty()) {
+            request.deny();
+            return;
+        }
+        request.grant(grant.toArray(new String[0]));
+        if (grant.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)) startCallService();
     }
 
+    // 방에 들어갔을 때(페이지의 call 메시지)와 마이크를 받았을 때 켠다. 직접 나가기·서버 선택·앱 종료 때 끈다.
     private void startCallService() {
         keepPageAwake = true;
         try {
@@ -346,8 +392,7 @@ public class MainActivity extends Activity {
         if (requestCode != REQ_MIC || pendingMic == null) return;
         PermissionRequest request = pendingMic;
         pendingMic = null;
-        if (hasMicPermission()) grantMic(request);
-        else request.deny();
+        grantMedia(request);
     }
 
     @Override
@@ -380,7 +425,7 @@ public class MainActivity extends Activity {
     }
 
     // ===== 페이지와의 통신(control 포트) =====
-    // 페이지 → 앱: JSON 문자열 {type: "download"|"save"|"soundStart"|"soundStop"|"launcher", ...}
+    // 페이지 → 앱: JSON 문자열 {type: "download"|"save"|"soundStart"|"soundStop"|"launcher"|"call"(active), ...}
     // 앱 → 페이지: {type: "sound", state: "started"(ports[0] = PCM 포트)|"denied"|"error"|"stopped", message}
 
     private void openControl() {
@@ -424,6 +469,10 @@ public class MainActivity extends Activity {
             case "launcher":
                 backToLauncher();
                 break;
+            case "call":
+                if (msg.optBoolean("active")) startCallService();
+                else stopCallService();
+                break;
         }
     }
 
@@ -454,6 +503,12 @@ public class MainActivity extends Activity {
         String scheme = uri.getScheme();
         if (!"http".equals(scheme) && !"https".equals(scheme)) return;
         String fileName = safeName(name, URLUtil.guessFileName(url, null, null));
+        // 자체 서명 인증서 서버(처음 접속 때 핀을 기억한 곳)는 시스템 DownloadManager 가 인증서를 믿지 않아 실패한다 → 앱이 직접 받는다.
+        String pin = "https".equals(scheme) ? prefs.getString("certPin:" + uri.getAuthority(), null) : null;
+        if (pin != null) {
+            pinnedDownload(url, fileName, pin);
+            return;
+        }
         try {
             DownloadManager.Request request = new DownloadManager.Request(uri)
                     .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
@@ -466,6 +521,70 @@ public class MainActivity extends Activity {
         } catch (RuntimeException e) {
             Toast.makeText(this, "다운로드하지 못했습니다.", Toast.LENGTH_SHORT).show();
         }
+    }
+
+    // 핀으로 기억한 인증서(SHA-256)와 똑같은 인증서일 때만 받는다. 인증서 자체를 확인했으므로 호스트 이름은 보지 않는다
+    // (LAN IP 로 접속하면 인증서 CN 과 맞지 않는다). 다운로드 폴더에 바로 쓴다(IS_PENDING 으로 다 받기 전엔 숨김).
+    private void pinnedDownload(String url, String fileName, String pin) {
+        String cookie = CookieManager.getInstance().getCookie(url);
+        String userAgent = web.getSettings().getUserAgentString();
+        Toast.makeText(this, "다운로드를 시작했습니다: " + fileName, Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            boolean ok = false;
+            Uri target = null;
+            try {
+                X509TrustManager pinned = new X509TrustManager() {
+                    @Override
+                    public void checkServerTrusted(X509Certificate[] chain, String authType) throws CertificateException {
+                        if (chain == null || chain.length == 0 || !pin.equals(sha256(chain[0].getEncoded()))) {
+                            throw new CertificateException("인증서가 기억한 것과 다릅니다.");
+                        }
+                    }
+
+                    @Override
+                    public void checkClientTrusted(X509Certificate[] chain, String authType) throws CertificateException {
+                        throw new CertificateException();
+                    }
+
+                    @Override
+                    public X509Certificate[] getAcceptedIssuers() {
+                        return new X509Certificate[0];
+                    }
+                };
+                SSLContext tls = SSLContext.getInstance("TLS");
+                tls.init(null, new TrustManager[]{pinned}, null);
+                HttpsURLConnection conn = (HttpsURLConnection) new URL(url).openConnection();
+                conn.setSSLSocketFactory(tls.getSocketFactory());
+                conn.setHostnameVerifier((host, session) -> true);
+                conn.setRequestProperty("User-Agent", userAgent);
+                if (cookie != null) conn.setRequestProperty("Cookie", cookie);
+                if (conn.getResponseCode() == 200) {
+                    String mime = conn.getContentType();
+                    ContentValues values = new ContentValues();
+                    values.put(MediaStore.Downloads.DISPLAY_NAME, fileName);
+                    values.put(MediaStore.Downloads.MIME_TYPE, mime == null ? "application/octet-stream" : mime.split(";")[0]);
+                    values.put(MediaStore.Downloads.IS_PENDING, 1);
+                    target = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                    if (target != null) {
+                        try (InputStream in = conn.getInputStream(); OutputStream out = getContentResolver().openOutputStream(target)) {
+                            byte[] buffer = new byte[64 * 1024];
+                            for (int n; (n = in.read(buffer)) > 0; ) out.write(buffer, 0, n);
+                        }
+                        values.clear();
+                        values.put(MediaStore.Downloads.IS_PENDING, 0);
+                        getContentResolver().update(target, values, null, null);
+                        ok = true;
+                    }
+                }
+                conn.disconnect();
+            } catch (Exception ignored) {
+            }
+            if (!ok && target != null) getContentResolver().delete(target, null, null);
+            boolean saved = ok;
+            main.post(() -> Toast.makeText(this,
+                    saved ? "다운로드 폴더에 저장했습니다: " + fileName : "다운로드하지 못했습니다.",
+                    Toast.LENGTH_SHORT).show());
+        }).start();
     }
 
     // blob:/data: 다운로드(이미지 저장, 화이트보드 PNG 등)는 페이지가 data URL 로 바꿔 보낸다.
@@ -512,6 +631,12 @@ public class MainActivity extends Activity {
             sendSound("error", "사운드 공유에는 마이크 권한이 필요합니다.");
             return;
         }
+        // 방금 끈 공유의 동의가 아직 살아 있으면(장치 변경·오디오 복구로 껐다 켬) 허용 창을 다시 띄우지 않는다.
+        if (projection != null) {
+            main.removeCallbacks(releaseProjection);
+            startSoundCapture();
+            return;
+        }
         MediaProjectionManager manager = getSystemService(MediaProjectionManager.class);
         Intent intent = Build.VERSION.SDK_INT >= 34
                 ? manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
@@ -523,7 +648,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    @SuppressLint("MissingPermission") // 아래에서 hasMicPermission() 으로 확인한다(람다 안이라 lint 가 못 본다)
     private void onProjection(MediaProjection result) {
         main.post(() -> {
             if (result == null) {
@@ -535,55 +659,63 @@ public class MainActivity extends Activity {
                 result.stop();
                 return;
             }
-            if (!hasMicPermission()) {
-                result.stop();
-                sendSound("error", "사운드 공유에는 마이크 권한이 필요합니다.");
-                return;
-            }
             projection = result;
+            CallService.projectionActive = true;
             projection.registerCallback(new MediaProjection.Callback() {
                 @Override
                 public void onStop() {
                     // 시스템(알림·상태 표시줄)에서 공유를 끈 경우
-                    if (projection == result) stopSoundShare(true);
+                    if (projection != result) return;
+                    projection = null;
+                    CallService.projectionActive = false;
+                    if (capturing) stopSoundShare(true);
                 }
             }, main);
-
-            AudioRecord record = null;
-            try {
-                AudioPlaybackCaptureConfiguration config = new AudioPlaybackCaptureConfiguration.Builder(projection)
-                        .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
-                        .addMatchingUsage(AudioAttributes.USAGE_GAME)
-                        .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
-                        .excludeUid(Process.myUid()) // Accord 자신의 소리(상대 목소리·효과음)는 빼서 되돌아가지 않게
-                        .build();
-                AudioFormat format = new AudioFormat.Builder()
-                        .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
-                        .setSampleRate(SAMPLE_RATE)
-                        .setChannelMask(AudioFormat.CHANNEL_IN_STEREO)
-                        .build();
-                int minBuffer = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_STEREO, AudioFormat.ENCODING_PCM_FLOAT);
-                record = new AudioRecord.Builder()
-                        .setAudioFormat(format)
-                        .setBufferSizeInBytes(Math.max(minBuffer, SAMPLE_RATE * 2 * 4 / 10)) // 100ms
-                        .setAudioPlaybackCaptureConfig(config)
-                        .build();
-                record.startRecording();
-            } catch (Exception e) {
-                if (record != null) record.release(); // startRecording 실패 시 네이티브 녹음 자원이 남지 않게
-                stopSoundShare(false);
-                sendSound("error", "사운드 캡처를 시작하지 못했습니다.");
-                return;
-            }
-
-            WebMessagePort[] channel = web.createWebMessageChannel();
-            pcmPort = channel[0];
-            sendSound("started", null, channel[1]);
-            capturing = true;
-            WebMessagePort port = pcmPort;
-            AudioRecord started = record;
-            new Thread(() -> captureLoop(started, port), "accord-sound-share").start();
+            startSoundCapture();
         });
+    }
+
+    @SuppressLint("MissingPermission") // 맨 앞에서 hasMicPermission() 으로 확인한다
+    private void startSoundCapture() {
+        if (!hasMicPermission()) {
+            stopSoundShare(false);
+            sendSound("error", "사운드 공유에는 마이크 권한이 필요합니다.");
+            return;
+        }
+        AudioRecord record = null;
+        try {
+            AudioPlaybackCaptureConfiguration config = new AudioPlaybackCaptureConfiguration.Builder(projection)
+                    .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                    .addMatchingUsage(AudioAttributes.USAGE_GAME)
+                    .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+                    .excludeUid(Process.myUid()) // Accord 자신의 소리(상대 목소리·효과음)는 빼서 되돌아가지 않게
+                    .build();
+            AudioFormat format = new AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
+                    .setSampleRate(SAMPLE_RATE)
+                    .setChannelMask(AudioFormat.CHANNEL_IN_STEREO)
+                    .build();
+            int minBuffer = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_STEREO, AudioFormat.ENCODING_PCM_FLOAT);
+            record = new AudioRecord.Builder()
+                    .setAudioFormat(format)
+                    .setBufferSizeInBytes(Math.max(minBuffer, SAMPLE_RATE * 2 * 4 / 10)) // 100ms
+                    .setAudioPlaybackCaptureConfig(config)
+                    .build();
+            record.startRecording();
+        } catch (Exception e) {
+            if (record != null) record.release(); // startRecording 실패 시 네이티브 녹음 자원이 남지 않게
+            stopSoundShare(false);
+            sendSound("error", "사운드 캡처를 시작하지 못했습니다.");
+            return;
+        }
+
+        WebMessagePort[] channel = web.createWebMessageChannel();
+        pcmPort = channel[0];
+        sendSound("started", null, channel[1]);
+        capturing = true;
+        WebMessagePort port = pcmPort;
+        AudioRecord started = record;
+        new Thread(() -> captureLoop(started, port), "accord-sound-share").start();
     }
 
     private void captureLoop(AudioRecord record, WebMessagePort port) {
@@ -615,10 +747,23 @@ public class MainActivity extends Activity {
         capturing = false;
         if (pcmPort != null) pcmPort.close();
         pcmPort = null;
+        if (projection != null) {
+            main.removeCallbacks(releaseProjection);
+            main.postDelayed(releaseProjection, PROJECTION_KEEP_MS);
+        }
+        if (notify) sendSound("stopped", "사운드 공유가 종료되었습니다.");
+    }
+
+    // 아무도 안 쓰는 동의(MediaProjection)를 놓는다. stopSoundShare 는 PROJECTION_KEEP_MS 뒤에, 통화 종료는 바로 부른다.
+    private final Runnable releaseProjection = this::releaseProjectionNow;
+
+    private void releaseProjectionNow() {
+        main.removeCallbacks(releaseProjection);
+        if (capturing) return;
         MediaProjection current = projection;
         projection = null;
+        CallService.projectionActive = false;
         if (current != null) current.stop();
-        if (notify) sendSound("stopped", "사운드 공유가 종료되었습니다.");
     }
 
     // ===== 런처(shell/launcher.js)가 읽는 값 =====

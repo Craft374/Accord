@@ -695,7 +695,10 @@ function bindEvents() {
   dom.focusExitButton?.addEventListener("click", exitFocusMode);
   document.addEventListener("keydown", handleGlobalHotkeys);
   dom.refreshDevicesButton.addEventListener("click", () => refreshDevices());
-  dom.leaveButton.addEventListener("click", () => leaveRoom("방에서 나갔습니다."));
+  dom.leaveButton.addEventListener("click", () => {
+    leaveRoom("방에서 나갔습니다.");
+    sendAndroidControl({ type: "call", active: false }); // 직접 나갈 때만 — 재연결 중 나감은 통화 유지 서비스를 끄지 않는다
+  });
   dom.muteButton.addEventListener("click", toggleMute);
   dom.callIconMic?.addEventListener("click", toggleMute);
   dom.callIconScreen?.addEventListener("click", toggleScreenShare);
@@ -990,6 +993,7 @@ async function connect() {
   await openSocket();
   attemptAuthResume();
   logClientEvent("client-env", getClientEnvironmentSummary());
+  if (isAndroidApp()) logAndroidEnvironment();
   logClientEvent("ice-server-config", getIceServerSummary());
   if (!hasTurnServer()) logClientEvent("turn-missing", "No TURN server configured; symmetric NAT or VM networks may fail.");
   setStatus("서버 연결", "good");
@@ -1385,6 +1389,7 @@ function logout() {
   toggleAdminModal(false);
   closeRoomStatsModal(); // 열려 있으면 1초 폴링 타이머가 남아 다음 로그인 때까지 살아있는다
   if (state.currentRoom) leaveRoom("로그아웃했습니다.");
+  sendAndroidControl({ type: "call", active: false });
   // 채널/멤버 화면을 비워 다음 로그인 전까지 이전 계정 정보가 남지 않게 한다.
   state.channels = [];
   state.currentChannelId = "";
@@ -2118,6 +2123,7 @@ async function handleSocketMessage(message) {
     state.currentRoom = message.room;
     logClientEvent("joined", `room=${message.room?.id || ""} peers=${(message.peers || []).length}`);
     setStatus("통화 중", "good");
+    sendAndroidControl({ type: "call", active: true }); // 앱: 백그라운드에서도 통화 유지(음소거로 들어와 마이크를 안 잡아도)
     setMessage(`${message.room.name}에 들어왔습니다.`);
     playUiSound("in", state.currentRoom?.id);
     renderCurrentRoom();
@@ -2999,6 +3005,14 @@ var androidSoundReply = null; // soundStart 응답을 기다리는 중이면 res
 
 function isAndroidApp() {
   return Boolean(window.AccordAndroid);
+}
+
+// 기기 지원 여부를 서버 로그(client-log)로 남긴다 — 사용자의 실제 기기에서 무엇이 되는지 확인용.
+function logAndroidEnvironment() {
+  const has = (name) => (typeof window[name] === "undefined" ? 0 : 1);
+  logClientEvent("android-env", `gdm=${navigator.mediaDevices?.getDisplayMedia ? 1 : 0} mstg=${has("MediaStreamTrackGenerator")} vtg=${has("VideoTrackGenerator")} vf=${has("VideoFrame")} vdec=${has("VideoDecoder")} screen=${screen.width}x${screen.height} dpr=${devicePixelRatio}`);
+  window.addEventListener("contextmenu", (event) => logClientEvent("android-contextmenu", `pointer=${event.pointerType || "-"}`), { once: true });
+  document.addEventListener("visibilitychange", () => logClientEvent("android-visibility", document.visibilityState));
 }
 
 function sendAndroidControl(message) {

@@ -1,5 +1,6 @@
 package craft374.accord;
 
+import android.Manifest;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -7,6 +8,7 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
@@ -23,9 +25,13 @@ public class CallService extends Service {
     // 사운드 공유 동의 결과를 받을 곳(MainActivity). 실패하면 null 이 넘어간다.
     static Consumer<MediaProjection> onProjection;
 
-    private boolean foreground;
+    // MainActivity 가 MediaProjection 을 쥐고 있는 동안 true — startForeground 를 다시 부를 때 그 타입을 빼지 않게.
+    static boolean projectionActive;
 
-    // projection == null 이면 통화 유지만. 호출 전에 RECORD_AUDIO 권한이 있어야 한다.
+    private boolean foreground;
+    private int currentType;
+
+    // projection == null 이면 통화 유지만(마이크 권한이 없으면 듣기 전용 mediaPlayback 타입으로).
     static void start(Context context, int code, Intent projection) {
         Intent intent = new Intent(context, CallService.class);
         if (projection != null) intent.putExtra(EXTRA_CODE, code).putExtra(EXTRA_DATA, projection);
@@ -35,15 +41,17 @@ public class CallService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         Intent data = intent == null ? null : intent.getParcelableExtra(EXTRA_DATA);
-        // 이미 켜져 있는데 통화 유지만 다시 요청(마이크를 다시 잡을 때마다 온다)하면 그대로 둔다.
-        // startForeground 를 마이크 타입만으로 다시 부르면 mediaProjection 타입이 빠져 시스템이 사운드 공유를 끊고,
-        // 백그라운드(화면 꺼짐 중 재연결)에서는 안드로이드 14 의 마이크 타입 제한에 걸려 예외 → stopSelf 로 통화까지 끊긴다.
-        if (data == null && foreground) return START_NOT_STICKY;
-        int type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
-        if (data != null) type |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION;
+        // 타입은 지금 켜져 있어야 하는 것의 합으로만 준다 — 일부만 넘기면 빠진 타입의 기능(사운드 공유 등)을 시스템이 끊는다.
+        boolean mic = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
+        int type = mic ? ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE : ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK;
+        if (data != null || projectionActive) type |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION;
+        // 이미 켜져 있고 새로 더할 게 없으면 그대로 둔다(마이크를 다시 잡을 때마다 온다). 백그라운드에서 다시 부르면
+        // 안드로이드 14 의 마이크 타입 제한에 걸릴 수 있다.
+        if (foreground && data == null && (currentType | type) == currentType) return START_NOT_STICKY;
         try {
             startForeground(1, buildNotification(), type);
             foreground = true;
+            currentType = type;
         } catch (RuntimeException e) {
             if (data != null) deliver(null);
             if (!foreground) stopSelf(); // 이미 통화를 유지 중이면 사운드 공유만 실패로 끝낸다
