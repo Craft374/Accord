@@ -640,6 +640,11 @@ async function init() {
     if (soundLabel) soundLabel.textContent = "휴대폰 사운드";
     const soundCaret = document.querySelector('[data-dock-pop="callDockPopSound"]');
     if (soundCaret) soundCaret.style.display = "none";
+    // 화면 공유 설정: 캡처 방식·화면 테스트는 PC 전용
+    for (const selector of ["#screenCaptureModeField", "#openScreenTestButton", ".screen-share-note"]) {
+      const element = document.querySelector(selector);
+      if (element) element.style.display = "none";
+    }
   }
   restoreLoopbackEchoReductionSetting();
   restoreSystemCaptureModeSetting();
@@ -3001,7 +3006,7 @@ async function restartSystemAudio() {
 // 앱 → 페이지: {type: "sound", state: "started"(ports[0] = PCM 포트)|"denied"|"error"|"stopped", message}
 // init 경로에서도 불리므로 상태는 var 로 둔다(TDZ 방지).
 var androidControlPort = null;
-var androidSoundReply = null; // soundStart 응답을 기다리는 중이면 resolve 함수
+var androidReplies = { sound: null, screen: null }; // soundStart·screenStart 응답을 기다리는 중이면 resolve 함수
 
 function isAndroidApp() {
   return Boolean(window.AccordAndroid);
@@ -3034,41 +3039,47 @@ function handleAndroidControlMessage(event) {
   } catch {
     return;
   }
-  if (message?.type !== "sound") return;
-  const pcmPort = event.ports?.[0] || null;
-  if (androidSoundReply) {
-    const reply = androidSoundReply;
-    androidSoundReply = null;
-    reply({ ...message, pcmPort });
+  const kind = message?.type;
+  if (kind !== "sound" && kind !== "screen") return;
+  const port = event.ports?.[0] || null;
+  const reply = androidReplies[kind];
+  if (reply) {
+    androidReplies[kind] = null;
+    reply({ ...message, port });
     return;
   }
   if (message.state === "started") {
     // 시간 초과·취소 뒤에 늦게 허용된 경우: 아무도 안 받으니 바로 끈다.
-    pcmPort?.close();
-    sendAndroidControl({ type: "soundStop" });
-  } else if (message.state === "stopped" && state.systemSharing) {
+    port?.close();
+    sendAndroidControl({ type: kind === "sound" ? "soundStop" : "screenStop" });
+  } else if (message.state === "stopped" && kind === "sound" && state.systemSharing) {
     // 알림·상태 표시줄에서 공유를 끈 경우(우리 토글을 안 거침)
     dom.systemAudioToggle.checked = false;
     announceMediaIntent("soundOff");
     stopSystemAudio();
+  } else if (message.state === "stopped" && kind === "screen" && state.screenSharing && state.screenSource === "screen") {
+    announceMediaIntent("screenOff");
+    stopScreenShare().catch(() => {});
   }
 }
 
-function requestAndroidSound() {
+// 앱에 사운드·화면 캡처를 요청하고 데이터 포트(PCM / JPEG 프레임)를 받는다. 동의 창 응답을 최대 60초 기다린다.
+function requestAndroidCapture(kind, message) {
   if (!androidControlPort) return Promise.reject(new Error("앱과 연결되지 않았습니다. 앱을 다시 열어 주세요."));
-  if (androidSoundReply) return Promise.reject(new Error("사운드 공유를 이미 요청하는 중입니다."));
+  if (androidReplies[kind]) return Promise.reject(new Error("이미 요청하는 중입니다."));
+  const stopType = kind === "sound" ? "soundStop" : "screenStop";
   return new Promise((resolve, reject) => {
     const timer = window.setTimeout(() => {
-      androidSoundReply = null;
-      sendAndroidControl({ type: "soundStop" }); // 앱이 동의 창 대기 상태로 남지 않게
-      reject(new Error("사운드 공유 응답이 없습니다."));
+      androidReplies[kind] = null;
+      sendAndroidControl({ type: stopType }); // 앱이 동의 창 대기 상태로 남지 않게
+      reject(new Error("앱에서 응답이 없습니다."));
     }, 60000);
-    androidSoundReply = (reply) => {
+    androidReplies[kind] = (reply) => {
       window.clearTimeout(timer);
-      if (reply.state === "started" && reply.pcmPort) resolve(reply.pcmPort);
-      else reject(new Error(reply.state === "denied" ? "사운드 공유를 취소했습니다." : reply.message || "사운드 공유를 시작하지 못했습니다."));
+      if (reply.state === "started" && reply.port) resolve(reply.port);
+      else reject(new Error(reply.message || "시작하지 못했습니다."));
     };
-    sendAndroidControl({ type: "soundStart" });
+    sendAndroidControl(message);
   });
 }
 
@@ -3093,7 +3104,7 @@ async function startAndroidSoundShare(options = {}) {
     const destination = context.createMediaStreamDestination();
     node.connect(destination);
 
-    const pcmPort = await requestAndroidSound();
+    const pcmPort = await requestAndroidCapture("sound", { type: "soundStart" });
     pcmPort.onmessage = (event) => {
       const text = atob(event.data);
       const bytes = new Uint8Array(text.length);
@@ -3124,6 +3135,87 @@ async function startAndroidSoundShare(options = {}) {
   } finally {
     updateControls();
   }
+}
+
+// 앱 화면 공유: WebView 에는 getDisplayMedia 가 없어 앱이 화면을 캡처해 JPEG 프레임으로 보낸다.
+// 프레임 → ImageBitmap → VideoFrame → MediaStreamTrackGenerator 로 영상 트랙을 만든다(그리기 루프에 기대지 않아 앱을 내려도 돈다).
+function getAndroidScreenConfig() {
+  return { maxSide: state.screenResolution === "720" ? 1280 : 1920, fps: Math.min(30, Number(state.screenFps) || 15) };
+}
+
+async function getAndroidScreenStream() {
+  stopAndroidScreenCapture();
+  state.screenCaptureMethod = "android-native";
+  const port = await requestAndroidCapture("screen", { type: "screenStart", ...getAndroidScreenConfig() });
+  state.androidScreenPort = port;
+  const track = createAndroidFrameTrack(port);
+  logClientEvent("screen-capture-path", `android-native ${typeof MediaStreamTrackGenerator === "function" ? "generator" : "canvas"}`);
+  return new MediaStream([track]);
+}
+
+function stopAndroidScreenCapture() {
+  if (!state.androidScreenPort) return;
+  state.androidScreenPort.close();
+  state.androidScreenPort = null;
+  sendAndroidControl({ type: "screenStop" });
+}
+
+function createAndroidFrameTrack(port) {
+  const decode = (base64) => {
+    const text = atob(base64);
+    const bytes = new Uint8Array(text.length);
+    for (let index = 0; index < text.length; index += 1) bytes[index] = text.charCodeAt(index);
+    return createImageBitmap(new Blob([bytes], { type: "image/jpeg" }));
+  };
+  let draw;
+  let track;
+  if (typeof MediaStreamTrackGenerator === "function") {
+    track = new MediaStreamTrackGenerator({ kind: "video" });
+    const writer = track.writable.getWriter();
+    draw = async (bitmap) => {
+      const frame = new VideoFrame(bitmap, { timestamp: Math.round(performance.now() * 1000) });
+      if (writer.desiredSize !== null && writer.desiredSize <= 0) frame.close(); // 인코더가 밀리면 버린다
+      else await writer.write(frame); // 쓴 프레임은 트랙이 닫는다
+    };
+  } else {
+    // 예전 WebView: 캔버스로 그려 captureStream. 앱을 내리면 멈출 수 있다.
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d");
+    track = canvas.captureStream(0).getVideoTracks()[0];
+    draw = async (bitmap) => {
+      if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+      }
+      context.drawImage(bitmap, 0, 0);
+      track.requestFrame?.();
+    };
+  }
+  // 디코딩 중에 온 프레임은 최신 것 하나만 남긴다(밀리면 지연만 쌓인다).
+  let busy = false;
+  let latest = null;
+  const pump = async (data) => {
+    busy = true;
+    try {
+      const bitmap = await decode(data);
+      try {
+        await draw(bitmap);
+      } finally {
+        bitmap.close();
+      }
+    } catch {}
+    busy = false;
+    if (latest) {
+      const next = latest;
+      latest = null;
+      pump(next);
+    }
+  };
+  port.onmessage = (event) => {
+    if (busy) latest = event.data;
+    else pump(event.data);
+  };
+  return track;
 }
 
 // 앱에는 브라우저 다운로드가 없어서 a[download] 클릭을 앱으로 넘긴다. saveChatImage·downloadCanvasPng 의 a.click() 도
@@ -3400,6 +3492,11 @@ async function stopScreenShare({ renegotiate = true, message = "화면 공유를
 async function restartScreenShare() {
   // 카메라 공유 중에 해상도·fps를 바꿔도 화면 캡처로 갈아타지 않는다.
   if (!state.currentRoom || !state.screenSharing || state.screenSource !== "screen") return;
+  // 앱은 캡처를 새로 열면 허용 창이 다시 뜨므로, 크기·fps만 바꾼다.
+  if (isAndroidApp()) {
+    sendAndroidControl({ type: "screenConfig", ...getAndroidScreenConfig() });
+    return;
+  }
   let stream = null;
   const oldStream = state.screenStream;
   const oldTrack = state.screenTrack;
@@ -3494,6 +3591,7 @@ function cleanupLocalScreenShare() {
   if (state.selectedScreenPeerId === "local") state.selectedScreenPeerId = "";
   stopScreenCaptureProbe();
   stopNativeScreenCapture();
+  stopAndroidScreenCapture();
   rebuildLocalStream();
   setDesktopScreenShareActive(false).catch(() => {});
   for (const track of tracks) track.stop();
@@ -3515,6 +3613,7 @@ async function getScreenShareStream() {
   state.screenCaptureRequested = null;
   state.screenDesktopDiagnostics = null;
   stopNativeScreenCapture(); // 재시작이면 이전 helper부터 끈다(레거시 방식으로 바꿔도 뒤에 남지 않게)
+  if (isAndroidApp()) return getAndroidScreenStream();
 
   // 네이티브 캡처(모니터·창 모두)가 자동의 첫 선택이다. 실패하면 자동일 때만 아래 레거시 경로로 넘어간다.
   if ((state.screenCaptureMode === "auto" || state.screenCaptureMode === "native") && isNativeScreenCaptureSupported()) {
@@ -3753,7 +3852,7 @@ function getScreenShareTargetSize() {
 
 async function applyScreenShareTrackConstraints(track) {
   // 네이티브 캡처는 helper가 이미 설정 크기·fps로 맞춰 보내므로 트랙 제약을 걸지 않는다.
-  if (!track?.applyConstraints || state.screenCaptureMethod === "native-wgc") return;
+  if (!track?.applyConstraints || state.screenCaptureMethod === "native-wgc" || state.screenCaptureMethod === "android-native") return;
   const constraints = { frameRate: getScreenShareVideoConstraints().frameRate };
   // 설정 해상도가 지금 잡힌 화면보다 작을 때만 줄인다. 크거나 같으면(맥 1496x967에 1080p·4K 등) 모니터 크기 그대로 둔다 —
   // 더 크게 요청하면 맥에서 374x240처럼 오히려 작아졌다.
@@ -18625,6 +18724,7 @@ function isVirtualSystemAudioSupported() {
 }
 
 function isScreenShareSendSupported() {
+  if (isAndroidApp()) return true; // 앱이 화면을 캡처해 준다(카메라는 WebView getUserMedia)
   return desktop.isDesktop && !isMobileWeb() && Boolean(navigator.mediaDevices?.getDisplayMedia);
 }
 

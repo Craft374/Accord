@@ -13,6 +13,17 @@ import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
+import android.content.res.Configuration;
+import android.graphics.PixelFormat;
+import android.graphics.Rect;
+import android.hardware.display.DisplayManager;
+import android.hardware.display.VirtualDisplay;
+import android.media.Image;
+import android.media.ImageReader;
+import android.os.HandlerThread;
+import android.os.SystemClock;
+import java.io.ByteArrayOutputStream;
+import java.util.concurrent.atomic.AtomicBoolean;
 import android.media.AudioAttributes;
 import android.media.AudioFormat;
 import android.media.AudioPlaybackCaptureConfiguration;
@@ -93,6 +104,24 @@ public class MainActivity extends Activity {
     private volatile WebMessagePort pcmPort;
     private volatile boolean capturing;
     private boolean soundRequested; // 페이지가 시작을 요청했고 아직 끝나지 않음(동의 창이 떠 있는 동안 포함)
+    private boolean displayUsed; // 이 projection 으로 VirtualDisplay 를 이미 만들었다(안드로이드 14부터 한 번만 된다)
+
+    // 화면 공유
+    private boolean screenRequested;
+    private volatile boolean screenCapturing;
+    private VirtualDisplay display;
+    private volatile ImageReader reader;
+    private HandlerThread screenThread;
+    private WebMessagePort framePort;
+    private int screenMaxSide = 1280;
+    private volatile int screenFps = 15;
+    private final AtomicBoolean framePending = new AtomicBoolean();
+    // 아래 셋은 화면 캡처 스레드에서만 쓴다
+    private Bitmap frameBitmap;
+    private ByteBuffer framePad;
+    private final ByteArrayOutputStream jpegOut = new ByteArrayOutputStream();
+    private String lastFrame;
+    private long lastSentAt;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -164,6 +193,7 @@ public class MainActivity extends Activity {
 
     private void stopCallService() {
         stopSoundShare(false);
+        stopScreenShare(false);
         releaseProjection.run();
         stopService(new Intent(this, CallService.class));
         keepPageAwake = false;
@@ -215,8 +245,9 @@ public class MainActivity extends Activity {
 
         @Override
         public void onPageStarted(WebView view, String url, Bitmap favicon) {
-            // 새로고침·이동하면 이전 페이지의 포트와 사운드 공유는 끝난다.
+            // 새로고침·이동하면 이전 페이지의 포트와 사운드·화면 공유는 끝난다.
             stopSoundShare(false);
+            stopScreenShare(false);
             closeControl();
         }
 
@@ -413,20 +444,20 @@ public class MainActivity extends Activity {
             pendingFiles = null;
         } else if (requestCode == REQ_PROJECTION) {
             if (resultCode != RESULT_OK || data == null) {
-                sendSound("denied", "사운드 공유를 허용하지 않았습니다.");
+                failProjection("denied");
                 return;
             }
             try {
                 CallService.start(this, resultCode, data); // → onProjection
             } catch (RuntimeException e) {
-                sendSound("error", "사운드 공유를 시작하지 못했습니다.");
+                failProjection("error");
             }
         }
     }
 
     // ===== 페이지와의 통신(control 포트) =====
-    // 페이지 → 앱: JSON 문자열 {type: "download"|"save"|"soundStart"|"soundStop"|"launcher"|"call"(active), ...}
-    // 앱 → 페이지: {type: "sound", state: "started"(ports[0] = PCM 포트)|"denied"|"error"|"stopped", message}
+    // 페이지 → 앱: JSON 문자열 {type: "download"|"save"|"soundStart"|"soundStop"|"screenStart"(maxSide, fps)|"screenStop"|"launcher"|"call"(active), ...}
+    // 앱 → 페이지: {type: "sound"|"screen", state: "started"(ports[0] = PCM/프레임 포트)|"denied"|"error"|"stopped", message}
 
     private void openControl() {
         closeControl();
@@ -466,6 +497,16 @@ public class MainActivity extends Activity {
             case "soundStop":
                 stopSoundShare(false);
                 break;
+            case "screenStart":
+                startScreenShare(msg.optInt("maxSide", 1280), msg.optInt("fps", 15));
+                break;
+            case "screenStop":
+                stopScreenShare(false);
+                break;
+            case "screenConfig":
+                setScreenConfig(msg.optInt("maxSide", screenMaxSide), msg.optInt("fps", screenFps));
+                if (screenCapturing) resizeScreenCapture(getResources().getConfiguration().densityDpi);
+                break;
             case "launcher":
                 backToLauncher();
                 break;
@@ -485,6 +526,17 @@ public class MainActivity extends Activity {
         if (control == null) return;
         try {
             JSONObject json = new JSONObject().put("type", "sound").put("state", state);
+            if (message != null) json.put("message", message);
+            control.postMessage(new WebMessage(json.toString(), port == null ? null : new WebMessagePort[]{port}));
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void sendScreen(String state, String message, WebMessagePort port) {
+        if (!"started".equals(state)) screenRequested = false;
+        if (control == null) return;
+        try {
+            JSONObject json = new JSONObject().put("type", "screen").put("state", state);
             if (message != null) json.put("message", message);
             control.postMessage(new WebMessage(json.toString(), port == null ? null : new WebMessagePort[]{port}));
         } catch (Exception ignored) {
@@ -634,32 +686,51 @@ public class MainActivity extends Activity {
         // 방금 끈 공유의 동의가 아직 살아 있으면(장치 변경·오디오 복구로 껐다 켬) 허용 창을 다시 띄우지 않는다.
         if (projection != null) {
             main.removeCallbacks(releaseProjection);
-            startSoundCapture();
+            startSoundCapture(false);
             return;
         }
+        requestProjection();
+    }
+
+    // 사운드·화면 공유가 같이 쓰는 화면 캡처 동의 창. 결과는 onActivityResult → CallService → onProjection.
+    private boolean projectionPending;
+
+    private void requestProjection() {
+        if (projectionPending) return; // 동의 창이 이미 떠 있으면 그 결과를 같이 쓴다
         MediaProjectionManager manager = getSystemService(MediaProjectionManager.class);
         Intent intent = Build.VERSION.SDK_INT >= 34
                 ? manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
                 : manager.createScreenCaptureIntent();
         try {
             startActivityForResult(intent, REQ_PROJECTION);
+            projectionPending = true;
         } catch (ActivityNotFoundException e) {
-            sendSound("error", "이 기기는 사운드 공유를 지원하지 않습니다.");
+            failProjection("error");
         }
+    }
+
+    private void failProjection(String state) {
+        projectionPending = false;
+        boolean denied = "denied".equals(state);
+        if (soundRequested) sendSound(state, denied ? "사운드 공유를 허용하지 않았습니다." : "사운드 공유를 시작하지 못했습니다.");
+        if (screenRequested) sendScreen(state, denied ? "화면 공유를 허용하지 않았습니다." : "화면 공유를 시작하지 못했습니다.", null);
     }
 
     private void onProjection(MediaProjection result) {
         main.post(() -> {
             if (result == null) {
-                sendSound("error", "사운드 공유를 시작하지 못했습니다.");
+                failProjection("error");
                 return;
             }
+            projectionPending = false;
             // 동의 창이 떠 있는 사이 페이지가 공유를 끄거나 새로고침했으면 버린다.
-            if (!soundRequested || control == null || projection != null) {
+            if ((!soundRequested && !screenRequested) || control == null) {
                 result.stop();
                 return;
             }
+            MediaProjection old = projection;
             projection = result;
+            displayUsed = false;
             CallService.projectionActive = true;
             projection.registerCallback(new MediaProjection.Callback() {
                 @Override
@@ -669,14 +740,20 @@ public class MainActivity extends Activity {
                     projection = null;
                     CallService.projectionActive = false;
                     if (capturing) stopSoundShare(true);
+                    if (screenCapturing) stopScreenShare(true);
                 }
             }, main);
-            startSoundCapture();
+            // 화면 공유를 다시 켜느라 새 동의를 받은 경우(VirtualDisplay 는 동의 하나당 한 번): 하던 사운드 캡처를 새 동의로 옮긴다.
+            if (old != null) old.stop();
+            if (capturing) startSoundCapture(true);
+            else if (soundRequested) startSoundCapture(false);
+            if (screenRequested && !screenCapturing) startScreenCapture();
         });
     }
 
+    // resume: 이미 공유 중인 사운드를 새 동의로 옮길 때 — 페이지의 PCM 포트를 그대로 쓴다.
     @SuppressLint("MissingPermission") // 맨 앞에서 hasMicPermission() 으로 확인한다
-    private void startSoundCapture() {
+    private void startSoundCapture(boolean resume) {
         if (!hasMicPermission()) {
             stopSoundShare(false);
             sendSound("error", "사운드 공유에는 마이크 권한이 필요합니다.");
@@ -709,9 +786,11 @@ public class MainActivity extends Activity {
             return;
         }
 
-        WebMessagePort[] channel = web.createWebMessageChannel();
-        pcmPort = channel[0];
-        sendSound("started", null, channel[1]);
+        if (!resume) {
+            WebMessagePort[] channel = web.createWebMessageChannel();
+            pcmPort = channel[0];
+            sendSound("started", null, channel[1]);
+        }
         capturing = true;
         WebMessagePort port = pcmPort;
         AudioRecord started = record;
@@ -759,11 +838,188 @@ public class MainActivity extends Activity {
 
     private void releaseProjectionNow() {
         main.removeCallbacks(releaseProjection);
-        if (capturing) return;
+        if (capturing || screenCapturing) return;
         MediaProjection current = projection;
         projection = null;
         CallService.projectionActive = false;
         if (current != null) current.stop();
+    }
+
+    // ===== 화면 공유 =====
+    // MediaProjection → VirtualDisplay → ImageReader 로 화면을 받아 JPEG(base64) 프레임으로 프레임 포트에 보낸다.
+    // 페이지는 프레임을 VideoFrame 으로 바꿔 영상 트랙을 만든다. 프레임마다 독립이라 몇 장 빠져도 깨지지 않는다.
+    // ponytail: JPEG 프레임(1280px·15fps 기준 대략 1~2MB/s). 화질·배터리가 아쉬우면 MediaCodec H.264 + 페이지 WebCodecs 로 바꾼다.
+
+    private void startScreenShare(int maxSide, int fps) {
+        if (screenRequested) return;
+        screenRequested = true;
+        setScreenConfig(maxSide, fps);
+        if (projection != null && !displayUsed) {
+            // 사운드 공유로 받아 둔 동의가 있으면 다시 묻지 않는다
+            main.removeCallbacks(releaseProjection);
+            startScreenCapture();
+            return;
+        }
+        requestProjection();
+    }
+
+    private void setScreenConfig(int maxSide, int fps) {
+        screenMaxSide = Math.max(480, Math.min(1920, maxSide));
+        screenFps = Math.max(5, Math.min(30, fps));
+    }
+
+    // 실제 화면 크기(회전·폴드 상태 반영)를 긴 변 screenMaxSide 이하, 짝수로 줄인다.
+    private int[] screenSize() {
+        Rect bounds = getWindowManager().getMaximumWindowMetrics().getBounds();
+        int w = bounds.width();
+        int h = bounds.height();
+        float scale = Math.min(1f, screenMaxSide / (float) Math.max(w, h));
+        return new int[]{Math.max(2, Math.round(w * scale) & ~1), Math.max(2, Math.round(h * scale) & ~1)};
+    }
+
+    private void startScreenCapture() {
+        int[] size = screenSize();
+        try {
+            reader = ImageReader.newInstance(size[0], size[1], PixelFormat.RGBA_8888, 2);
+            display = projection.createVirtualDisplay("accord-screen", size[0], size[1],
+                    getResources().getConfiguration().densityDpi, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                    reader.getSurface(), null, null);
+            displayUsed = true;
+        } catch (RuntimeException e) {
+            stopScreenShare(false);
+            sendScreen("error", "화면 캡처를 시작하지 못했습니다.", null);
+            return;
+        }
+        WebMessagePort[] channel = web.createWebMessageChannel();
+        framePort = channel[0];
+        sendScreen("started", null, channel[1]);
+        screenCapturing = true;
+        screenThread = new HandlerThread("accord-screen");
+        screenThread.start();
+        Handler handler = new Handler(screenThread.getLooper());
+        WebMessagePort port = framePort;
+        handler.post(new Runnable() {
+            @Override
+            public void run() {
+                if (!screenCapturing || framePort != port) return;
+                captureFrame(port);
+                handler.postDelayed(this, 1000 / screenFps);
+            }
+        });
+    }
+
+    // 화면 캡처 스레드에서 돈다.
+    private void captureFrame(WebMessagePort port) {
+        ImageReader current = reader;
+        if (current == null) return;
+        Image image = null;
+        try {
+            image = current.acquireLatestImage();
+        } catch (RuntimeException ignored) {
+        }
+        long now = SystemClock.uptimeMillis();
+        String jpeg = null;
+        if (image != null) {
+            try {
+                // 페이지가 아직 이전 프레임을 못 받았으면 이번 프레임은 버린다(밀리면 지연만 쌓인다).
+                if (!framePending.get()) jpeg = lastFrame = encodeFrame(image);
+            } catch (RuntimeException ignored) {
+            } finally {
+                image.close();
+            }
+        } else if (lastFrame != null && now - lastSentAt >= 1000) {
+            // 화면이 그대로면 프레임이 안 나온다 — 1초마다 다시 보내 새로 들어온 사람도 화면을 보게 한다.
+            jpeg = lastFrame;
+        }
+        if (jpeg == null || !framePending.compareAndSet(false, true)) return;
+        lastSentAt = now;
+        String frame = jpeg;
+        main.post(() -> {
+            framePending.set(false);
+            if (framePort == port) port.postMessage(new WebMessage(frame));
+        });
+    }
+
+    private String encodeFrame(Image image) {
+        Image.Plane plane = image.getPlanes()[0];
+        int width = image.getWidth();
+        int height = image.getHeight();
+        // 줄 끝에 패딩이 붙을 수 있다: rowStride/pixelStride 폭으로 받은 뒤 잘라낸다(안 하면 영상이 기울어진다).
+        int paddedWidth = plane.getRowStride() / plane.getPixelStride();
+        if (frameBitmap == null || frameBitmap.getWidth() != paddedWidth || frameBitmap.getHeight() != height) {
+            if (frameBitmap != null) frameBitmap.recycle();
+            frameBitmap = Bitmap.createBitmap(paddedWidth, height, Bitmap.Config.ARGB_8888);
+        }
+        ByteBuffer pixels = plane.getBuffer();
+        pixels.rewind();
+        int need = paddedWidth * height * 4;
+        if (pixels.remaining() < need) {
+            // 마지막 줄에는 패딩이 없는 기기가 있어 버퍼가 조금 짧다 — 모자란 만큼 채운 버퍼로 옮긴다.
+            if (framePad == null || framePad.capacity() < need) framePad = ByteBuffer.allocateDirect(need);
+            framePad.clear();
+            framePad.put(pixels);
+            framePad.rewind();
+            pixels = framePad;
+        }
+        frameBitmap.copyPixelsFromBuffer(pixels);
+        Bitmap frame = paddedWidth == width ? frameBitmap : Bitmap.createBitmap(frameBitmap, 0, 0, width, height);
+        jpegOut.reset();
+        frame.compress(Bitmap.CompressFormat.JPEG, 70, jpegOut);
+        if (frame != frameBitmap) frame.recycle();
+        return Base64.encodeToString(jpegOut.toByteArray(), Base64.NO_WRAP);
+    }
+
+    // 회전·폴드 접고 펴기·해상도 설정 변경: VirtualDisplay 를 새로 만들 수 없으니(동의 하나당 한 번) 크기만 바꾸고 새 ImageReader 를 붙인다.
+    @Override
+    public void onConfigurationChanged(Configuration config) {
+        super.onConfigurationChanged(config);
+        if (screenCapturing) resizeScreenCapture(config.densityDpi);
+    }
+
+    private void resizeScreenCapture(int densityDpi) {
+        if (display == null) return;
+        int[] size = screenSize();
+        ImageReader old = reader;
+        if (old != null && old.getWidth() == size[0] && old.getHeight() == size[1]) return;
+        ImageReader next = ImageReader.newInstance(size[0], size[1], PixelFormat.RGBA_8888, 2);
+        display.resize(size[0], size[1], densityDpi);
+        display.setSurface(next.getSurface());
+        reader = next;
+        closeOnScreenThread(old);
+    }
+
+    // ImageReader 는 캡처 스레드가 쓰는 중일 수 있어 그 스레드에서 닫는다.
+    private void closeOnScreenThread(ImageReader old) {
+        if (old == null) return;
+        if (screenThread != null) new Handler(screenThread.getLooper()).post(old::close);
+        else old.close();
+    }
+
+    private void stopScreenShare(boolean notify) {
+        screenRequested = false;
+        screenCapturing = false;
+        if (framePort != null) framePort.close();
+        framePort = null;
+        VirtualDisplay oldDisplay = display;
+        display = null;
+        if (oldDisplay != null) oldDisplay.release();
+        ImageReader oldReader = reader;
+        reader = null;
+        closeOnScreenThread(oldReader);
+        if (screenThread != null) {
+            new Handler(screenThread.getLooper()).post(() -> {
+                lastFrame = null;
+                if (frameBitmap != null) frameBitmap.recycle();
+                frameBitmap = null;
+            });
+            screenThread.quitSafely();
+            screenThread = null;
+        }
+        if (projection != null) {
+            main.removeCallbacks(releaseProjection);
+            main.postDelayed(releaseProjection, PROJECTION_KEEP_MS);
+        }
+        if (notify) sendScreen("stopped", "화면 공유가 종료되었습니다.", null);
     }
 
     // ===== 런처(shell/launcher.js)가 읽는 값 =====
