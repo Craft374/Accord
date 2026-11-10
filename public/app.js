@@ -633,7 +633,14 @@ init().catch((error) => {
 
 async function init() {
   dom.nameInput.value = localStorage.getItem("voiceChatName") || makeDefaultName();
-  dom.launcherButton.hidden = !desktop.isDesktop;
+  dom.launcherButton.hidden = !desktop.isDesktop && !isAndroidApp();
+  if (isAndroidApp()) {
+    // 앱은 휴대폰에서 재생 중인 소리를 통째로 공유한다 — 프로그램 선택 팝업은 쓸 일이 없다.
+    const soundLabel = document.querySelector("#systemAudioAction .call-dock-btn > span");
+    if (soundLabel) soundLabel.textContent = "휴대폰 사운드";
+    const soundCaret = document.querySelector('[data-dock-pop="callDockPopSound"]');
+    if (soundCaret) soundCaret.style.display = "none";
+  }
   restoreLoopbackEchoReductionSetting();
   restoreSystemCaptureModeSetting();
   restoreScreenShareSettings();
@@ -665,7 +672,7 @@ function bindEvents() {
     });
   });
   dom.launcherButton.addEventListener("click", confirmServerChange);
-  if (desktop.isDesktop) {
+  if (desktop.isDesktop || isAndroidApp()) {
     dom.statusBadge.classList.add("clickable");
     dom.statusBadge.title = "눌러서 다른 서버로 변경";
     dom.statusBadge.addEventListener("click", confirmServerChange);
@@ -963,9 +970,14 @@ function setSystemCaptureMode(mode) {
 
 // 우상단 상태 표시(statusBadge)나 설정 > 서버 변경 버튼을 눌렀을 때: 통화·DM 알림이 끊긴다는 걸 미리 알린다.
 function confirmServerChange() {
-  if (!desktop.backToLauncher) return;
+  if (!desktop.backToLauncher && !isAndroidApp()) return;
   if (!window.confirm("서버를 변경하면 지금 통화가 끊기고, 나가 있는 동안 DM 알림도 받을 수 없습니다. 서버 선택 화면으로 나갈까요?")) return;
-  desktop.backToLauncher();
+  backToLauncher();
+}
+
+function backToLauncher() {
+  if (desktop.backToLauncher) desktop.backToLauncher();
+  else sendAndroidControl({ type: "launcher" });
 }
 
 async function connect() {
@@ -1042,9 +1054,9 @@ function scheduleReconnect() {
   reconnectAttempts += 1;
   if (reconnectAttempts > RECONNECT_MAX_ATTEMPTS) {
     setStatus("서버 끊김", "bad");
-    if (desktop.isDesktop) {
+    if (desktop.isDesktop || isAndroidApp()) {
       setMessage("서버에 연결할 수 없습니다. 5초 후 서버 선택 화면으로 돌아갑니다.");
-      window.setTimeout(() => desktop.backToLauncher?.(), 5000);
+      window.setTimeout(backToLauncher, 5000);
     } else {
       setMessage("서버에 연결할 수 없습니다. 새로고침 후 다시 시도해 주세요.");
     }
@@ -2532,7 +2544,7 @@ async function startSystemAudioShare(options = {}) {
     return;
   }
 
-  await startDisplaySystemAudioShare(options);
+  await (isAndroidApp() ? startAndroidSoundShare(options) : startDisplaySystemAudioShare(options));
 }
 
 async function startProgramSystemAudioShare(options = {}) {
@@ -2975,6 +2987,156 @@ async function restartSystemAudio() {
   await stopSystemAudio();
   dom.systemAudioToggle.checked = true;
   await startSystemAudioShare();
+}
+
+// ===== 안드로이드 앱 =====
+// android/ 의 WebView 앱. 페이지를 불러올 때마다 앱이 메인 프레임에 "accordAndroid" 메시지로 control 포트를 넘긴다.
+// 페이지 → 앱: JSON 문자열 {type: "download"|"save"|"soundStart"|"soundStop"|"launcher"}
+// 앱 → 페이지: {type: "sound", state: "started"(ports[0] = PCM 포트)|"denied"|"error"|"stopped", message}
+// init 경로에서도 불리므로 상태는 var 로 둔다(TDZ 방지).
+var androidControlPort = null;
+var androidSoundReply = null; // soundStart 응답을 기다리는 중이면 resolve 함수
+
+function isAndroidApp() {
+  return Boolean(window.AccordAndroid);
+}
+
+function sendAndroidControl(message) {
+  androidControlPort?.postMessage(JSON.stringify(message));
+}
+
+// 앱이 보낸 메시지는 source 가 없다 — iframe 이 가짜 포트를 끼워 넣지 못하게 막는다.
+window.addEventListener("message", (event) => {
+  if (event.data !== "accordAndroid" || event.source || !event.ports?.[0]) return;
+  androidControlPort?.close();
+  androidControlPort = event.ports[0];
+  androidControlPort.onmessage = handleAndroidControlMessage;
+});
+
+function handleAndroidControlMessage(event) {
+  let message = null;
+  try {
+    message = JSON.parse(event.data);
+  } catch {
+    return;
+  }
+  if (message?.type !== "sound") return;
+  const pcmPort = event.ports?.[0] || null;
+  if (androidSoundReply) {
+    const reply = androidSoundReply;
+    androidSoundReply = null;
+    reply({ ...message, pcmPort });
+    return;
+  }
+  if (message.state === "started") {
+    // 시간 초과·취소 뒤에 늦게 허용된 경우: 아무도 안 받으니 바로 끈다.
+    pcmPort?.close();
+    sendAndroidControl({ type: "soundStop" });
+  } else if (message.state === "stopped" && state.systemSharing) {
+    // 알림·상태 표시줄에서 공유를 끈 경우(우리 토글을 안 거침)
+    dom.systemAudioToggle.checked = false;
+    announceMediaIntent("soundOff");
+    stopSystemAudio();
+  }
+}
+
+function requestAndroidSound() {
+  if (!androidControlPort) return Promise.reject(new Error("앱과 연결되지 않았습니다. 앱을 다시 열어 주세요."));
+  if (androidSoundReply) return Promise.reject(new Error("사운드 공유를 이미 요청하는 중입니다."));
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      androidSoundReply = null;
+      sendAndroidControl({ type: "soundStop" }); // 앱이 동의 창 대기 상태로 남지 않게
+      reject(new Error("사운드 공유 응답이 없습니다."));
+    }, 60000);
+    androidSoundReply = (reply) => {
+      window.clearTimeout(timer);
+      if (reply.state === "started" && reply.pcmPort) resolve(reply.pcmPort);
+      else reject(new Error(reply.state === "denied" ? "사운드 공유를 취소했습니다." : reply.message || "사운드 공유를 시작하지 못했습니다."));
+    };
+    sendAndroidControl({ type: "soundStart" });
+  });
+}
+
+// 앱이 잡은 소리(48kHz 스테레오 float32, 20ms 마다 base64)를 프로그램별 공유와 같은 워클릿으로 재생해 트랙으로 만든다.
+// state.programAudioProcess 를 같이 써서 끌 때는 stopSystemAudio → stopProgramAudioProcess 가 그대로 정리한다.
+async function startAndroidSoundShare(options = {}) {
+  let context = null;
+  const roomId = state.currentRoom?.id || null; // 입장 중(join 전)이면 null
+  try {
+    dom.systemAudioToggle.disabled = true;
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext || !window.AudioWorkletNode) throw new Error("AudioWorklet을 사용할 수 없습니다.");
+    await stopProgramAudioProcess();
+    context = new AudioContext({ latencyHint: "interactive", sampleRate: 48000 });
+    await context.audioWorklet.addModule("program-audio-worklet.js");
+    const node = new AudioWorkletNode(context, "voice-program-audio", {
+      numberOfInputs: 0,
+      numberOfOutputs: 1,
+      outputChannelCount: [2],
+      processorOptions: { channels: 2 },
+    });
+    const destination = context.createMediaStreamDestination();
+    node.connect(destination);
+
+    const pcmPort = await requestAndroidSound();
+    pcmPort.onmessage = (event) => {
+      const text = atob(event.data);
+      const bytes = new Uint8Array(text.length);
+      for (let index = 0; index < text.length; index += 1) bytes[index] = text.charCodeAt(index);
+      node.port.postMessage({ type: "pcm", pid: 0, data: bytes.buffer }, [bytes.buffer]);
+    };
+    state.programAudioProcess = {
+      context,
+      destination,
+      node,
+      pids: [],
+      stopping: false,
+      unsubscribeData: () => {
+        pcmPort.close();
+        sendAndroidControl({ type: "soundStop" });
+      },
+    };
+    context = null; // 이제 정리는 stopProgramAudioProcess 몫
+    // 동의 창이 떠 있는 사이 방을 나갔거나 옮겼으면 공유를 시작하지 않는다(catch 에서 앱 캡처까지 정리).
+    if ((state.currentRoom?.id || null) !== roomId) throw new Error("방을 나가 사운드 공유를 취소했습니다.");
+    await state.programAudioProcess.context.resume().catch(() => {});
+    await attachSystemTrack(destination.stream, destination.stream.getAudioTracks()[0], "사운드를 공유 중입니다.", "device", options);
+  } catch (error) {
+    dom.systemAudioToggle.checked = false;
+    setMessage(error.message || "사운드를 공유하지 못했습니다.");
+    await context?.close().catch(() => {});
+    await stopProgramAudioProcess();
+  } finally {
+    updateControls();
+  }
+}
+
+// 앱에는 브라우저 다운로드가 없어서 a[download] 클릭을 앱으로 넘긴다. saveChatImage·downloadCanvasPng 의 a.click() 도
+// 진짜 click 이벤트라 여기로 온다. blob URL 은 곧 revoke 되므로 fetch 는 핸들러 안에서 바로 시작한다.
+if (isAndroidApp()) {
+  window.addEventListener("click", (event) => {
+    const anchor = event.target?.closest?.("a[download]");
+    if (!anchor || event.defaultPrevented || !androidControlPort) return;
+    const href = anchor.href;
+    const name = anchor.getAttribute("download") || "";
+    if (/^https?:/i.test(href)) {
+      event.preventDefault();
+      sendAndroidControl({ type: "download", url: href, name });
+    } else if (/^(blob|data):/i.test(href)) {
+      event.preventDefault();
+      fetch(href)
+        .then((response) => response.blob())
+        .then((blob) => new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => reject(reader.error);
+          reader.readAsDataURL(blob);
+        }))
+        .then((dataUrl) => sendAndroidControl({ type: "save", dataUrl, name }))
+        .catch((error) => recordClientError("android-save-failed", getErrorText(error)));
+    }
+  });
 }
 
 async function toggleScreenShare() {
@@ -5276,6 +5438,11 @@ function initLayoutControls() {
   bindLayoutResizeHandle(dom.roomsResizeHandle, "rooms", { onReset: applyLayoutSizing });
   // 멤버 목록은 레이아웃 오른쪽 끝, 핸들은 그 왼쪽 경계에 있으므로 왼쪽으로 끌면 넓어진다(growsLeft).
   bindLayoutResizeHandle(dom.membersResizeHandle, "members", { growsLeft: true, onReset: applyLayoutSizing });
+  // 폴드를 펴거나 태블릿을 돌려 넓은 화면이 되면 좁은 화면용 드로어를 닫는다(다시 좁아졌을 때 열린 채로 남지 않게).
+  window.matchMedia("(max-width: 920px)").addEventListener("change", (event) => {
+    if (event.matches) return;
+    dom.layout?.classList.remove("mobile-rooms-open", "mobile-members-open");
+  });
   dom.toggleRoomsButton?.addEventListener("click", () => {
     if (isNarrowLayout()) { toggleMobileDrawer("rooms"); return; }
     setLayoutCollapsed("rooms", !dom.layout?.classList.contains("rooms-collapsed"));
@@ -5518,6 +5685,8 @@ function stopLocalMedia() {
   cleanupLocalScreenShare();
   stopMicOnly();
   state.ignoreSystemEndedUntil = Date.now() + 1200;
+  // 안드로이드 사운드 공유는 트랙만 멈추면 앱이 계속 캡처(MediaProjection)하므로 함께 끈다.
+  if (isAndroidApp() && state.programAudioProcess) stopProgramAudioProcess().catch(() => {});
   for (const track of state.systemStream?.getTracks() || []) track.stop();
   closeSystemEchoFilter();
   state.systemStream = null;
@@ -15963,6 +16132,7 @@ function beginCanvasResize(event, dir) {
   d.canvasResize = { dir, x: event.clientX, y: event.clientY, w0: d.width, h0: d.height };
   window.addEventListener("pointermove", onCanvasResizeMove);
   window.addEventListener("pointerup", onCanvasResizeUp, { once: true });
+  window.addEventListener("pointercancel", onCanvasResizeUp, { once: true }); // 터치 드래그가 끊긴 경우
 }
 function onCanvasResizeMove(event) {
   const d = state.draw;
@@ -15981,6 +16151,8 @@ function onCanvasResizeMove(event) {
 function onCanvasResizeUp() {
   const d = state.draw;
   window.removeEventListener("pointermove", onCanvasResizeMove);
+  window.removeEventListener("pointerup", onCanvasResizeUp);
+  window.removeEventListener("pointercancel", onCanvasResizeUp);
   if (!d || !d.canvasResize) return;
   d.canvasResize = null;
   sendSocket({ type: "draw:resize", roomId: d.roomId, width: d.width, height: d.height });
@@ -18431,7 +18603,7 @@ function isNoisyProgramAudioName(name) {
 }
 
 function isDirectSystemAudioSupported() {
-  return desktop.isDesktop && desktop.platform !== "darwin";
+  return (desktop.isDesktop && desktop.platform !== "darwin") || isAndroidApp();
 }
 
 function isVirtualSystemAudioSupported() {

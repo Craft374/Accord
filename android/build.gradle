@@ -1,0 +1,21 @@
+plugins {
+    id 'com.android.application' version '9.5.1'
+}
+
+android {
+    namespace = 'craft374.accord'
+    compileSdk = 34
+
+    defaultConfig {
+        applicationId = 'craft374.accord'
+        minSdk = 30
+        targetSdk = 34
+        versionCode = 1
+        versionName = '1'
+    }
+
+    // 서버 주소 입력 화면은 PC 앱(shell/)을 그대로 쓴다.
+    sourceSets {
+        main { assets.srcDirs = ['../shell'] }
+    }
+}

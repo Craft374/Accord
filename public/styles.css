@@ -497,6 +497,7 @@ body.focus-mode .topbar {
 body.focus-mode .app {
   max-width: none;
   height: 100vh;
+  height: 100dvh;
   min-height: 0;
   overflow: hidden;
   padding: 0 8px 8px;
@@ -7471,4 +7472,99 @@ body.ai-open .dm-panel { display: none !important; }
 @media (max-width: 720px) {
   .ai-sessions, .ai-memory { position: absolute; z-index: 5; height: 100%; left: 0; top: 0; }
   .ai-memory { width: min(320px, 90%); }
+}
+
+/* ===== 터치 전용 기기(안드로이드 앱 — 폰·폴드·태블릿) =====
+   마우스가 있는 PC 는 (hover: hover) 라 여기 걸리지 않는다. hover 로만 드러나던 버튼을 보이게 하고,
+   손가락으로 잡기 힘든 작은 손잡이는 보이는 크기는 그대로 두고 누르는 영역만 넓힌다. */
+@media (hover: none) and (pointer: coarse) {
+  /* 폴드 커버 화면(~340px)·작은 폰에서 380px 최소폭 때문에 화면이 옆으로 밀리던 것 */
+  body {
+    min-width: 0;
+  }
+  .auth-overlay {
+    padding: 12px;
+  }
+
+  /* 사이드바 폭 조절 핸들(8px) — 태블릿 가로(>920px)에서 손가락으로 잡히게 좌우 8px 씩 넓힌다 */
+  .layout-resize-handle::after {
+    content: "";
+    position: absolute;
+    inset: 0 -8px;
+  }
+
+  /* 그림판 캔버스 크기 손잡이: hover 가 없으니 늘 보이게, 끌 때 화면 스크롤이 가로채지 않게 */
+  .draw-rz-handle {
+    opacity: 0.85;
+    touch-action: none;
+  }
+  .draw-rz-handle::after {
+    content: "";
+    position: absolute;
+    inset: -12px;
+  }
+
+  /* hover 로만 보이던 삭제·더보기 버튼 */
+  .dm-msg-del,
+  .ai-session-del {
+    opacity: 0.6;
+  }
+  .dm-msg-del {
+    min-width: 32px;
+  }
+  .emoji-del,
+  .chat-image-more {
+    opacity: 1;
+  }
+  .emoji-del {
+    width: 22px;
+    height: 22px;
+  }
+
+  /* 방 삭제(×)·그룹 관리(+ ✎ ×): 방을 누르면 바로 입장해 버려 hover 로는 닿을 수 없었다.
+     늘 보이게 하고, hover 때 하던 것처럼 오른쪽 뱃지·개수를 비켜 둔다. */
+  .room-del,
+  .room-group-action {
+    opacity: 0.6;
+    pointer-events: auto;
+  }
+  .room-item-head:has(.room-del) .room-count,
+  .room-item-head:has(.room-del) .room-unread,
+  .room-item-head:has(.room-del) .room-here:last-child {
+    margin-right: 22px;
+  }
+  .room-group-draggable > .room-group-head .room-group-count {
+    margin-right: 72px;
+  }
+  .room-del::after {
+    content: "";
+    position: absolute;
+    inset: -6px;
+  }
+
+  /* 길게 눌러 우클릭 메뉴를 열 때 글자 선택이 먼저 잡히지 않게 */
+  .room-item-head,
+  .room-group-head,
+  .channel-rail,
+  .member-row,
+  #participantList {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+}
+
+/* 좁은 화면 + 터치: 멤버 목록이 전체화면이라 자리가 넉넉하니 관리 버튼(대표 지정·내보내기)을
+   오버레이 대신 줄 안에 늘 보여 준다. (태블릿 가로처럼 넓은 화면은 208px 열이라 그대로 둔다) */
+@media (hover: none) and (pointer: coarse) and (max-width: 920px) {
+  .member-actions {
+    position: static;
+    transform: none;
+    opacity: 1;
+    pointer-events: auto;
+    padding-left: 0;
+    background: none;
+  }
+  .member-action-btn {
+    min-height: 34px;
+  }
 }

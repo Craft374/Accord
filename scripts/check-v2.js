@@ -197,8 +197,8 @@ const checks = [
   [pkg.scripts["server:https"] && startHttps.includes("VOICE_CHAT_REQUIRE_HTTPS") && startHttps.includes("getLanIp"), "https server script uses secure LAN mode"],
   [requiredLaunchers.every((file) => fs.existsSync(file)), "required bat and command launchers exist"],
   [
-    commandBatFiles.every((file) => requiredLaunchers.includes(file) || file === "start-server-dorm.command"),
-    "only required launchers and the optional local dorm launcher remain",
+    commandBatFiles.every((file) => requiredLaunchers.includes(file) || file === "start-server-dorm.command" || file === "android/gradlew.bat"),
+    "only required launchers, the optional local dorm launcher and the android gradle wrapper remain",
   ],
   [(() => {
     if (process.platform !== "darwin") return true;
@@ -235,6 +235,10 @@ const checks = [
   [main.includes("start-program-audio-capture") && preload.includes("startProgramAudioCapture"), "electron exposes native program audio capture IPC"],
   [app.includes("startProgramSystemAudioShare") && app.includes("getProgramSystemAudioStream"), "renderer can create program-only system audio track"],
   [programWorklet.includes("registerProcessor") && programWorklet.includes("voice-program-audio"), "program audio worklet registers processor"],
+  [/event\.data !== "accordAndroid" \|\| event\.source \|\| !event\.ports\?\.\[0\]/.test(app) && app.includes("androidControlPort.onmessage = handleAndroidControlMessage"), "android app control port is accepted only from native (no source)"],
+  [app.includes('sendAndroidControl({ type: "download", url: href, name })') && app.includes('sendAndroidControl({ type: "save", dataUrl, name })') && app.includes('closest?.("a[download]")'), "android app routes a[download] clicks to native download/save"],
+  [app.includes('sendAndroidControl({ type: "soundStart" })') && app.includes("isAndroidApp() ? startAndroidSoundShare(options)") && /function isDirectSystemAudioSupported\(\) \{[^}]*isAndroidApp\(\)/.test(app), "android app sound share starts via native soundStart"],
+  [app.includes('sendAndroidControl({ type: "launcher" })') && app.includes("dom.launcherButton.hidden = !desktop.isDesktop && !isAndroidApp()"), "android app can go back to the server address screen"],
   [html.includes("programAudioList") && app.includes("data-program-audio-pid"), "program audio selection uses checkbox list"],
   [!main.includes("execFile(helper,") && main.includes("execFile(helperInfo.path"), "program audio list helper variable is defined"],
   [main.includes('getNativeHelperInfo("AccordProcessLoopback.exe")') && main.includes("makeHelperError") && main.includes("cwd: helperInfo.cwd"), "program audio helper spawn errors include path and cwd"],

@@ -19,6 +19,7 @@
     "build:mac": "node scripts/fix-mac-builder-permissions.js && npm run icons && node node_modules/electron-builder/cli.js --mac zip --arm64",
     "build:win": "node scripts/build-windows-helper.js && npm run icons && node node_modules/electron-builder/cli.js --win nsis --x64",
     "build:server-mac": "node scripts/fix-mac-builder-permissions.js && node node_modules/electron-builder/cli.js --config server-app/electron-builder.json --mac zip --arm64",
+    "build:android": "cd android && ./gradlew assembleDebug",
     "build:server-win": "node node_modules/electron-builder/cli.js --config server-app/electron-builder.json --win nsis --x64",
     "build": "npm run check && npm run build:mac && npm run build:win && node scripts/prune-dist.js"
   },

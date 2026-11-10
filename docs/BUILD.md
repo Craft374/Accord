@@ -64,6 +64,21 @@ npm run build:mac
 
 ---
 
+## 안드로이드 앱 (폰·태블릿·폴드)
+
+`android/` 는 PC 앱처럼 서버 주소 입력 화면(`shell/` 그대로)을 띄우고 서버의 웹 클라이언트를 WebView로 여는 셸입니다.
+화면·기능은 서버가 내려주므로 `public/` 만 바뀐 경우 앱을 다시 빌드할 필요가 없습니다.
+
+```bash
+npm run build:android   # android/build/outputs/apk/debug/Accord-debug.apk
+```
+
+- Android SDK가 필요합니다. Android Studio로 `android/` 를 한 번 열면 `local.properties` 가 생기고, 아니면 `ANDROID_HOME=~/Library/Android/sdk` 를 지정합니다.
+- 안드로이드 11(API 30) 이상. 마이크는 https 서버(또는 자체 서명 인증서 — 처음 접속 때 기억)에서만 됩니다.
+- 화면 공유 보내기는 아직 지원하지 않습니다(보기는 됩니다). 사운드 공유는 휴대폰에서 재생 중인 소리(음악·영상·게임)를 보냅니다 — 캡처를 막아 둔 앱의 소리는 잡히지 않습니다.
+
+---
+
 ## 검증
 
 ```bash
