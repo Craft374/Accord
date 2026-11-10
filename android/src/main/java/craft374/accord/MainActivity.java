@@ -26,6 +26,7 @@ import java.io.ByteArrayOutputStream;
 import java.util.concurrent.atomic.AtomicBoolean;
 import android.media.AudioAttributes;
 import android.media.AudioFormat;
+import android.media.AudioManager;
 import android.media.AudioPlaybackCaptureConfiguration;
 import android.media.AudioRecord;
 import android.media.projection.MediaProjection;
@@ -192,7 +193,18 @@ public class MainActivity extends Activity {
         }
     }
 
+    // 마이크를 끄면 통화 모드에서 빠져 미디어 볼륨(0까지)으로 듣게 한다. 켜면 WebView 가 마이크를 열며 다시 통화 모드로 바꾼다.
+    private void setCallMode(boolean micOn) {
+        if (micOn) {
+            setVolumeControlStream(AudioManager.USE_DEFAULT_STREAM_TYPE);
+            return;
+        }
+        getSystemService(AudioManager.class).setMode(AudioManager.MODE_NORMAL);
+        setVolumeControlStream(AudioManager.STREAM_MUSIC);
+    }
+
     private void stopCallService() {
+        setCallMode(false);
         stopSoundShare(false);
         stopScreenShare(false);
         releaseProjection.run();
@@ -523,6 +535,9 @@ public class MainActivity extends Activity {
             case "call":
                 if (msg.optBoolean("active")) startCallService();
                 else stopCallService();
+                break;
+            case "mic":
+                setCallMode(msg.optBoolean("on"));
                 break;
         }
     }

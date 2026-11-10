@@ -5897,6 +5897,7 @@ async function syncMobileMicCapture() {
     stopMicOnly();
     rebuildLocalStream();
     updateTrackStats();
+    syncAndroidCallMode();
     return;
   }
   if (!state.muted && !state.rawMicTrack) {
@@ -5906,7 +5907,35 @@ async function syncMobileMicCapture() {
       recordClientError("mobile-mic-reacquire-failed", getErrorText(error));
       setMessage(error.message || "마이크를 다시 켜지 못했습니다.");
     }
+    syncAndroidCallMode();
   }
+}
+
+// 안드로이드는 소리 출력을 열 때 마이크가 열려 있으면 '통화' 스트림으로 연다 — 최소 볼륨이 1이라 0으로 못 내리고
+// 볼륨 키도 통화 볼륨을 조절한다. 마이크를 놓거나 다시 잡은 뒤 앱에 알리고(통화 모드 해제) 재생 출력을 다시 열어,
+// 음소거 중에는 미디어 스트림(0까지 내려감)으로 재생되게 한다.
+function syncAndroidCallMode() {
+  if (!isAndroidApp()) return;
+  sendAndroidControl({ type: "mic", on: !state.muted });
+  // ponytail: 마이크가 실제로 닫히길(열리길) 300ms 기다린다. 기기에서 안 바뀌면 이 값부터 늘린다.
+  window.setTimeout(() => {
+    for (const peer of state.peers.values()) {
+      for (const playback of [peer.remote.mic, peer.remote.system]) {
+        const audio = playback?.audio;
+        if (!audio?.srcObject) continue;
+        const source = audio.srcObject;
+        audio.srcObject = null;
+        audio.srcObject = source;
+        audio.play().catch(() => {});
+      }
+    }
+    const context = state.playbackAudioContext;
+    if (typeof context?.setSinkId === "function") {
+      context.setSinkId({ type: "none" })
+        .then(() => context.setSinkId(dom.outputDeviceSelect?.value || ""))
+        .catch((error) => logClientEvent("android-playback-reopen-failed", getErrorText(error)));
+    }
+  }, 300);
 }
 
 function stopMicOnly() {

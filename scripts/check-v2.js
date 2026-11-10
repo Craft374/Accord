@@ -240,6 +240,7 @@ const checks = [
   [app.includes('requestAndroidCapture("sound", { type: "soundStart" })') && app.includes("isAndroidApp() ? startAndroidSoundShare(options)") && /function isDirectSystemAudioSupported\(\) \{[^}]*isAndroidApp\(\)/.test(app), "android app sound share starts via native soundStart"],
   [app.includes('sendAndroidControl({ type: "call", active: true })') && app.includes('sendAndroidControl({ type: "call", active: false })'), "android app keeps the call service alive from join until the user leaves"],
   [app.includes('requestAndroidCapture("screen", { type: "screenStart"') && app.includes("if (isAndroidApp()) return getAndroidScreenStream();") && app.includes("new MediaStreamTrackGenerator({ kind: \"video\" })"), "android app screen share uses native capture frames"],
+  [/function syncAndroidCallMode\(\)/.test(app) && app.includes('sendAndroidControl({ type: "mic", on: !state.muted })'), "android app leaves call audio mode while muted (media volume can reach 0)"],
   [app.includes("window.accordHandleBack = handleAndroidBack"), "android back button closes the top-most open thing first"],
   [app.includes("echoCancellation: isAndroidApp(),"), "echo cancellation is on only for the android app mic (phone speaker + mic)"],
   [app.includes("reconnectAttempts > RECONNECT_MAX_ATTEMPTS && !isAndroidApp()"), "android app keeps reconnecting on flaky mobile networks"],
