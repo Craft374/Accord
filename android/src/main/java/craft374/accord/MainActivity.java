@@ -217,7 +217,14 @@ public class MainActivity extends Activity {
             super.onBackPressed();
             return;
         }
-        // 뒤로가기로 바로 나가면 통화가 끊기니 먼저 묻는다. PC 의 confirmServerChange 와 같은 문구.
+        // 페이지에 열린 창·메뉴·서랍이 있으면 그것부터 닫는다(PC 의 Esc). 닫을 게 없을 때만 나갈지 묻는다.
+        web.evaluateJavascript("window.accordHandleBack ? window.accordHandleBack() : false", (closed) -> {
+            if (!"true".equals(closed)) showLeaveDialog();
+        });
+    }
+
+    // 뒤로가기로 바로 나가면 통화가 끊기니 먼저 묻는다. PC 의 confirmServerChange 와 같은 문구.
+    private void showLeaveDialog() {
         new AlertDialog.Builder(this)
                 .setMessage("서버를 변경하면 지금 통화가 끊기고, 나가 있는 동안 DM 알림도 받을 수 없습니다. 서버 선택 화면으로 나갈까요?")
                 .setPositiveButton("서버 선택", (d, w) -> backToLauncher())
