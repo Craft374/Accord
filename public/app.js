@@ -645,6 +645,13 @@ async function init() {
       const element = document.querySelector(selector);
       if (element) element.style.display = "none";
     }
+    // 키보드·마우스가 없으니 단축키·우클릭·Esc 안내는 터치에 맞게 고친다.
+    for (const hint of document.querySelectorAll(".modal-hint")) {
+      if (hint.textContent.includes("Ctrl+Shift+M")) hint.hidden = true;
+      else if (hint.textContent.includes("방을 우클릭하면")) hint.textContent = hint.textContent.replace("방을 우클릭하면", "방을 길게 누르면");
+    }
+    if (dom.focusExitButton) dom.focusExitButton.textContent = "집중모드 나가기";
+    window.accordHandleBack = handleAndroidBack;
   }
   restoreLoopbackEchoReductionSetting();
   restoreSystemCaptureModeSetting();
@@ -666,6 +673,26 @@ async function init() {
   refreshProgramAudioSources({ silent: true });
   preloadUiSounds();
   await connect();
+}
+
+// 안드로이드 뒤로가기(Esc 대신): 열린 것 중 맨 위 하나를 닫고 true, 닫을 게 없으면 false(앱이 나가기 확인을 띄운다).
+function handleAndroidBack() {
+  if (document.getElementById("chatContextMenu")) { closeChatContextMenu(); return true; }
+  if (emojiPickerEl) { closeEmojiPicker(); return true; }
+  const dockPop = document.querySelector("#callDock .call-dock-pop:not([hidden])");
+  if (dockPop) { dockPop.hidden = true; return true; }
+  if (profileCard.el) { closeProfileCard(); return true; }
+  // 모달(설정·프로필·관리자·코드 변경·크롭·이미지 뷰어 등)은 모두 배경을 누르면 닫히니, 맨 위 것의 배경을 누른다.
+  // ponytail: DOM 에서 마지막에 보이는 것을 맨 위로 본다 — z-index 가 뒤집힌 모달이 생기면 순서를 따로 정할 것.
+  const backdrop = [...document.querySelectorAll(".modal-backdrop, .img-viewer-backdrop")]
+    .filter((el) => !el.hidden && el.getClientRects().length)
+    .pop();
+  if (backdrop) { backdrop.click(); return true; }
+  for (const kind of ["rooms", "members"]) {
+    if (dom.layout?.classList.contains(`mobile-${kind}-open`)) { toggleMobileDrawer(kind); return true; }
+  }
+  if (document.body.classList.contains("focus-mode")) { exitFocusMode(); return true; }
+  return false;
 }
 
 function bindEvents() {
@@ -735,6 +762,21 @@ function bindEvents() {
   dom.screenStage.addEventListener("mousemove", revealScreenControls);
   dom.screenStage.addEventListener("pointermove", revealScreenControls);
   dom.screenStage.addEventListener("touchstart", revealScreenControls, { passive: true });
+  // 터치: 컨트롤이 숨은 상태의 첫 탭은 보이게만 한다 — 투명한 닫기·나가기·공유자 버튼이 대신 눌리지 않게.
+  // (pointerdown 이 touchstart 보다 먼저라 이때는 아직 숨김 클래스가 남아 있다.)
+  let screenRevealTap = false;
+  dom.screenStage.addEventListener("pointerdown", (event) => {
+    screenRevealTap = event.pointerType !== "mouse" && dom.screenStage.classList.contains("screen-controls-hidden");
+  }, true);
+  dom.screenStage.addEventListener("click", (event) => {
+    if (!screenRevealTap) return;
+    screenRevealTap = false;
+    if (event.target.closest(".screen-stage-head, .screen-share-list")) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }, true);
+  bindScreenViewerPinch();
   document.addEventListener("fullscreenchange", () => {
     updateScreenFullscreenButton();
     revealScreenControls();
@@ -1061,7 +1103,8 @@ function openSocket() {
 function scheduleReconnect() {
   if (reconnectTimer) return;
   reconnectAttempts += 1;
-  if (reconnectAttempts > RECONNECT_MAX_ATTEMPTS) {
+  // 앱(폰)은 와이파이↔LTE 전환·지하철처럼 오래 끊기는 일이 잦아 포기하지 않고 15초 간격으로 계속 시도한다.
+  if (reconnectAttempts > RECONNECT_MAX_ATTEMPTS && !isAndroidApp()) {
     setStatus("서버 끊김", "bad");
     if (desktop.isDesktop || isAndroidApp()) {
       setMessage("서버에 연결할 수 없습니다. 5초 후 서버 선택 화면으로 돌아갑니다.");
@@ -1690,7 +1733,7 @@ function fileToDataUrl(file, maxBytes) {
 }
 
 // ===== 이미지 크롭(정사각형) — 프로필/채널 아이콘 공용 =====
-const cropState = { img: null, scale: 1, fitScale: 1, offX: 0, offY: 0, dragging: false, lastX: 0, lastY: 0, onDone: null, w: 256, h: 256, wide: false };
+const cropState = { img: null, scale: 1, fitScale: 1, offX: 0, offY: 0, dragging: false, pointerId: -1, lastX: 0, lastY: 0, onDone: null, w: 256, h: 256, wide: false };
 const CROP_SIZE = 256;
 const BANNER_CROP = { w: 960, h: 320 }; // 프로필 배경(3:1)
 
@@ -1698,13 +1741,16 @@ function bindCropEvents() {
   const c = dom.cropCanvas;
   if (!c) return;
   c.addEventListener("pointerdown", (e) => {
+    // 두 번째 손가락은 무시한다(섞이면 이미지가 튄다). 같은 포인터(마우스)는 그대로 다시 잡는다.
+    if (cropState.dragging && e.pointerId !== cropState.pointerId) return;
+    cropState.pointerId = e.pointerId;
     cropState.dragging = true;
     cropState.lastX = e.clientX;
     cropState.lastY = e.clientY;
     c.setPointerCapture?.(e.pointerId);
   });
   c.addEventListener("pointermove", (e) => {
-    if (!cropState.dragging) return;
+    if (!cropState.dragging || e.pointerId !== cropState.pointerId) return;
     const rect = c.getBoundingClientRect();
     const sx = cropState.w / rect.width;
     const sy = cropState.h / rect.height;
@@ -1715,9 +1761,10 @@ function bindCropEvents() {
     clampCrop();
     renderCrop();
   });
-  const stop = () => { cropState.dragging = false; };
+  const stop = (e) => { if (e.pointerId === cropState.pointerId) cropState.dragging = false; };
   c.addEventListener("pointerup", stop);
   c.addEventListener("pointercancel", stop);
+  c.addEventListener("lostpointercapture", stop);
   dom.cropZoom?.addEventListener("input", () => {
     const zoom = Number(dom.cropZoom.value || 100) / 100;
     if (dom.cropZoomValue) dom.cropZoomValue.textContent = `${zoom.toFixed(1)}x`;
@@ -2265,11 +2312,12 @@ async function openMic() {
   applyMicTrackEnabled();
 }
 
-// 에코 제거(AEC)는 기능 자체를 제거했다. 목소리를 갉아먹는 부작용이 커서 항상 끈 상태로 캡처한다.
+// 에코 제거(AEC)는 기능 자체를 제거했다. 목소리를 갉아먹는 부작용이 커서 PC 에서는 항상 끈 상태로 캡처한다.
+// 앱(폰·태블릿)은 내장 스피커로 듣는 게 기본이라 끄면 상대가 자기 목소리 에코를 듣는다 → 앱에서만 켠다.
 function getSpeechProcessingConstraints(noise, autoGain) {
   const supported = navigator.mediaDevices?.getSupportedConstraints?.() || {};
   const constraints = {
-    echoCancellation: false,
+    echoCancellation: isAndroidApp(),
     noiseSuppression: noise,
     autoGainControl: autoGain,
   };
@@ -5446,8 +5494,12 @@ function applyLayoutSizing() {
   const membersCollapsed = localStorage.getItem("accordMembersCollapsed") === "1";
   dom.layout.classList.toggle("rooms-collapsed", roomsCollapsed);
   dom.layout.classList.toggle("members-collapsed", membersCollapsed);
-  if (dom.toggleRoomsButton) dom.toggleRoomsButton.setAttribute("aria-pressed", String(roomsCollapsed));
-  if (dom.toggleMembersButton) dom.toggleMembersButton.setAttribute("aria-pressed", String(membersCollapsed));
+  // 좁은 화면에서는 버튼이 '접힘'이 아니라 '드로어 열림'을 뜻한다(폴드 펼치기·태블릿 회전 때도 맞게).
+  const narrow = isNarrowLayout();
+  const roomsPressed = narrow ? dom.layout.classList.contains("mobile-rooms-open") : roomsCollapsed;
+  const membersPressed = narrow ? dom.layout.classList.contains("mobile-members-open") : membersCollapsed;
+  if (dom.toggleRoomsButton) dom.toggleRoomsButton.setAttribute("aria-pressed", String(roomsPressed));
+  if (dom.toggleMembersButton) dom.toggleMembersButton.setAttribute("aria-pressed", String(membersPressed));
   if (dom.roomsCollapseToggle) dom.roomsCollapseToggle.checked = roomsCollapsed;
   if (dom.membersCollapseToggle) dom.membersCollapseToggle.checked = membersCollapsed;
 }
@@ -5514,6 +5566,7 @@ function bindLayoutResizeHandle(handle, kind, { target = dom.layout, growsLeft =
     document.body.classList.remove("resizing-layout");
     window.removeEventListener("pointermove", onMove);
     window.removeEventListener("pointerup", onUp);
+    window.removeEventListener("pointercancel", onUp);
     try { handle.releasePointerCapture(pointerId); } catch {}
     const current = parseInt(target.style.getPropertyValue(cssVar), 10);
     if (Number.isFinite(current)) localStorage.setItem(cfg.key, String(current));
@@ -5531,6 +5584,9 @@ function bindLayoutResizeHandle(handle, kind, { target = dom.layout, growsLeft =
     try { handle.setPointerCapture(pointerId); } catch {}
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
+    // S Pen 손바닥 무시·시스템 제스처·회전으로 pointerup 대신 취소가 오면 끌기 상태가 남지 않게 같이 끝낸다.
+    window.addEventListener("pointercancel", onUp);
+    handle.addEventListener("lostpointercapture", onUp, { once: true });
   });
 
   // 더블클릭하면 해당 목록 폭을 기본값으로 되돌린다.
@@ -5552,9 +5608,9 @@ function initLayoutControls() {
   // 멤버 목록은 레이아웃 오른쪽 끝, 핸들은 그 왼쪽 경계에 있으므로 왼쪽으로 끌면 넓어진다(growsLeft).
   bindLayoutResizeHandle(dom.membersResizeHandle, "members", { growsLeft: true, onReset: applyLayoutSizing });
   // 폴드를 펴거나 태블릿을 돌려 넓은 화면이 되면 좁은 화면용 드로어를 닫는다(다시 좁아졌을 때 열린 채로 남지 않게).
-  window.matchMedia("(max-width: 920px)").addEventListener("change", (event) => {
-    if (event.matches) return;
+  window.matchMedia("(max-width: 920px)").addEventListener("change", () => {
     dom.layout?.classList.remove("mobile-rooms-open", "mobile-members-open");
+    applyLayoutSizing();
   });
   dom.toggleRoomsButton?.addEventListener("click", () => {
     if (isNarrowLayout()) { toggleMobileDrawer("rooms"); return; }
@@ -8212,12 +8268,17 @@ function openProfileCard(userId, anchor, fallback = null) {
     if (!pop.contains(event.target)) closeProfileCard();
   };
   const onKey = (event) => { if (event.key === "Escape") closeProfileCard(); };
-  const onDismiss = () => closeProfileCard();
+  // 터치: 카드를 연 탭이 입력창을 blur 시켜 키보드가 내려가면 resize·scroll 이 뒤따라 와 카드가 바로 닫혔다.
+  // 스크롤은 늘 바깥 pointerdown 이 먼저 오니 그걸로 닫고, resize(키보드·폴드)에는 자리만 다시 잡는다.
+  const touchUi = window.matchMedia("(hover: none) and (pointer: coarse)").matches;
+  const onDismiss = touchUi
+    ? () => { if (anchor.isConnected) positionProfileCard(pop, anchor); else closeProfileCard(); }
+    : () => closeProfileCard();
   // 카드를 연 클릭이 그대로 바깥 클릭으로 잡히지 않도록 다음 틱에 등록한다.
   window.setTimeout(() => document.addEventListener("pointerdown", onDocPointerDown), 0);
   document.addEventListener("keydown", onKey);
   window.addEventListener("resize", onDismiss);
-  window.addEventListener("scroll", onDismiss, true);
+  if (!touchUi) window.addEventListener("scroll", onDismiss, true);
   profileCard.cleanup = () => {
     document.removeEventListener("pointerdown", onDocPointerDown);
     document.removeEventListener("keydown", onKey);
@@ -9224,6 +9285,72 @@ function confirmRemoveRoomGroup(groupId) {
   }
 }
 
+// 터치(폰·태블릿)에서는 끌어 옮기기가 스크롤에 먹혀(pointercancel) 순서를 못 바꾼다.
+// 길게 눌러 여는 메뉴에서 '위로/아래로/그룹으로 이동…' 으로 같은 layout 을 만들어 보낸다.
+function isRoomMoveMenuWanted() {
+  return isMobileWeb() || window.matchMedia("(hover: none) and (pointer: coarse)").matches;
+}
+
+function locateRoomTreeNode(nodes, kind, id) {
+  for (let i = 0; i < nodes.length; i += 1) {
+    if (nodes[i].kind === kind && nodes[i].id === id) return { list: nodes, index: i };
+    const found = nodes[i].kind === "group" && locateRoomTreeNode(nodes[i].children, kind, id);
+    if (found) return found;
+  }
+  return null;
+}
+
+// to: "up" | "down" | { parentId } ("" = 최상위)
+function moveRoomTreeNode(kind, id, to) {
+  const channel = currentChannel();
+  if (!channel || !canManageRooms(channel)) return;
+  const layout = structuredClone(normalizedRoomLayout(channel));
+  const at = locateRoomTreeNode(layout, kind, id);
+  if (!at) return;
+  if (to === "up" || to === "down") {
+    const next = at.index + (to === "up" ? -1 : 1);
+    if (next < 0 || next >= at.list.length) return;
+    [at.list[at.index], at.list[next]] = [at.list[next], at.list[at.index]];
+  } else {
+    const host = to.parentId ? locateRoomTreeNode(layout, "group", to.parentId) : null;
+    const target = host ? host.list[host.index].children : layout;
+    // 그룹을 자기 자신이나 자손 그룹 안으로 넣으면 순환 구조가 된다.
+    if (kind === "group" && host && locateRoomTreeNode([at.list[at.index]], "group", to.parentId)) return;
+    target.push(at.list.splice(at.index, 1)[0]);
+  }
+  if (!roomLayoutContainsEveryNode(layout, channel)) {
+    setMessage("볼 수 없는 방이 있어 순서를 바꿀 수 없습니다.");
+    return;
+  }
+  sendSocket({ type: "channel:reorder-room-layout", channelId: channel.id, layout });
+  // 접힌 그룹에 넣었으면 펼쳐서 들어간 결과를 보여 준다(끌어 옮기기와 같다).
+  if (to.parentId && isRoomGroupCollapsed(channel.id, to.parentId)) toggleRoomGroup(channel.id, to.parentId);
+}
+
+function roomMoveMenuItems(kind, id, pos) {
+  const channel = currentChannel();
+  const at = channel && locateRoomTreeNode(normalizedRoomLayout(channel), kind, id);
+  if (!at) return [];
+  const items = [];
+  if (at.index > 0) items.push({ label: "위로 이동", action: () => moveRoomTreeNode(kind, id, "up") });
+  if (at.index < at.list.length - 1) items.push({ label: "아래로 이동", action: () => moveRoomTreeNode(kind, id, "down") });
+  items.push({
+    label: "그룹으로 이동…",
+    action: () => {
+      // 대상 목록은 방 만들기 모달의 상위 그룹 선택과 같은 순서·들여쓰기로 만든다.
+      const select = document.createElement("select");
+      fillRoomParentSelect(select, channel);
+      const targets = [...select.options].filter((option) => !(kind === "group" && option.value
+        && locateRoomTreeNode([at.list[at.index]], "group", option.value)));
+      openChatContextMenu(targets.map((option) => ({
+        label: option.textContent,
+        action: () => moveRoomTreeNode(kind, id, { parentId: option.value }),
+      })), pos);
+    },
+  });
+  return items;
+}
+
 function bindRoomDragEvents() {
   dom.roomList?.addEventListener("pointerdown", (event) => {
     if (event.button !== 0 || roomPointerDrag) return;
@@ -9366,6 +9493,7 @@ function bindChannelEvents() {
         { label: "이 그룹에 방 만들기", action: () => openRoomModal(groupId) },
         { label: "하위 그룹 만들기", action: () => openRoomGroupModal("", groupId) },
         { label: "그룹 이름 변경", action: () => openRoomGroupModal(groupId) },
+        ...(isRoomMoveMenuWanted() ? roomMoveMenuItems("group", groupId, { x: event.clientX, y: event.clientY }) : []),
         { label: "그룹 삭제", danger: true, action: () => confirmRemoveRoomGroup(groupId) },
       ], { x: event.clientX, y: event.clientY });
       return;
@@ -9380,6 +9508,9 @@ function bindChannelEvents() {
     items.push({ label: isRoomMuted(roomId) ? "알림 켜기" : "알림 끄기", action: () => toggleRoomMute(roomId) });
     if (channel && (isChannelOwner(channel) || canRenameRoom(channel))) {
       items.push({ label: "방 설정", action: () => openRoomRenameModal(roomId) });
+    }
+    if (channel && canManageRooms(channel) && !rolePreview.active && isRoomMoveMenuWanted()) {
+      items.push(...roomMoveMenuItems("room", roomId, { x: event.clientX, y: event.clientY }));
     }
     openChatContextMenu(items, { x: event.clientX, y: event.clientY });
   });
@@ -9632,7 +9763,7 @@ function openChatRoom(roomId) {
   if (!found) return;
   if (state.activeChat?.roomId === roomId) {
     document.body.classList.add("chat-open");
-    dom.chatInput?.focus();
+    if (!isMobileWeb()) dom.chatInput?.focus(); // 모바일은 방을 열 때마다 키보드가 메시지를 가린다
     return;
   }
   state.activeChat = { roomId, channelId: found.channel.id, name: found.room.name };
@@ -9655,7 +9786,7 @@ function openChatRoom(roomId) {
   applyChatReadOnly(found);
   sendSocket({ type: "chat:open", roomId });
   renderRooms();
-  dom.chatInput?.focus();
+  if (!isMobileWeb()) dom.chatInput?.focus();
 }
 
 // 읽기 전용 방에서는 대표자가 아닌 사람의 입력창을 잠근다.
@@ -9714,7 +9845,8 @@ function openAiRoom(roomId) {
   if (!found) return;
   if (state.ai?.roomId === roomId) {
     document.body.classList.add("ai-open");
-    dom.aiInput?.focus();
+    // 폰·폴드에서는 들어가자마자 키보드가 대화를 가리지 않게 자동 포커스하지 않는다.
+    if (!isMobileWeb()) dom.aiInput?.focus();
     return;
   }
   state.ai = {
@@ -9753,7 +9885,7 @@ function openAiRoom(roomId) {
   sendSocket({ type: "ai:open", roomId });
   sendSocket({ type: "ai:models", channelId: found.channel.id });
   renderRooms();
-  dom.aiInput?.focus();
+  if (!isMobileWeb()) dom.aiInput?.focus();
 }
 
 function closeAiView() {
@@ -10331,7 +10463,8 @@ function bindAiEvents() {
   });
   dom.aiInput?.addEventListener("keydown", (e) => {
     if (handleAiRefKeydown(e)) return;
-    if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !state.ai?.composing) {
+    // 소프트 키보드엔 Shift+Enter 가 없어 안드로이드 앱에선 Enter = 줄바꿈, 보내기는 버튼으로.
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !state.ai?.composing && !isAndroidApp()) {
       e.preventDefault();
       sendAiPrompt();
     }
@@ -10382,6 +10515,8 @@ function bindAiEvents() {
     if (!item) return;
     if (item.dataset.sessionId === state.ai.activeSessionId) return;
     sendSocket({ type: "ai:switch", roomId: state.ai.roomId, sessionId: item.dataset.sessionId });
+    // 좁은 화면에선 기록 목록이 대화를 덮는 오버레이라, 고르면 닫아 대화를 보여 준다.
+    if (matchMedia("(max-width: 720px)").matches) toggleAiAside("sessions");
   });
   dom.aiMemorySave?.addEventListener("click", () => {
     if (!state.ai || state.ai.writable === false) return;
@@ -10934,14 +11069,14 @@ function buildChatEditor(msg) {
   ta.rows = 1;
   ta.addEventListener("input", () => autoResizeEl(ta));
   ta.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); saveEditChatMessage(msg.id, ta.value); }
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !isAndroidApp()) { e.preventDefault(); saveEditChatMessage(msg.id, ta.value); }
     else if (e.key === "Escape") { e.preventDefault(); cancelEditChatMessage(); }
   });
   const actions = document.createElement("div");
   actions.className = "chat-edit-actions";
   const hint = document.createElement("span");
   hint.className = "chat-edit-hint";
-  hint.textContent = "Enter 저장 · Esc 취소";
+  hint.textContent = isAndroidApp() ? "" : "Enter 저장 · Esc 취소";
   const cancel = document.createElement("button");
   cancel.type = "button"; cancel.className = "ghost small"; cancel.textContent = "취소";
   cancel.addEventListener("click", cancelEditChatMessage);
@@ -11002,14 +11137,22 @@ function openChatContextMenu(items, pos) {
   menu.style.left = `${left}px`;
   menu.style.top = `${top}px`;
   const close = () => closeChatContextMenu();
+  // 터치: 키보드가 내려가며 생기는 resize·scroll 에 메뉴가 바로 사라지므로, 대신 메뉴 밖을 누르면 닫는다
+  // (사용자 스크롤도 늘 pointerdown 으로 시작한다).
+  const touch = matchMedia("(hover: none) and (pointer: coarse)").matches;
+  const onOutside = (e) => { if (!menu.contains(e.target)) close(); };
   setTimeout(() => {
     document.addEventListener("click", close);
     document.addEventListener("contextmenu", close);
-    window.addEventListener("scroll", close, true);
-    window.addEventListener("resize", close);
+    if (touch) document.addEventListener("pointerdown", onOutside);
+    else {
+      window.addEventListener("scroll", close, true);
+      window.addEventListener("resize", close);
+    }
     chatCtxCleanup = () => {
       document.removeEventListener("click", close);
       document.removeEventListener("contextmenu", close);
+      document.removeEventListener("pointerdown", onOutside);
       window.removeEventListener("scroll", close, true);
       window.removeEventListener("resize", close);
     };
@@ -11160,6 +11303,10 @@ function openImageViewer(opts) {
   img.alt = o.title || "이미지";
   img.draggable = false;
   stage.append(img);
+  // 터치: 확대할 방법이 없어 이미지를 탭하면 원본 크기(1:1)로 보고 한 손가락으로 끌어 본다.
+  if (!o.crop && matchMedia("(hover: none) and (pointer: coarse)").matches) {
+    img.addEventListener("click", () => stage.classList.toggle("zoomed"));
+  }
   let cropBox = null;
   if (o.crop) {
     cropBox = document.createElement("div");
@@ -11236,7 +11383,11 @@ function openImageViewer(opts) {
     if (o.aspect) {
       if (layout.w / layout.h > o.aspect) { ch = layout.h * 0.9; cw = ch * o.aspect; }
       else { cw = layout.w * 0.9; ch = cw / o.aspect; }
-    } else { cw = layout.w; ch = layout.h; }
+    } else {
+      // 터치: 이미지가 스테이지 가장자리에 닿으면 손잡이 절반이 잘려, 처음 영역을 살짝 안쪽으로 둔다.
+      const inset = matchMedia("(hover: none) and (pointer: coarse)").matches ? 24 : 0;
+      cw = Math.max(24, layout.w - inset * 2); ch = Math.max(24, layout.h - inset * 2);
+    }
     crop.w = cw; crop.h = ch;
     crop.x = layout.left + (layout.w - cw) / 2;
     crop.y = layout.top + (layout.h - ch) / 2;
@@ -11280,22 +11431,31 @@ function openImageViewer(opts) {
   }
 
   if (o.crop) {
+    // 한 번에 한 포인터만 끈다(두 번째 손가락 무시). 제스처가 취소돼도(pointercancel) 리스너를 정리한다.
+    let dragId = null;
     cropBox.addEventListener("pointerdown", (e) => {
       e.preventDefault();
+      if (dragId !== null) return;
+      dragId = e.pointerId;
       const handle = e.target?.dataset?.handle || "";
       const startX = e.clientX, startY = e.clientY;
       const start = { ...crop };
       const move = (ev) => {
+        if (ev.pointerId !== dragId) return;
         const dx = ev.clientX - startX, dy = ev.clientY - startY;
         if (handle) resizeCrop(handle, start, dx, dy);
         else { crop.x = start.x + dx; crop.y = start.y + dy; drawCrop(); }
       };
-      const up = () => {
+      const up = (ev) => {
+        if (ev.pointerId !== dragId) return;
+        dragId = null;
         document.removeEventListener("pointermove", move);
         document.removeEventListener("pointerup", up);
+        document.removeEventListener("pointercancel", up);
       };
       document.addEventListener("pointermove", move);
       document.addEventListener("pointerup", up);
+      document.addEventListener("pointercancel", up);
     });
   }
 
@@ -12250,7 +12410,8 @@ function insertAtChatCursor(text) {
   elx.value = elx.value.slice(0, start) + text + elx.value.slice(end);
   const caret = start + text.length;
   elx.selectionStart = elx.selectionEnd = caret;
-  elx.focus();
+  // 안드로이드: 이모지를 누를 때마다 포커스하면 키보드가 다시 올라와 피커 윗부분이 잘린다.
+  if (!isAndroidApp() || document.activeElement === elx) elx.focus();
   autoResizeChatInput();
   updateChatInputPreview();
 }
@@ -12360,7 +12521,7 @@ function bindChatEvents() {
   dom.chatInput?.addEventListener("input", onChatInput);
   dom.chatInput?.addEventListener("keydown", (event) => {
     if (handleChatMentionKeydown(event)) return;
-    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing && !isAndroidApp()) {
       event.preventDefault();
       sendChatMessage();
     }
@@ -12439,7 +12600,7 @@ function bindDmEvents() {
   dom.dmSendButton?.addEventListener("click", sendDmText);
   dom.dmInput?.addEventListener("input", autoResizeDmInput);
   dom.dmInput?.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing && !isAndroidApp()) {
       event.preventDefault();
       sendDmText();
     }
@@ -15552,6 +15713,11 @@ function dmUnreadTotal() {
 function openDmMode() {
   dom.layout?.classList.remove("mobile-rooms-open");
   dom.toggleRoomsButton?.setAttribute("aria-pressed", "false");
+  // 좁은 화면에서 멤버 드로어(프로필 카드 → DM 보내기)가 DM 위에 남지 않게 닫는다.
+  if (dom.layout?.classList.contains("mobile-members-open")) {
+    dom.layout.classList.remove("mobile-members-open");
+    dom.toggleMembersButton?.setAttribute("aria-pressed", "false");
+  }
   state.dm.open = true;
   // 다른 채널 패널은 닫되 통화(WebRTC)는 유지된다.
   closeChatView();
@@ -15636,7 +15802,7 @@ function openDmConversation(userId) {
   sendSocket({ type: "dm:open", userId });
   renderDmThreads();
   renderChannelRail();
-  dom.dmInput?.focus();
+  if (!isMobileWeb()) dom.dmInput?.focus();
 }
 
 function setDmHeader(partner) {
@@ -18357,6 +18523,76 @@ function revealScreenControls() {
     if (!dom.screenStage || dom.screenStage.hidden) return;
     dom.screenStage.classList.add("screen-controls-hidden");
   }, 2200);
+}
+
+// 터치·펜으로 화면 공유 보기를 확대(두 손가락 1~4배)·이동(확대 중 끌기)한다. 폰에서 데스크톱 공유 글자를 읽으려고.
+// 마우스는 건드리지 않는다. 확대했을 때만 touch-action 을 막아 평소에는 패널 스크롤이 그대로 된다.
+// 보는 화면이 바뀌거나(loadstart) 전체화면이 바뀌면 원래 크기로 돌린다.
+function bindScreenViewerPinch() {
+  const video = dom.screenViewer;
+  if (!video) return;
+  const points = new Map();
+  let scale = 1;
+  let x = 0;
+  let y = 0;
+  let startDist = 1;
+  let startScale = 1;
+  const center = () => {
+    let cx = 0;
+    let cy = 0;
+    for (const p of points.values()) { cx += p.x; cy += p.y; }
+    return { x: cx / points.size, y: cy / points.size };
+  };
+  const spread = () => {
+    const [a, b] = points.values();
+    return Math.hypot(a.x - b.x, a.y - b.y) || 1;
+  };
+  const apply = () => {
+    const maxX = ((scale - 1) * video.clientWidth) / 2;
+    const maxY = ((scale - 1) * video.clientHeight) / 2;
+    x = Math.max(-maxX, Math.min(maxX, x));
+    y = Math.max(-maxY, Math.min(maxY, y));
+    video.style.transform = scale > 1 ? `translate(${x}px, ${y}px) scale(${scale})` : "";
+    video.style.touchAction = scale > 1 ? "none" : "";
+  };
+  const reset = () => {
+    points.clear();
+    scale = 1;
+    apply();
+  };
+  video.addEventListener("pointerdown", (event) => {
+    if (event.pointerType === "mouse") return;
+    points.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (points.size === 2) {
+      startDist = spread();
+      startScale = scale;
+    }
+  });
+  video.addEventListener("pointermove", (event) => {
+    const p = points.get(event.pointerId);
+    if (!p) return;
+    const before = center();
+    p.x = event.clientX;
+    p.y = event.clientY;
+    if (points.size >= 2) scale = Math.max(1, Math.min(4, (startScale * spread()) / startDist));
+    const after = center();
+    if (scale > 1) {
+      x += after.x - before.x;
+      y += after.y - before.y;
+    }
+    apply();
+  });
+  const release = (event) => {
+    points.delete(event.pointerId);
+    if (points.size === 2) {
+      startDist = spread();
+      startScale = scale;
+    }
+  };
+  video.addEventListener("pointerup", release);
+  video.addEventListener("pointercancel", release);
+  video.addEventListener("loadstart", reset);
+  document.addEventListener("fullscreenchange", reset);
 }
 
 function updateScreenFullscreenButton() {

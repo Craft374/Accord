@@ -7572,18 +7572,195 @@ body.ai-open .dm-panel { display: none !important; }
 /* ===== 터치 보강(계정·인증·통화 기본) — touch-core =====
    폰·폴드·태블릿(안드로이드 앱) 터치용 규칙. 마우스가 있는 PC 에는 걸리지 않게 둔다.
    ===== touch-core 끝 ===== */
+/* 회원가입 화면(.auth-overlay z-index 60) 위에서도 크롭 창이 보이게 — 모든 플랫폼 공통 버그 */
+#cropModal {
+  z-index: 70;
+}
+/* 크롭 미리보기: 모달이 캔버스보다 좁으면 폭만 줄어 찌그러지던 것 — 비율을 지킨다 */
+#cropCanvas {
+  height: auto;
+  aspect-ratio: 1;
+}
+#cropCanvas.wide {
+  height: auto;
+  aspect-ratio: 3 / 1;
+}
+/* 좁은 화면: 홈페이지 알약이 상단바 자리를 먹어 프로필·마이크·상태(서버 변경) 버튼이 밖으로 밀리던 것 */
+@media (max-width: 920px) {
+  .eyebrow-link {
+    display: none;
+  }
+}
+/* 좁은 화면: 계정 요약 줄에 버튼 3개가 들어가 이름이 한 글자씩 끊기던 것 — 버튼을 다음 줄로 */
+@media (max-width: 580px) {
+  .account-summary {
+    flex-wrap: wrap;
+  }
+  .account-summary-text {
+    min-width: 120px;
+  }
+}
 
 /* ===== 터치 보강(통화 화면·레이아웃) — touch-call =====
    폰·폴드·태블릿(안드로이드 앱) 터치용 규칙. 마우스가 있는 PC 에는 걸리지 않게 둔다.
    ===== touch-call 끝 ===== */
+/* 통화 중 낮은 터치 화면(폰 가로·폴드 커버 가로): 화면 공유 보기 최소 높이 때문에 아래 도크(마이크·나가기)가
+   패널 밖으로 잘려 누를 수 없었다. 패널을 스크롤되게 하고 영상은 한 화면에 들어오게 줄인다. */
+@media (hover: none) and (pointer: coarse) and (max-height: 560px) {
+  body.in-call .main-panel {
+    overflow-y: auto;
+  }
+  body.in-call .main-panel > * {
+    flex-shrink: 0;
+  }
+  body.in-call .participants {
+    flex: 1 0 auto;
+  }
+  .screen-stage {
+    min-height: 0;
+  }
+  #screenViewer,
+  .screen-stage.is-grid .screen-tile-grid {
+    height: clamp(140px, calc(100dvh - 160px), 720px);
+  }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  /* 화면 공유 보기 두 손가락 확대(bindScreenViewerPinch): 한 손가락 스크롤은 두고 핀치만 앱이 받는다.
+     전체화면에서는 스크롤할 게 없으니 처음 핀치부터 바로 잡히게 전부 막는다. */
+  #screenViewer {
+    touch-action: pan-x pan-y;
+  }
+  .screen-stage:fullscreen #screenViewer {
+    touch-action: none;
+  }
+
+  /* 참가자별 볼륨 캐럿·도크 팝오버 닫기(24px): 보이는 크기는 두고 누르는 영역만 넓힌다.
+     옆의 '화면 보기' 버튼을 덮지 않게 조금만(-7px). */
+  .participant-caret,
+  .call-dock-pop-close {
+    position: relative;
+  }
+  .participant-caret::after,
+  .call-dock-pop-close::after {
+    content: "";
+    position: absolute;
+    inset: -7px;
+  }
+}
 
 /* ===== 터치 보강(채널·방·멤버) — touch-channels =====
    폰·폴드·태블릿(안드로이드 앱) 터치용 규칙. 마우스가 있는 PC 에는 걸리지 않게 둔다.
    ===== touch-channels 끝 ===== */
+/* 태블릿 가로(넓은 화면 레이아웃) + 터치: 관리 버튼(대표 지정·내보내기)이 hover 에만 살아나
+   탭이 행으로 가 프로필 카드만 떴다. 이름 아래 줄에 늘 보여 준다. (920px 이하는 위 규칙이 줄 안에 보여 준다) */
+@media (hover: none) and (pointer: coarse) and (min-width: 921px) {
+  .member-row {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+  .member-actions {
+    position: static;
+    transform: none;
+    opacity: 1;
+    pointer-events: auto;
+    background: none;
+    padding-left: 38px; /* 아바타(30px) + 간격(8px) 만큼 들여 이름 줄과 맞춘다 */
+    width: 100%;
+  }
+}
+/* 좁은 화면(폰·폴드 커버): 역할 목록 220px 고정 열 때문에 역할 편집 칸이 40~60px 로 찌그러지고,
+   방별 권한 표는 오른쪽이 잘렸다. 목록을 위로 쌓고 표는 가로로 스크롤한다. (넓은 PC 창은 그대로) */
+@media (max-width: 600px) {
+  .rolemgr {
+    grid-template-columns: 1fr;
+    min-height: 0;
+  }
+  .rolemgr-side {
+    max-height: 32vh;
+  }
+  .perms-table {
+    overflow-x: auto;
+  }
+  .perms-trow {
+    min-width: 480px;
+  }
+  .perms-preview-picks {
+    grid-template-columns: 1fr;
+  }
+}
 
 /* ===== 터치 보강(채팅·AI·이미지·이모지) — touch-chat =====
    폰·폴드·태블릿(안드로이드 앱) 터치용 규칙. 마우스가 있는 PC 에는 걸리지 않게 둔다.
    ===== touch-chat 끝 ===== */
+/* 이미지 크게 보기: 이미지가 absolute 라 패널 높이가 auto 면 스테이지가 늘 min-height(240px)에
+   머물렀다(PC 포함) → 패널 높이를 정해 스테이지가 채우게 한다 */
+.img-viewer {
+  height: min(90vh, 900px);
+  height: min(90dvh, 900px);
+}
+
+/* 폰·폴드 커버처럼 좁은 화면: 이미지·파일 카드가 메시지 열보다 넓어 채팅이 옆으로 밀리던 것,
+   AI방 머리의 모델·생각·참조 범위 줄이 넘쳐 잘리던 것 */
+@media (max-width: 580px) {
+  .chat-image-wrap,
+  .chat-image-link,
+  .chat-image,
+  .chat-file {
+    max-width: 100%;
+  }
+  .ai-head-controls {
+    flex-wrap: wrap;
+  }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  /* 키보드가 올라와 패널이 줄어도 피커·멘션 목록 윗부분이 잘리지 않게 */
+  .emoji-picker {
+    max-height: min(380px, 55dvh);
+  }
+  .chat-mention-menu {
+    max-height: min(260px, 40dvh);
+  }
+
+  /* AI 메시지 📋 복사: hover 가 없으니 메시지 아래에 늘 보이게 */
+  .ai-msg .chat-msg-actions {
+    display: flex;
+    position: static;
+    align-self: flex-end;
+    background: none;
+    border: 0;
+    box-shadow: none;
+  }
+
+  /* 이미지 크게 보기: 탭하면 원본 크기로, 한 손가락으로 끌어 본다 */
+  .img-viewer-stage.zoomed {
+    overflow: auto;
+    touch-action: pan-x pan-y;
+  }
+  .img-viewer-stage.zoomed .img-viewer-img {
+    position: static;
+    width: auto;
+    height: auto;
+    max-width: none;
+    object-fit: none;
+  }
+
+  /* 자르기 손잡이: 손가락으로 잡히게 키우고 누르는 영역을 더 넓힌다 */
+  .img-crop-handle {
+    width: 22px;
+    height: 22px;
+  }
+  .img-crop-handle.nw { top: -11px; left: -11px; }
+  .img-crop-handle.ne { top: -11px; right: -11px; }
+  .img-crop-handle.sw { bottom: -11px; left: -11px; }
+  .img-crop-handle.se { bottom: -11px; right: -11px; }
+  .img-crop-handle::after {
+    content: "";
+    position: absolute;
+    inset: -12px;
+  }
+}
 
 /* ===== 터치 보강(메모장·그림판) — touch-memo =====
    폰·폴드·태블릿(안드로이드 앱) 터치용 규칙. 마우스가 있는 PC 에는 걸리지 않게 둔다.
