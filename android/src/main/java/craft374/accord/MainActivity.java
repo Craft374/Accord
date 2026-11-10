@@ -73,6 +73,7 @@ public class MainActivity extends Activity {
     private PermissionRequest pendingMic;
     private ValueCallback<Uri[]> pendingFiles;
     private View customView;
+    private boolean keepPageAwake; // 통화 중(포그라운드 서비스가 켜진 동안)
     private WebChromeClient.CustomViewCallback customViewCallback;
 
     // 사운드 공유
@@ -91,7 +92,14 @@ public class MainActivity extends Activity {
             WebView.setWebContentsDebuggingEnabled(true); // chrome://inspect 로 디버깅
         }
 
-        web = new WebView(this);
+        // 앱을 내리면 WebView 는 페이지를 '숨김'으로 바꾸고, 크로뮴은 숨김 페이지가 소리를 안 내면 1~2분 뒤 얼린다.
+        // 그러면 사운드 공유 PCM 전달(페이지 메인 스레드 경유)과 통화가 멈추므로, 통화 중에는 보이는 상태로 둔다.
+        web = new WebView(this) {
+            @Override
+            protected void onWindowVisibilityChanged(int visibility) {
+                super.onWindowVisibilityChanged(keepPageAwake ? View.VISIBLE : visibility);
+            }
+        };
         root = new FrameLayout(this);
         root.setBackgroundColor(0xFF1E1F22);
         root.addView(web);
@@ -146,6 +154,7 @@ public class MainActivity extends Activity {
     private void backToLauncher() {
         stopSoundShare(false);
         stopService(new Intent(this, CallService.class));
+        keepPageAwake = false;
         closeControl();
         serverOrigin = "";
         web.loadUrl(LAUNCHER_URL);
@@ -324,6 +333,7 @@ public class MainActivity extends Activity {
     }
 
     private void startCallService() {
+        keepPageAwake = true;
         try {
             CallService.start(this, 0, null);
         } catch (RuntimeException ignored) {
