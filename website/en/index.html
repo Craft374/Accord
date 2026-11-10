@@ -34,6 +34,9 @@
   </head>
   <body>
     <svg class="icon-sprite" aria-hidden="true">
+      <symbol id="icon-download" viewBox="0 0 24 24">
+        <path d="M12 4v11M7 10l5 5 5-5M5 20h14" />
+      </symbol>
       <symbol id="icon-arrow" viewBox="0 0 24 24">
         <path d="M5 12h14M13 6l6 6-6 6" />
       </symbol>
@@ -143,9 +146,9 @@
               chat, collaborative markdown notes, a shared canvas and an AI room the team uses together, all in one self-hosted app.
             </p>
             <div class="hero-actions">
-              <a class="button button-primary" href="https://github.com/Craft374/Accord" target="_blank" rel="noreferrer">
-                <svg aria-hidden="true"><use href="#icon-github"></use></svg>
-                Start on GitHub
+              <a class="button button-primary" href="#download">
+                <svg aria-hidden="true"><use href="#icon-download"></use></svg>
+                Download
               </a>
               <a class="button button-secondary" href="#features">
                 See the features
@@ -403,14 +406,23 @@
             <div class="start-copy">
               <p class="section-kicker">YOUR SPACE, YOUR SERVER</p>
               <h2>One server,<br />a space of your own.</h2>
-              <p>No separate server package — start with Node.js and connect from the desktop app or a browser.</p>
-              <a class="button button-dark" href="https://github.com/Craft374/Accord/blob/main/docs/SERVER.en.md" target="_blank" rel="noreferrer">
-                Open the server guide
-                <svg aria-hidden="true"><use href="#icon-arrow"></use></svg>
-              </a>
+              <p>Turn on a server with one button in the Accord Server app, then connect from the desktop app or a browser.</p>
+              <div class="downloads" id="download">
+                <div class="download-row">
+                  <span><b>Accord</b><small>The app you connect with</small></span>
+                  <a class="button button-secondary button-small" href="https://github.com/Craft374/Accord/releases/latest/download/Accord.Mac.arm64.zip"><svg aria-hidden="true"><use href="#icon-download"></use></svg>macOS</a>
+                  <a class="button button-secondary button-small" href="https://github.com/Craft374/Accord/releases/latest/download/Accord.Windows.x64.Setup.exe"><svg aria-hidden="true"><use href="#icon-download"></use></svg>Windows</a>
+                </div>
+                <div class="download-row">
+                  <span><b>Accord Server</b><small>Your own server, one button</small></span>
+                  <a class="button button-secondary button-small" href="https://github.com/Craft374/Accord/releases/latest/download/Accord.Server.Mac.arm64.zip"><svg aria-hidden="true"><use href="#icon-download"></use></svg>macOS</a>
+                  <a class="button button-secondary button-small" href="https://github.com/Craft374/Accord/releases/latest/download/Accord.Server.Windows.x64.Setup.exe"><svg aria-hidden="true"><use href="#icon-download"></use></svg>Windows</a>
+                </div>
+              </div>
+              <p class="download-note">The macOS builds are for Apple Silicon. If macOS blocks the first launch, choose ‘Open Anyway’ in System Settings → Privacy &amp; Security. · <a href="https://github.com/Craft374/Accord/blob/main/docs/SERVER.en.md" target="_blank" rel="noreferrer">Server guide</a></p>
             </div>
             <div class="start-steps">
-              <article><span>01</span><div><b>Run the server</b><p>Anywhere with Node.js 18+.</p><code><i>$</i> node server.js</code></div></article>
+              <article><span>01</span><div><b>Turn on the server</b><p>One button in the Accord Server app, or Node.js 18+ directly.</p><code><i>$</i> node server.js</code></div></article>
               <article><span>02</span><div><b>Connect by address</b><p>Open the server address in the desktop app or Chrome.</p></div></article>
               <article><span>03</span><div><b>Create a channel</b><p>Add the rooms you need and share the invite code.</p></div></article>
             </div>

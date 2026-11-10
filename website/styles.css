@@ -2137,15 +2137,63 @@ svg use {
   font-size: 15px;
 }
 
-.button-dark {
-  margin-top: 28px;
-  color: white;
-  background: rgba(10, 13, 29, 0.9);
-  box-shadow: 0 16px 35px rgba(12, 16, 51, 0.2);
+.downloads {
+  display: grid;
+  gap: 10px;
+  margin-top: 30px;
 }
 
-.button-dark:hover {
-  background: #0a0d1d;
+.download-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 12px 12px 18px;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  background: rgba(15, 19, 54, 0.22);
+  border-radius: 17px;
+}
+
+.download-row > span {
+  display: grid;
+  flex: 1;
+  gap: 2px;
+  min-width: 0;
+}
+
+.download-row b {
+  font-size: 15px;
+}
+
+.download-row small {
+  color: rgba(255, 255, 255, 0.63);
+  font-size: 12px;
+}
+
+.button-small {
+  min-height: 40px;
+  padding: 0 14px;
+  gap: 7px;
+  border-radius: 11px;
+  font-size: 13px;
+}
+
+.button-small svg {
+  width: 16px;
+  height: 16px;
+}
+
+.download-note {
+  margin: 14px 0 0;
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 12px;
+  line-height: 1.6;
+  word-break: keep-all;
+}
+
+.download-note a {
+  color: #bffbef;
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .start-steps {
@@ -2669,6 +2717,18 @@ svg use {
     gap: 38px;
     padding: 32px 24px;
     border-radius: 18px;
+  }
+
+  .download-row {
+    flex-wrap: wrap;
+  }
+
+  .download-row > span {
+    flex-basis: 100%;
+  }
+
+  .download-row .button {
+    flex: 1;
   }
 
   .start-steps article {

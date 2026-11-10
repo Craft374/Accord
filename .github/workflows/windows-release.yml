@@ -30,8 +30,11 @@ jobs:
       # 헬퍼 exe 2개(csc + MSVC) 컴파일 후 NSIS 설치 파일 생성
       - run: npm run build:win -- --publish never
 
+      # 서버 앱(Accord Server) 설치 파일 — 네이티브 헬퍼가 없어 바로 빌드된다
+      - run: npm run build:server-win -- --publish never
+
       - name: 릴리스에 업로드
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ inputs.tag }}" "dist/Accord Windows x64 Setup.exe" --clobber
+        run: gh release upload "${{ inputs.tag }}" "dist/Accord Windows x64 Setup.exe" "dist/server/Accord Server Windows x64 Setup.exe" --clobber
