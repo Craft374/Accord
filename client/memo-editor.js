@@ -1,11 +1,14 @@
 import { EditorView, basicSetup } from "codemirror";
 import { Annotation, Compartment, EditorSelection, EditorState, Prec, StateEffect, StateField, Transaction } from "@codemirror/state";
 import { Decoration, RectangleMarker, ViewPlugin, WidgetType, keymap, layer, lineNumbers, placeholder } from "@codemirror/view";
-import { indentWithTab } from "@codemirror/commands";
+import { indentWithTab, undo, redo } from "@codemirror/commands";
 import { acceptCompletion } from "@codemirror/autocomplete";
 import { HighlightStyle, syntaxHighlighting, syntaxTree } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
 import { markdown, markdownLanguage, insertNewlineContinueMarkupCommand, deleteMarkupBackward } from "@codemirror/lang-markdown";
+
+// 마우스 없는 터치 기기(폰·태블릿). 위젯을 누를 때마다 키보드가 올라오지 않게, 링크를 탭으로 열 수 있게 쓴다.
+const isTouchOnly = () => window.matchMedia("(hover: none)").matches;
 
 // basicSetup 의 defaultHighlightStyle 은 밝은 배경 전제(헤딩 밑줄, 마크문자 어두운 회색)라 다크 테마에서
 // 안 보이거나(#404740 회색) 밑줄이 남는다(제목). 마크다운에 실제로 쓰이는 태그만 다시 정의해 완전히 대체한다.
@@ -246,7 +249,7 @@ class CheckboxWidget extends WidgetType {
       event.preventDefault();
       if (view.state.readOnly) return;
       view.dispatch({ changes: { from: this.from, to: this.from + 3, insert: this.checked ? "[ ]" : "[x]" } });
-      view.focus();
+      if (!isTouchOnly()) view.focus();
     });
     return input;
   }
@@ -284,7 +287,7 @@ class FoldWidget extends WidgetType {
     button.addEventListener("click", (event) => {
       event.preventDefault();
       view.dispatch({ effects: toggleFold.of(this.fold), annotations: Transaction.addToHistory.of(false) });
-      view.focus();
+      if (!isTouchOnly()) view.focus();
     });
     return button;
   }
@@ -718,6 +721,14 @@ function createMemoEditor(options) {
   const callbacks = options || {};
   let mode = "source";
   let writable = false;
+  const openLiveLink = (event) => {
+    const link = event.target?.closest?.(".cm-live-link[data-href]");
+    const href = link?.dataset?.href || "";
+    if (!/^https?:\/\//i.test(href)) return false;
+    event.preventDefault();
+    callbacks.onOpenLink?.(href);
+    return true;
+  };
   const extensions = [
     basicSetup,
     syntaxHighlighting(memoHighlightStyle),
@@ -752,14 +763,13 @@ function createMemoEditor(options) {
     tableField,
     tableAtomicRanges,
     EditorView.domEventHandlers({
-      mousedown(event) {
-        if (!event.ctrlKey && !event.metaKey) return false;
-        const link = event.target?.closest?.(".cm-live-link[data-href]");
-        const href = link?.dataset?.href || "";
-        if (!/^https?:\/\//i.test(href)) return false;
-        event.preventDefault();
-        callbacks.onOpenLink?.(href);
-        return true;
+      // Ctrl/Cmd+클릭. 터치는 읽기 전용이면 탭, 편집 중이면 길게 눌러 연다.
+      mousedown(event, view) {
+        if (!event.ctrlKey && !event.metaKey && !(isTouchOnly() && view.state.readOnly)) return false;
+        return openLiveLink(event);
+      },
+      contextmenu(event) {
+        return isTouchOnly() ? openLiveLink(event) : false;
       },
     }),
     EditorView.updateListener.of((update) => {
@@ -866,6 +876,8 @@ function createMemoEditor(options) {
       view.requestMeasure({ read: () => 0, write: () => { view.scrollDOM.scrollTop = top; } });
     },
     focus: () => view.focus(),
+    undo: () => undo(view),
+    redo: () => redo(view),
     destroy: () => view.destroy(),
   };
 }

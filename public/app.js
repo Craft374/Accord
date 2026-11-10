@@ -12911,12 +12911,13 @@ function openMemoRoom(roomId, { background = false } = {}) {
   if (shown) {
     document.body.classList.add("memo-open");
     setActiveMemoPane(shown);
-    shown.controller?.focus();
+    if (!isMobileWeb()) shown.controller?.focus(); // 폰·태블릿은 보려고 누른 것뿐인데 키보드가 올라오지 않게
     renderMemoTabs();
     return;
   }
   const pane = activeMemoPane;
-  const view = pane.session?.view || memoViewPref;
+  // 폰 좁은 화면은 저장된 보기가 없으면 '라이브'로(나란히는 키보드가 올라오면 편집 칸이 너무 작다).
+  const view = pane.session?.view || (!localStorage.getItem("accordMemoView") && isMobileWeb() && isNarrowLayout() ? "live" : memoViewPref);
   releaseMemoSession(pane);
   const m = {
     roomId,
@@ -13226,6 +13227,7 @@ function renderFontManagerList() {
       row.className = "font-row";
       row.addEventListener("pointerdown", (e) => {
         if (e.button !== 0 || e.target.closest("input, button")) return;
+        if (e.pointerType === "touch" && !e.target.closest(".font-row-sample")) return; // 손가락은 견본 글자를 잡고 끈다(나머지는 목록 스크롤)
         startFontRowDrag(e, font.id);
       });
 
@@ -13268,6 +13270,12 @@ function startFontRowDrag(startEvent, fontId) {
   document.body.classList.add("font-row-dragging");
   window.addEventListener("pointermove", onFontRowDragMove);
   window.addEventListener("pointerup", onFontRowDragEnd, { once: true });
+  window.addEventListener("pointercancel", cancelFontRowDrag, { once: true });
+}
+// 터치 스크롤 등으로 취소되면 옮기지 않고 정리만 한다(남아 있으면 다음 탭이 엉뚱한 카드로 옮겨 버린다).
+function cancelFontRowDrag() {
+  fontRowDrag = null;
+  onFontRowDragEnd();
 }
 function fontGroupCardAt(e) {
   return document.elementFromPoint(e.clientX, e.clientY)?.closest?.(".font-group") || null;
@@ -13283,6 +13291,8 @@ function onFontRowDragMove(e) {
 }
 function onFontRowDragEnd(e) {
   window.removeEventListener("pointermove", onFontRowDragMove);
+  window.removeEventListener("pointerup", onFontRowDragEnd);
+  window.removeEventListener("pointercancel", cancelFontRowDrag);
   document.body.classList.remove("font-row-dragging");
   clearFontDropTargets();
   const drag = fontRowDrag;
@@ -13331,7 +13341,8 @@ function bindFontWeightInput(input, font) {
 function startFontUpload() {
   const input = document.createElement("input");
   input.type = "file";
-  input.accept = ".ttf,.otf,.woff,.woff2,font/*";
+  // 안드로이드 앱 파일 선택기는 확장자를 MIME 으로 못 알아들어 글꼴이 회색으로 막힌다 → 전체 허용(uploadFont 가 확장자 검사)
+  input.accept = isAndroidApp() ? "" : ".ttf,.otf,.woff,.woff2,font/*";
   input.addEventListener("change", () => {
     const file = input.files?.[0];
     if (file) uploadFont(file);
@@ -13656,6 +13667,18 @@ function bindMemoEvents() {
     btn.addEventListener("click", () => applyMemoColor(btn.dataset.memoColor));
   });
   dom.memoColorPick?.addEventListener("change", () => applyMemoColor(dom.memoColorPick.value));
+  // 터치 전용 실행취소·글자 크기 버튼(Ctrl+Z·Ctrl+휠을 못 쓰는 폰·태블릿). pointerdown 을 막아 편집기 포커스(키보드)를 유지한다.
+  const memoTouchActions = {
+    memoUndo: () => state.memo?.pane.controller?.undo(),
+    memoRedo: () => state.memo?.pane.controller?.redo(),
+    memoFontDown: () => applyMemoFontSize(memoFontSize - 1),
+    memoFontUp: () => applyMemoFontSize(memoFontSize + 1),
+  };
+  for (const [id, run] of Object.entries(memoTouchActions)) {
+    const btn = document.querySelector(`#${id}`);
+    btn?.addEventListener("pointerdown", (e) => e.preventDefault());
+    btn?.addEventListener("click", run);
+  }
   // 미리보기 체크박스·접기 버튼 클릭 처리.
   const handleMemoRenderedClick = (event) => {
     const check = event.target?.closest?.("input.md-check");
@@ -13723,6 +13746,8 @@ function bindMemoEvents() {
     cycleMemoTab(event.shiftKey ? -1 : 1);
   }, true);
   window.addEventListener("pagehide", () => memoSessions().forEach(saveMemoPos)); // 메모방을 연 채로 앱을 닫아도 위치가 남게
+  // 안드로이드 앱은 최근 앱에서 밀어 끄면 pagehide 가 안 오는 일이 많아 숨겨질 때도 저장한다.
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") memoSessions().forEach(saveMemoPos); });
 }
 
 // ===== 공동 그림판 (draw) =====
@@ -13759,6 +13784,9 @@ function openDrawRoom(roomId) {
     writable: canWriteRoom(found.channel, found.room),
     spaceDown: false, // 스페이스로 화면 이동(팬) 준비 상태
     panning: null, // { startX, startY, scrollLeft, scrollTop }
+    touches: new Map(), // 터치 손가락 pointerId -> { x, y } (두 손가락 확대·이동용)
+    pinch: null, // { dist, zoom, mx, my } 두 손가락 확대·이동 중
+    penSeen: false, // S Pen 을 한 번이라도 쓰면 손가락은 그리지 않고 화면 이동만 한다(손바닥 오인 방지)
     transform: null, // 이동·크기 변형 세션
     cursors: new Map(), // clientId -> { name, x, y, tool, color, size, drawing, trail:[], ts }
     hoverPt: null, // 브러시 미리보기용 최근 캔버스 좌표
@@ -15787,7 +15815,12 @@ function nextDrawStrokeId() {
 // 쓰고, 레이어 컨텍스트에 ctx.scale(dpr,dpr) 을 걸어 매핑한다(크로스클라이언트 동기화가 논리 단위에 의존하므로).
 // width/height 대입은 캔버스 변환행렬을 초기화하므로, 대입할 때마다 스케일을 다시 걸어야 한다.
 function drawPixelRatio() {
-  return window.devicePixelRatio || 1;
+  const dpr = window.devicePixelRatio || 1;
+  if (!isMobileWeb()) return dpr;
+  // 폰·태블릿: 레이어마다 문서×dpr² 픽셀이라 배율 2·레이어당 약 1600만 픽셀로 묶는다(메모리 부족·빈 캔버스 방지).
+  const d = state.draw;
+  const area = Math.max(1, (d?.width || 900) * (d?.height || 600));
+  return Math.min(dpr, 2, Math.max(1, Math.sqrt(16e6 / area)));
 }
 function sizeDrawingCanvas(canvas, d) {
   const dpr = drawPixelRatio();
@@ -15987,6 +16020,12 @@ function onDrawPointerDown(event) {
   if (!d || !d.loaded) return;
   if (event.button !== undefined && event.button !== 0 && event.button !== 1) return;
   d.hoverPt = drawPointFromEvent(event);
+  if (event.pointerType === "pen") {
+    d.penSeen = true;
+    if (d.panning) endPan(event); // 손바닥이 먼저 닿아 시작된 화면 이동은 펜이 오면 끝낸다
+    d.pinch = null;
+  }
+  if (event.pointerType === "touch" && onDrawTouchDown(event)) return;
 
   // 팬(화면 이동): 스페이스 누름 또는 가운데 버튼
   if (d.spaceDown || event.button === 1) { beginPan(event); return; }
@@ -16012,15 +16051,69 @@ function onDrawPointerDown(event) {
     size: d.size,
     points: [d.hoverPt],
   };
-  d.drawing = { stroke, layer };
+  d.drawing = { stroke, layer, pointerId: event.pointerId };
   renderLayer(layer);
   compositeDraw();
   sendDrawCursor(true, true);
 }
 
+// 터치 손가락: 두 번째 손가락이 닿으면 그리던 획을 버리고 두 손가락 확대·이동으로 넘어간다.
+// S Pen 을 쓴 뒤나 읽기 전용이면 한 손가락은 화면 이동. 처리했으면 true(나머지 pointerdown 처리 생략).
+function onDrawTouchDown(event) {
+  const d = state.draw;
+  const owner = drawPointerOwner(d);
+  if (owner !== undefined && !d.touches.has(owner)) return true; // 펜·마우스로 그리는 중 닿은 손가락·손바닥은 무시
+  d.touches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  if (d.touches.size >= 2) {
+    event.preventDefault();
+    if (d.drawing) {
+      const { layer } = d.drawing;
+      d.drawing = null;
+      renderLayer(layer);
+      compositeDraw();
+      sendDrawCursor(false, true); // 이미 보낸 라이브 펜 트레일을 정리
+    }
+    const t = d.transform;
+    if (t?.dragging) { t.box = { ...t.startBox }; applyTransformToLayer(); t.dragging = false; }
+    if (d.panning) { d.panning = null; dom.drawCanvasStage?.classList.remove("panning"); }
+    const [a, b] = [...d.touches.values()];
+    d.pinch = { dist: Math.hypot(a.x - b.x, a.y - b.y) || 1, zoom: d.zoom || 1, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
+    renderDrawOverlay();
+    return true;
+  }
+  if (d.penSeen || !d.writable) { beginPan(event); return true; }
+  return false;
+}
+
+function updateDrawPinch() {
+  const d = state.draw;
+  const p = d.pinch;
+  const [a, b] = [...d.touches.values()];
+  const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+  setDrawZoom(p.zoom * (Math.hypot(a.x - b.x, a.y - b.y) || 1) / p.dist, mx, my);
+  const scroll = dom.drawCanvasScroll;
+  if (scroll) { scroll.scrollLeft -= mx - p.mx; scroll.scrollTop -= my - p.my; }
+  p.mx = mx; p.my = my;
+}
+
+// 지금 그리기·화면 이동·변형을 하고 있는 포인터 id(없으면 undefined).
+function drawPointerOwner(d) {
+  return d.drawing?.pointerId ?? d.panning?.pointerId ?? (d.transform?.dragging ? d.transform.pointerId : undefined);
+}
+// 그 포인터가 아닌 이벤트(다른 손가락·손바닥)인지.
+function isOtherDrawPointer(d, event) {
+  const owner = drawPointerOwner(d);
+  return owner !== undefined && event.pointerId !== owner;
+}
+
 function onDrawPointerMove(event) {
   const d = state.draw;
   if (!d || !d.loaded) return;
+  if (event.pointerType === "touch" && d.touches.has(event.pointerId)) {
+    d.touches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (d.pinch) { if (d.touches.size >= 2) updateDrawPinch(); return; }
+  }
+  if (isOtherDrawPointer(d, event)) return;
   if (d.panning) { updatePan(event); return; }
   if (d.transform && d.transform.dragging) { updateTransform(event); return; }
 
@@ -16060,6 +16153,11 @@ function onDrawPointerMove(event) {
 function onDrawPointerUp(event) {
   const d = state.draw;
   if (!d) return;
+  if (event.pointerType === "touch" && d.touches.delete(event.pointerId) && d.pinch) {
+    if (d.touches.size < 2) d.pinch = null; // 남은 손가락은 떼기 전까지 아무것도 하지 않는다
+    return;
+  }
+  if (isOtherDrawPointer(d, event)) return;
   if (d.panning) { endPan(event); return; }
   if (d.transform && d.transform.dragging) { endTransform(event); return; }
   if (!d.drawing) return;
@@ -16081,7 +16179,7 @@ function beginPan(event) {
   const scroll = dom.drawCanvasScroll;
   if (!scroll) return;
   event.preventDefault();
-  d.panning = { x: event.clientX, y: event.clientY, sl: scroll.scrollLeft, st: scroll.scrollTop };
+  d.panning = { x: event.clientX, y: event.clientY, sl: scroll.scrollLeft, st: scroll.scrollTop, pointerId: event.pointerId };
   dom.drawCanvasStage?.classList.add("panning");
   try { dom.drawCanvas.setPointerCapture?.(event.pointerId); } catch { /* noop */ }
 }
@@ -16201,8 +16299,8 @@ function transformHandles(box) {
     sw: [x, y + h], w: [x, y + h / 2],
   };
 }
-function hitTransformHandle(pt, box) {
-  const tol = 10 / (state.draw.zoom || 1);
+function hitTransformHandle(pt, box, tolPx = 10) {
+  const tol = tolPx / (state.draw.zoom || 1);
   for (const [name, [hx, hy]] of Object.entries(transformHandles(box))) {
     if (Math.abs(pt[0] - hx) <= tol && Math.abs(pt[1] - hy) <= tol) return name;
   }
@@ -16230,7 +16328,8 @@ function beginTransform(event) {
   const pt = drawPointFromEvent(event);
   event.preventDefault();
   try { dom.drawCanvas.setPointerCapture?.(event.pointerId); } catch { /* noop */ }
-  t.handle = hitTransformHandle(pt, t.box);
+  t.handle = hitTransformHandle(pt, t.box, event.pointerType === "touch" ? 22 : 10); // 손가락은 핸들 판정을 넓게
+  t.pointerId = event.pointerId;
   t.startPt = pt;
   t.startBox = { ...t.box };
   t.dragging = true;
@@ -16252,8 +16351,8 @@ function updateTransform(event) {
     if (h.includes("s")) b.h = t.startBox.h + dy;
     if (h.includes("w")) { b.x = t.startBox.x + dx; b.w = t.startBox.w - dx; }
     if (h.includes("n")) { b.y = t.startBox.y + dy; b.h = t.startBox.h - dy; }
-    // 모서리 핸들 + Shift: 원본 비율을 유지하며 크기 조절(많이 움직인 축이 기준).
-    if (event.shiftKey && h.length === 2) {
+    // 모서리 핸들 + Shift(터치는 항상): 원본 비율을 유지하며 크기 조절(많이 움직인 축이 기준).
+    if ((event.shiftKey || event.pointerType === "touch") && h.length === 2) {
       const ratio = t.startBox.w / t.startBox.h;
       if (Math.abs(dx) >= Math.abs(dy)) {
         b.h = b.w / ratio;
@@ -16725,6 +16824,12 @@ function renderDrawLayers() {
       if (e.shiftKey) { toggleDrawLayerMultiSelect(layer.id); return; }
       selectDrawLayer(layer.id);
     });
+    // 터치: 길게 누르면 다중선택(Shift+클릭 대신). PC 우클릭은 그대로 둔다.
+    li.addEventListener("contextmenu", (e) => {
+      if (!window.matchMedia("(hover: none)").matches) return;
+      e.preventDefault();
+      toggleDrawLayerMultiSelect(layer.id);
+    });
     list.appendChild(li);
   });
   updateLayerBulkBar();
@@ -17133,6 +17238,21 @@ function bindDrawEvents() {
   dom.drawSaveCanvas?.addEventListener("click", () => { closeDrawMore(); saveCanvasPng(); });
   dom.drawSaveLayer?.addEventListener("click", () => { closeDrawMore(); saveLayerPng(); });
   dom.drawCopyCanvas?.addEventListener("click", () => { closeDrawMore(); copyCanvasImage(); });
+  // 이미지 넣기: 붙여넣기(Ctrl+V)를 못 하는 폰·태블릿용 파일 선택
+  document.querySelector("#drawInsertImage")?.addEventListener("click", () => {
+    closeDrawMore();
+    const d = state.draw;
+    if (!d || !d.loaded) return;
+    if (!d.writable) { setDrawStatus("읽기 전용 그림판 — 대표자만 그릴 수 있어요", "bad"); return; }
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.addEventListener("change", () => {
+      const file = input.files?.[0];
+      if (file && state.draw) insertDrawImageFile(file);
+    });
+    input.click();
+  });
   dom.drawMoreBtn?.addEventListener("click", (e) => { e.stopPropagation(); toggleDrawMore(); });
   document.addEventListener("click", (e) => {
     if (dom.drawMoreMenu && !dom.drawMoreMenu.hidden && !e.target.closest(".draw-more-wrap")) closeDrawMore();

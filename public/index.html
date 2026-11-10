@@ -343,6 +343,8 @@
             <div class="memo-head-actions">
               <span class="memo-status" id="memoStatus"></span>
               <div class="memo-tools">
+                <button class="memo-view-btn memo-touch-only" id="memoUndo" type="button" title="실행취소" aria-label="실행취소">↶</button>
+                <button class="memo-view-btn memo-touch-only" id="memoRedo" type="button" title="다시실행" aria-label="다시실행">↷</button>
                 <select id="memoFontSelect" class="memo-font-select" title="모두에게 적용되는 글꼴" aria-label="글꼴"></select>
                 <select id="memoFontWeightSelect" class="memo-font-select" title="글꼴 굵기" aria-label="글꼴 굵기" hidden></select>
                 <div class="memo-color-tools" role="group" aria-label="글자 색">
@@ -354,6 +356,10 @@
                     <input type="color" id="memoColorPick" value="#f0b232" />
                   </label>
                 </div>
+              </div>
+              <div class="memo-view-toggle memo-touch-only" role="group" aria-label="글자 크기">
+                <button class="memo-view-btn" id="memoFontDown" type="button" title="글자 작게" aria-label="글자 작게">A−</button>
+                <button class="memo-view-btn" id="memoFontUp" type="button" title="글자 크게" aria-label="글자 크게">A+</button>
               </div>
               <button id="memoFontManageButton" class="memo-font-manage" type="button" title="공유 폰트 관리" aria-label="공유 폰트 관리" hidden>🅰 폰트</button>
               <div class="memo-view-toggle" role="group" aria-label="보기 방식">
@@ -459,6 +465,7 @@
                 <button class="draw-tool-btn draw-more-btn" id="drawMoreBtn" type="button" title="더보기" aria-label="더보기" aria-haspopup="true" aria-expanded="false">⋯</button>
                 <div class="draw-more-menu" id="drawMoreMenu" role="menu" hidden>
                   <button class="draw-more-item" id="drawResize" type="button" role="menuitem"><span class="draw-more-icon">⤢</span>캔버스 크기 조절…</button>
+                  <button class="draw-more-item" id="drawInsertImage" type="button" role="menuitem"><span class="draw-more-icon">🏞️</span>이미지 넣기…</button>
                   <button class="draw-more-item" id="drawSaveCanvas" type="button" role="menuitem"><span class="draw-more-icon">💾</span>캔버스 저장 (PNG)</button>
                   <button class="draw-more-item" id="drawSaveLayer" type="button" role="menuitem"><span class="draw-more-icon">🖼️</span>현재 레이어 저장 (PNG)</button>
                   <button class="draw-more-item" id="drawCopyCanvas" type="button" role="menuitem"><span class="draw-more-icon">📋</span>캔버스 이미지 복사</button>

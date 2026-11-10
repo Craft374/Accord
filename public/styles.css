@@ -7588,6 +7588,62 @@ body.ai-open .dm-panel { display: none !important; }
 /* ===== 터치 보강(메모장·그림판) — touch-memo =====
    폰·폴드·태블릿(안드로이드 앱) 터치용 규칙. 마우스가 있는 PC 에는 걸리지 않게 둔다.
    ===== touch-memo 끝 ===== */
+/* 터치 전용 메모 도구(실행취소·다시실행·글자 크기) — PC 는 Ctrl+Z·Ctrl+휠이 있어 숨긴다 */
+.memo-touch-only {
+  display: none;
+}
+/* 그림판 1열(좁은 화면)에서는 레이어 열(200px) 보정이 필요 없다 — 토스트가 왼쪽으로 치우쳐 잘리던 것 */
+@media (max-width: 920px) {
+  .draw-status {
+    margin-left: 0;
+  }
+}
+@media (hover: none) and (pointer: coarse) {
+  .memo-touch-only {
+    display: inline-flex;
+  }
+  /* 키보드·마우스 안내뿐이라 터치에서는 숨긴다(이미지는 ⋯ > 이미지 넣기, 이동·확대는 두 손가락) */
+  .draw-hint {
+    display: none;
+  }
+  /* 견본 글자를 잡고 끌어 다른 글꼴로 옮긴다(목록 스크롤이 가로채지 않게) */
+  .font-row-sample {
+    touch-action: none;
+  }
+  /* 작은 누름 영역: 탭 닫기·글자색·레이어 ▲▼·삭제 */
+  .memo-tab-close {
+    width: 24px;
+    height: 24px;
+  }
+  .memo-color-btn {
+    width: 28px;
+    height: 28px;
+  }
+  .draw-layer-order button,
+  .draw-layer-del {
+    padding: 3px 8px;
+    font-size: 12px;
+  }
+  .draw-layer-del {
+    font-size: 14px;
+  }
+}
+@media (hover: none) and (pointer: coarse) and (max-width: 920px) {
+  /* 캔버스+레이어가 위아래로 쌓일 때 레이어가 많아도 캔버스 자리를 다 먹지 않게 */
+  .draw-layers {
+    max-height: 32vh;
+  }
+}
+@media (hover: none) and (pointer: coarse) and (max-width: 580px) {
+  /* 폰: 메모 머리글이 여러 줄로 감겨 키보드가 올라오면 편집 칸이 너무 작아지던 것 */
+  .memo-head {
+    gap: 8px;
+    padding: 8px 10px;
+  }
+  .memo-head-actions {
+    gap: 8px;
+  }
+}
 
 /* ===== 터치 보강(화이트보드·로그·DM) — touch-board =====
    폰·폴드·태블릿(안드로이드 앱) 터치용 규칙. 마우스가 있는 PC 에는 걸리지 않게 둔다.
