@@ -27,6 +27,8 @@ public class CallService extends Service {
 
     // MainActivity 가 MediaProjection 을 쥐고 있는 동안 true — startForeground 를 다시 부를 때 그 타입을 빼지 않게.
     static boolean projectionActive;
+    // 카메라 공유를 허용받은 뒤 true — 앱을 내려도 카메라가 이어지게 camera 타입을 더한다(포그라운드에서 켜질 때만).
+    static boolean cameraActive;
 
     private boolean foreground;
     private int currentType;
@@ -45,6 +47,7 @@ public class CallService extends Service {
         boolean mic = checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED;
         int type = mic ? ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE : ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK;
         if (data != null || projectionActive) type |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION;
+        if (cameraActive) type |= ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA;
         // 이미 켜져 있고 새로 더할 게 없으면 그대로 둔다(마이크를 다시 잡을 때마다 온다). 백그라운드에서 다시 부르면
         // 안드로이드 14 의 마이크 타입 제한에 걸릴 수 있다.
         if (foreground && data == null && (currentType | type) == currentType) return START_NOT_STICKY;

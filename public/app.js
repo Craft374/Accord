@@ -2216,6 +2216,7 @@ async function handleSocketMessage(message) {
   if (message.type === "left") {
     const leftRoomId = state.currentRoom?.id;
     resetRoomState();
+    sendAndroidControl({ type: "call", active: false }); // 직접 나가기·강퇴 모두 여기로 온다(재연결과는 무관)
     playUiSound("out", leftRoomId);
     renderRooms();
     return;
@@ -3100,12 +3101,12 @@ function handleAndroidControlMessage(event) {
     // 시간 초과·취소 뒤에 늦게 허용된 경우: 아무도 안 받으니 바로 끈다.
     port?.close();
     sendAndroidControl({ type: kind === "sound" ? "soundStop" : "screenStop" });
-  } else if (message.state === "stopped" && kind === "sound" && state.systemSharing) {
+  } else if ((message.state === "stopped" || message.state === "error") && kind === "sound" && state.systemSharing) {
     // 알림·상태 표시줄에서 공유를 끈 경우(우리 토글을 안 거침)
     dom.systemAudioToggle.checked = false;
     announceMediaIntent("soundOff");
     stopSystemAudio();
-  } else if (message.state === "stopped" && kind === "screen" && state.screenSharing && state.screenSource === "screen") {
+  } else if ((message.state === "stopped" || message.state === "error") && kind === "screen" && state.screenSharing && state.screenSource === "screen") {
     announceMediaIntent("screenOff");
     stopScreenShare().catch(() => {});
   }
@@ -3467,9 +3468,12 @@ async function startScreenShare() {
   }
 
   let stream = null;
+  const roomId = state.currentRoom.id;
   try {
     dom.screenShareButton.disabled = true;
     stream = await getScreenShareStream();
+    // 앱은 허용 창을 기다리는 동안 방을 나갈 수 있다 — 그 사이 방이 바뀌었으면 붙이지 않는다.
+    if (isAndroidApp() && state.currentRoom?.id !== roomId) throw new Error("방이 바뀌어 화면 공유를 취소했습니다.");
     const track = stream.getVideoTracks()[0];
     if (!track) throw new Error("화면 영상 트랙을 가져오지 못했습니다.");
     assertFullScreenShareTrack(track);
@@ -3509,6 +3513,7 @@ async function startScreenShare() {
   } catch (error) {
     cleanupStream(stream);
     stopScreenCaptureProbe();
+    stopAndroidScreenCapture();
     state.screenSharing = false;
     state.screenStream = null;
     state.screenTrack = null;
@@ -3543,6 +3548,7 @@ async function restartScreenShare() {
   // 앱은 캡처를 새로 열면 허용 창이 다시 뜨므로, 크기·fps만 바꾼다.
   if (isAndroidApp()) {
     sendAndroidControl({ type: "screenConfig", ...getAndroidScreenConfig() });
+    for (const peer of state.peers.values()) if (peer.senders.screen) tuneSender(peer.senders.screen, "screen"); // 새 fps·비트레이트
     return;
   }
   let stream = null;

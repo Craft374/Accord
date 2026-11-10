@@ -9,6 +9,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- 카메라 공유용. 카메라가 없는 기기(일부 태블릿)에도 설치되게 필수는 아니다. -->
     <uses-feature android:name="android.hardware.camera" android:required="false" />
@@ -38,7 +39,7 @@
         <service
             android:name=".CallService"
             android:exported="false"
-            android:foregroundServiceType="microphone|mediaPlayback|mediaProjection"
+            android:foregroundServiceType="microphone|mediaPlayback|mediaProjection|camera"
             android:stopWithTask="true" />
     </application>
 </manifest>

@@ -13,10 +13,10 @@ import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
-import android.content.res.Configuration;
 import android.graphics.PixelFormat;
-import android.graphics.Rect;
 import android.hardware.display.DisplayManager;
+import android.util.DisplayMetrics;
+import android.view.Display;
 import android.hardware.display.VirtualDisplay;
 import android.media.Image;
 import android.media.ImageReader;
@@ -103,6 +103,7 @@ public class MainActivity extends Activity {
     private MediaProjection projection;
     private volatile WebMessagePort pcmPort;
     private volatile boolean capturing;
+    private AudioRecord soundRecord; // 지금 쓰는 녹음(main 에서만)
     private boolean soundRequested; // 페이지가 시작을 요청했고 아직 끝나지 않음(동의 창이 떠 있는 동안 포함)
     private boolean displayUsed; // 이 projection 으로 VirtualDisplay 를 이미 만들었다(안드로이드 14부터 한 번만 된다)
 
@@ -196,6 +197,7 @@ public class MainActivity extends Activity {
         stopScreenShare(false);
         releaseProjection.run();
         stopService(new Intent(this, CallService.class));
+        CallService.cameraActive = false;
         keepPageAwake = false;
     }
 
@@ -252,9 +254,9 @@ public class MainActivity extends Activity {
 
         @Override
         public void onPageStarted(WebView view, String url, Bitmap favicon) {
-            // 새로고침·이동하면 이전 페이지의 포트와 사운드·화면 공유는 끝난다.
-            stopSoundShare(false);
-            stopScreenShare(false);
+            // 새로고침·이동(재연결 뒤 새로고침 포함)하면 방에서 나온 상태라 공유·통화 유지 서비스도 끝낸다.
+            // 다시 방에 들어가면 페이지의 call 메시지로 다시 켜진다.
+            stopCallService();
             closeControl();
         }
 
@@ -412,7 +414,8 @@ public class MainActivity extends Activity {
             return;
         }
         request.grant(grant.toArray(new String[0]));
-        if (grant.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)) startCallService();
+        if (grant.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)) CallService.cameraActive = true;
+        startCallService(); // 마이크·카메라를 받은 지금(포그라운드) 서비스 타입을 맞춘다
     }
 
     // 방에 들어갔을 때(페이지의 call 메시지)와 마이크를 받았을 때 켠다. 직접 나가기·서버 선택·앱 종료 때 끈다.
@@ -512,7 +515,7 @@ public class MainActivity extends Activity {
                 break;
             case "screenConfig":
                 setScreenConfig(msg.optInt("maxSide", screenMaxSide), msg.optInt("fps", screenFps));
-                if (screenCapturing) resizeScreenCapture(getResources().getConfiguration().densityDpi);
+                if (screenCapturing) resizeScreenCapture();
                 break;
             case "launcher":
                 backToLauncher();
@@ -568,6 +571,10 @@ public class MainActivity extends Activity {
             pinnedDownload(url, fileName, pin);
             return;
         }
+        systemDownload(uri, url, fileName);
+    }
+
+    private void systemDownload(Uri uri, String url, String fileName) {
         try {
             DownloadManager.Request request = new DownloadManager.Request(uri)
                     .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
@@ -590,6 +597,7 @@ public class MainActivity extends Activity {
         Toast.makeText(this, "다운로드를 시작했습니다: " + fileName, Toast.LENGTH_SHORT).show();
         new Thread(() -> {
             boolean ok = false;
+            boolean pinMismatch = false;
             Uri target = null;
             try {
                 X509TrustManager pinned = new X509TrustManager() {
@@ -636,9 +644,15 @@ public class MainActivity extends Activity {
                     }
                 }
                 conn.disconnect();
+            } catch (javax.net.ssl.SSLException e) {
+                pinMismatch = true; // 기억한 인증서와 다르다 — 서버가 정식 인증서로 바뀐 경우
             } catch (Exception ignored) {
             }
             if (!ok && target != null) getContentResolver().delete(target, null, null);
+            if (pinMismatch) {
+                main.post(() -> systemDownload(Uri.parse(url), url, fileName));
+                return;
+            }
             boolean saved = ok;
             main.post(() -> Toast.makeText(this,
                     saved ? "다운로드 폴더에 저장했습니다: " + fileName : "다운로드하지 못했습니다.",
@@ -719,8 +733,8 @@ public class MainActivity extends Activity {
     private void failProjection(String state) {
         projectionPending = false;
         boolean denied = "denied".equals(state);
-        if (soundRequested) sendSound(state, denied ? "사운드 공유를 허용하지 않았습니다." : "사운드 공유를 시작하지 못했습니다.");
-        if (screenRequested) sendScreen(state, denied ? "화면 공유를 허용하지 않았습니다." : "화면 공유를 시작하지 못했습니다.", null);
+        if (soundRequested && !capturing) sendSound(state, denied ? "사운드 공유를 허용하지 않았습니다." : "사운드 공유를 시작하지 못했습니다.");
+        if (screenRequested && !screenCapturing) sendScreen(state, denied ? "화면 공유를 허용하지 않았습니다." : "화면 공유를 시작하지 못했습니다.", null);
     }
 
     private void onProjection(MediaProjection result) {
@@ -742,8 +756,8 @@ public class MainActivity extends Activity {
             projection.registerCallback(new MediaProjection.Callback() {
                 @Override
                 public void onStop() {
-                    // 시스템(알림·상태 표시줄)에서 공유를 끈 경우
-                    if (projection != result) return;
+                    // 시스템(알림·상태 표시줄)에서 공유를 끈 경우. 새 동의로 바꾸는 중이면(새 토큰이 이전 것을 멈춘다) 무시한다.
+                    if (projection != result || projectionPending) return;
                     projection = null;
                     CallService.projectionActive = false;
                     if (capturing) stopSoundShare(true);
@@ -754,7 +768,7 @@ public class MainActivity extends Activity {
             if (old != null) old.stop();
             if (capturing) startSoundCapture(true);
             else if (soundRequested) startSoundCapture(false);
-            if (screenRequested && !screenCapturing) startScreenCapture();
+            if (screenRequested && !screenCapturing) startScreenCapture(false);
         });
     }
 
@@ -788,8 +802,12 @@ public class MainActivity extends Activity {
             record.startRecording();
         } catch (Exception e) {
             if (record != null) record.release(); // startRecording 실패 시 네이티브 녹음 자원이 남지 않게
-            stopSoundShare(false);
-            sendSound("error", "사운드 캡처를 시작하지 못했습니다.");
+            if (resume) {
+                stopSoundShare(true); // 이미 켜져 있던 공유 — 페이지 토글을 끄게 알린다
+            } else {
+                stopSoundShare(false);
+                sendSound("error", "사운드 캡처를 시작하지 못했습니다.");
+            }
             return;
         }
 
@@ -801,6 +819,7 @@ public class MainActivity extends Activity {
         capturing = true;
         WebMessagePort port = pcmPort;
         AudioRecord started = record;
+        soundRecord = record;
         new Thread(() -> captureLoop(started, port), "accord-sound-share").start();
     }
 
@@ -824,6 +843,10 @@ public class MainActivity extends Activity {
             } catch (RuntimeException ignored) {
             }
             record.release();
+            // 끄지 않았는데 끝났다(녹음 오류) — 새 동의로 옮겨 간 경우(soundRecord 가 바뀜)는 빼고 페이지에 알린다.
+            main.post(() -> {
+                if (capturing && soundRecord == record) stopSoundShare(true);
+            });
         }
     }
 
@@ -864,7 +887,7 @@ public class MainActivity extends Activity {
         if (projection != null && !displayUsed) {
             // 사운드 공유로 받아 둔 동의가 있으면 다시 묻지 않는다
             main.removeCallbacks(releaseProjection);
-            startScreenCapture();
+            startScreenCapture(true);
             return;
         }
         requestProjection();
@@ -876,27 +899,46 @@ public class MainActivity extends Activity {
     }
 
     // 실제 화면 크기(회전·폴드 상태 반영)를 긴 변 screenMaxSide 이하, 짝수로 줄인다.
+    private DisplayMetrics realMetrics() {
+        DisplayMetrics metrics = new DisplayMetrics();
+        displayManager().getDisplay(Display.DEFAULT_DISPLAY).getRealMetrics(metrics);
+        return metrics;
+    }
+
+    private int screenDensity() {
+        return realMetrics().densityDpi;
+    }
+
     private int[] screenSize() {
-        Rect bounds = getWindowManager().getMaximumWindowMetrics().getBounds();
-        int w = bounds.width();
-        int h = bounds.height();
+        DisplayMetrics metrics = realMetrics();
+        int w = metrics.widthPixels;
+        int h = metrics.heightPixels;
         float scale = Math.min(1f, screenMaxSide / (float) Math.max(w, h));
         return new int[]{Math.max(2, Math.round(w * scale) & ~1), Math.max(2, Math.round(h * scale) & ~1)};
     }
 
-    private void startScreenCapture() {
+    // reused: 사운드 공유에서 받아 둔 동의로 시작 — 실패하면 새 동의를 한 번 받는다.
+    private void startScreenCapture(boolean reused) {
         int[] size = screenSize();
         try {
             reader = ImageReader.newInstance(size[0], size[1], PixelFormat.RGBA_8888, 2);
             display = projection.createVirtualDisplay("accord-screen", size[0], size[1],
-                    getResources().getConfiguration().densityDpi, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                    screenDensity(), DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                     reader.getSurface(), null, null);
             displayUsed = true;
         } catch (RuntimeException e) {
+            if (reader != null) reader.close();
+            reader = null;
+            displayUsed = true;
+            if (reused) {
+                requestProjection();
+                return;
+            }
             stopScreenShare(false);
             sendScreen("error", "화면 캡처를 시작하지 못했습니다.", null);
             return;
         }
+        displayManager().registerDisplayListener(displayListener, main);
         WebMessagePort[] channel = web.createWebMessageChannel();
         framePort = channel[0];
         sendScreen("started", null, channel[1]);
@@ -918,7 +960,8 @@ public class MainActivity extends Activity {
     // 화면 캡처 스레드에서 돈다.
     private void captureFrame(WebMessagePort port) {
         ImageReader current = reader;
-        if (current == null) return;
+        // 페이지가 아직 이전 프레임을 못 받았으면 이미지를 꺼내지 않는다 — 리더에 남겨 다음 틱에 최신 것을 받는다.
+        if (current == null || framePending.get()) return;
         Image image = null;
         try {
             image = current.acquireLatestImage();
@@ -928,8 +971,7 @@ public class MainActivity extends Activity {
         String jpeg = null;
         if (image != null) {
             try {
-                // 페이지가 아직 이전 프레임을 못 받았으면 이번 프레임은 버린다(밀리면 지연만 쌓인다).
-                if (!framePending.get()) jpeg = lastFrame = encodeFrame(image);
+                jpeg = lastFrame = encodeFrame(image);
             } catch (RuntimeException ignored) {
             } finally {
                 image.close();
@@ -976,20 +1018,35 @@ public class MainActivity extends Activity {
         return Base64.encodeToString(jpegOut.toByteArray(), Base64.NO_WRAP);
     }
 
-    // 회전·폴드 접고 펴기·해상도 설정 변경: VirtualDisplay 를 새로 만들 수 없으니(동의 하나당 한 번) 크기만 바꾸고 새 ImageReader 를 붙인다.
-    @Override
-    public void onConfigurationChanged(Configuration config) {
-        super.onConfigurationChanged(config);
-        if (screenCapturing) resizeScreenCapture(config.densityDpi);
+    private DisplayManager displayManager() {
+        return getSystemService(DisplayManager.class);
     }
 
-    private void resizeScreenCapture(int densityDpi) {
+    // 회전·폴드 접고 펴기: 공유 중엔 보통 다른 앱이 위에 있어 Accord 의 onConfigurationChanged 가 오지 않는다.
+    // 기본 디스플레이 변경을 직접 듣는다.
+    private final DisplayManager.DisplayListener displayListener = new DisplayManager.DisplayListener() {
+        @Override
+        public void onDisplayChanged(int displayId) {
+            if (displayId == Display.DEFAULT_DISPLAY && screenCapturing) resizeScreenCapture();
+        }
+
+        @Override
+        public void onDisplayAdded(int displayId) {
+        }
+
+        @Override
+        public void onDisplayRemoved(int displayId) {
+        }
+    };
+
+    // 회전·폴드·해상도 설정 변경: VirtualDisplay 를 새로 만들 수 없으니(동의 하나당 한 번) 크기만 바꾸고 새 ImageReader 를 붙인다.
+    private void resizeScreenCapture() {
         if (display == null) return;
         int[] size = screenSize();
         ImageReader old = reader;
         if (old != null && old.getWidth() == size[0] && old.getHeight() == size[1]) return;
         ImageReader next = ImageReader.newInstance(size[0], size[1], PixelFormat.RGBA_8888, 2);
-        display.resize(size[0], size[1], densityDpi);
+        display.resize(size[0], size[1], screenDensity());
         display.setSurface(next.getSurface());
         reader = next;
         closeOnScreenThread(old);
@@ -1004,6 +1061,7 @@ public class MainActivity extends Activity {
 
     private void stopScreenShare(boolean notify) {
         screenRequested = false;
+        if (screenCapturing) displayManager().unregisterDisplayListener(displayListener);
         screenCapturing = false;
         if (framePort != null) framePort.close();
         framePort = null;
