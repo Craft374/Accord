@@ -7592,3 +7592,23 @@ body.ai-open .dm-panel { display: none !important; }
 /* ===== 터치 보강(화이트보드·로그·DM) — touch-board =====
    폰·폴드·태블릿(안드로이드 앱) 터치용 규칙. 마우스가 있는 PC 에는 걸리지 않게 둔다.
    ===== touch-board 끝 ===== */
+/* 화이트보드: 손가락으로 잡기 힘든 크기 손잡이(16px)·화살표 판정(14px)을 넓힌다. 화살표는 확대해도 화면에서 같은 굵기로 */
+@media (hover: none) and (pointer: coarse) {
+  .table-card-resize {
+    width: 28px;
+    height: 28px;
+  }
+  .table-arrow-hit {
+    stroke-width: calc(28px / var(--table-zoom, 1));
+  }
+}
+/* 화이트보드 머리: 긴 안내·올리기 문구(nowrap)가 줄을 넓혀 오른쪽 버튼이 패널 밖으로 밀리던 것 — 좁은 화면이면 어디서나 생겨 터치로 묶지 않는다 */
+@media (max-width: 580px) {
+  #tableStatus {
+    flex: 1 1 100%;
+    white-space: normal;
+  }
+  #tableStatus:empty {
+    display: none;
+  }
+}

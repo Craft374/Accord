@@ -13925,6 +13925,17 @@ function selectTableItem(t, itemId) {
   t.cards.get(t.selected)?.el.classList.remove("selected");
   t.selected = itemId;
   t.cards.get(itemId)?.el.classList.add("selected");
+  updateTableDeleteButton(t);
+}
+
+// 터치 기기는 화이트보드에서 화살표를 지울 방법이 없다(× 버튼이 없고 Delete 키뿐) — 고른 화살표용 지우기 버튼.
+function isTableTouch() {
+  return window.matchMedia("(hover: none) and (pointer: coarse)").matches;
+}
+
+function updateTableDeleteButton(t) {
+  const button = document.getElementById("tableDeleteButton");
+  if (button) button.hidden = !t.writable || t.cards.get(t.selected)?.item.kind !== "arrow" || !isTableTouch();
 }
 
 function openTableRoom(roomId) {
@@ -13974,6 +13985,7 @@ function updateTableHeader(channel) {
   dom.tableNoteButton.hidden = !t.writable;
   dom.tableArrowButton.hidden = !t.writable;
   if (!t.writable) setTableTool(t, "select");
+  updateTableDeleteButton(t);
 }
 
 function closeTableView() {
@@ -14013,6 +14025,7 @@ function handleTableSocketMessage(message) {
     for (const card of t.cards.values()) clearTimeout(card.renderTimer);
     t.cards.clear();
     t.selected = "";
+    updateTableDeleteButton(t);
     t.drag = null;
     t.cursors.clear();
     dom.tableStage.replaceChildren();
@@ -14020,7 +14033,7 @@ function handleTableSocketMessage(message) {
     placeTableArrows(t); // 화살표가 붙은 카드보다 먼저 왔을 수 있다
     if (!t.loaded) centerTableView(t);
     t.loaded = true;
-    setTableStatus(t.cards.size ? "" : "빈 곳을 더블클릭해 메모지를 붙이거나, 파일을 끌어다 놓거나 붙여넣으세요", "muted");
+    setTableStatus(t.cards.size ? "" : isTableTouch() ? "메모지·파일 올리기 버튼으로 추가하세요" : "빈 곳을 더블클릭해 메모지를 붙이거나, 파일을 끌어다 놓거나 붙여넣으세요", "muted");
   } else if (message.type === "table:item") {
     const fresh = !t.cards.has(message.item.id);
     const mineEcho = message.by === state.clientId && t.cards.get(message.item.id);
@@ -14045,6 +14058,7 @@ function handleTableSocketMessage(message) {
     card.el.remove();
     t.cards.delete(message.itemId);
     if (t.selected === message.itemId) t.selected = "";
+    updateTableDeleteButton(t);
   }
 }
 
@@ -14229,6 +14243,26 @@ function editTableNote(card) {
   fitTableNoteText(card);
   card.text.focus({ preventScroll: true }); // 보드(overflow:hidden)가 저절로 스크롤되지 않게
   card.text.setSelectionRange(card.text.value.length, card.text.value.length);
+  if (isTableTouch()) revealTableNoteAfterKeyboard(card);
+}
+
+// 터치: 화면 키보드가 올라오면 보드가 줄어 아래쪽 메모지가 가려진다(보드는 overflow:hidden 이라 따라가지 않는다).
+// 키보드가 다 올라온 뒤 한 번, 쓰는 칸 아래 끝(커서 자리)이 보이게 보드를 옮긴다. 이미 열려 있으면 resize 가 없어 시간으로.
+function revealTableNoteAfterKeyboard(card) {
+  const t = state.table;
+  const reveal = () => {
+    if (state.table !== t || document.activeElement !== card.text) return;
+    const box = dom.tableScroll.getBoundingClientRect();
+    const r = card.text.getBoundingClientRect();
+    let dy = 0;
+    if (r.bottom > box.bottom - 12) dy = box.bottom - 12 - r.bottom;
+    else if (r.top < box.top + 12) dy = box.top + 12 - r.top;
+    if (!dy) return;
+    t.panY += dy / tableViewRatio();
+    applyTableView(t);
+  };
+  let timer = setTimeout(reveal, 400);
+  window.visualViewport?.addEventListener("resize", () => { clearTimeout(timer); timer = setTimeout(reveal, 100); }, { once: true });
 }
 
 // 쓰는 칸을 글 높이만큼만 — 그 아래 빈 곳은 눌러서 바로 끌 수 있게 남긴다(메모지보다 길면 칸 안에서 스크롤).
@@ -14539,7 +14573,7 @@ function tableArrowEndAt(t, event, except) {
 // 손잡이만으로는 바로 끌 수 없다 — 그래서 위치로 찾는다.
 function tableArrowEndNear(t, event) {
   const p = tableWorldPoint(t, event.clientX, event.clientY);
-  const reach = 10 / tableScreenScale(t);
+  const reach = (event.pointerType === "touch" ? 22 : 10) / tableScreenScale(t); // 손가락은 넓게(펜·마우스는 그대로)
   for (const card of t.cards.values()) {
     if (card.item.kind !== "arrow") continue;
     const i = tableArrowPoints(t, card.item)?.findIndex((q) => Math.hypot(q.x - p.x, q.y - p.y) <= reach) ?? -1;
@@ -14745,6 +14779,10 @@ function bindTableEvents() {
     const t = state.table;
     if (t?.writable) setTableTool(t, t.tool === "arrow" ? "select" : "arrow");
   });
+  document.getElementById("tableDeleteButton")?.addEventListener("click", () => {
+    const t = state.table;
+    if (t?.writable && t.selected) removeTableItem(t, t.selected);
+  });
   dom.tableRoomName?.addEventListener("click", () => {
     const t = state.table;
     const channel = t && state.channels.find((c) => c.id === t.channelId);
@@ -14878,9 +14916,35 @@ function bindTableEvents() {
     if (!t?.writable || t.tool !== "select" || event.target.closest(".table-card, .table-arrow, .table-snap")) return;
     addTableNote(t, tableWorldPoint(t, event.clientX, event.clientY));
   });
+  // 두 손가락 = 핀치 확대·화면 이동(터치만 — 마우스·펜은 그대로). pinch 는 시작할 때 배율·손가락 거리·가운데 아래 월드 점.
+  const touches = new Map(); // pointerId -> { x, y } (화면 좌표)
+  let pinch = null;
+  const touchPair = () => {
+    const [a, b] = [...touches.values()];
+    return { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, mid: tableLocalPoint((a.x + b.x) / 2, (a.y + b.y) / 2) };
+  };
+  const untouch = (event) => {
+    if (!touches.delete(event.pointerId) || touches.size >= 2 || !pinch) return;
+    pinch = null;
+    if (state.table) rerenderTablePdfs(state.table);
+  };
   scroll.addEventListener("pointerdown", (event) => {
     const t = state.table;
     if (!t) return;
+    if (event.pointerType === "touch") {
+      if (event.isPrimary) { touches.clear(); pinch = null; } // 놓친 pointerup 이 남긴 손가락 정리
+      touches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (touches.size >= 2) {
+        if (!pinch && touches.size === 2) {
+          finish({ type: "pointercancel" }); // 첫 손가락의 화면 이동·끌기·화살표 그리기는 여기서 끝낸다
+          showTableSnap(t, null);
+          const { d, mid } = touchPair();
+          pinch = { d, zoom: t.zoom, x: (mid.x - t.panX) / t.zoom, y: (mid.y - t.panY) / t.zoom };
+        }
+        event.preventDefault();
+        return;
+      }
+    }
     // 보드를 누르면 포커스를 보드로 가져온다 — 쓰던 메모지는 끝나고, 붙여넣기·Delete 키가 보드로 온다.
     if (!editable(event.target)) scroll.focus({ preventScroll: true });
     // 화살표 끝을 누르면 (고르지 않았어도) 그 끝을 다시 붙이기 — 같은 자리의 연결점 점보다 먼저
@@ -14940,6 +15004,16 @@ function bindTableEvents() {
       t.cursorSentAt = event.timeStamp;
       const p = tableWorldPoint(t, event.clientX, event.clientY);
       sendSocket({ type: "table:cursor", roomId: t.roomId, x: Math.round(p.x), y: Math.round(p.y) });
+    }
+    if (touches.has(event.pointerId)) touches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (pinch) {
+      if (touches.size < 2) return;
+      const { d, mid } = touchPair();
+      t.zoom = Math.min(TABLE_ZOOM_MAX, Math.max(TABLE_ZOOM_MIN, pinch.zoom * d / pinch.d));
+      t.panX = mid.x - pinch.x * t.zoom;
+      t.panY = mid.y - pinch.y * t.zoom;
+      applyTableView(t); // PDF 선명도는 손을 뗄 때 한 번
+      return;
     }
     if (t.pan) {
       t.panX = t.pan.panX + (event.clientX - t.pan.x) / t.pan.k;
@@ -15027,6 +15101,8 @@ function bindTableEvents() {
   });
   scroll.addEventListener("pointerup", finish);
   scroll.addEventListener("pointercancel", finish);
+  scroll.addEventListener("pointerup", untouch);
+  scroll.addEventListener("pointercancel", untouch);
 }
 
 // ===== 전역 로그 =====
@@ -15519,7 +15595,7 @@ function renderDmThreads() {
 
 function openDmConversation(userId) {
   if (!userId) return;
-  if (isNarrowLayout()) dom.dmPanel?.classList.add("mobile-conv-open");
+  dom.dmPanel?.classList.add("mobile-conv-open"); // 920px 이하에서만 효과 — 태블릿을 돌려 좁아져도 대화창이 남게
   state.dm.activeUserId = userId;
   delete state.dm.unread[userId];
   state.dm.messages = [];
