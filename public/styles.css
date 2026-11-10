@@ -6860,6 +6860,8 @@ body.font-row-dragging * { cursor: grabbing !important; }
   -webkit-user-drag: none;
 }
 .img-viewer.cropping .img-viewer-img { pointer-events: none; }
+/* 작은 이미지(이모지·작은 캡처)는 늘리지 않는다. 크롭은 contain 좌표 계산을 쓰므로 제외 */
+.img-viewer:not(.cropping) .img-viewer-img { object-fit: scale-down; }
 .img-crop-box {
   position: absolute;
   box-sizing: border-box;
