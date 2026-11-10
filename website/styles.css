@@ -1557,7 +1557,7 @@ svg use {
   min-height: 540px;
 }
 
-/* 그림판 그림 — 실제 앱 그림판(툴바 · 흰 캔버스 · 레이어 목록)을 줄여서 옮긴 것 */
+/* 화이트보드 그림 — 실제 앱 화이트보드(툴바 · 점 격자 · 메모지 · 화살표 · 파일 카드)를 줄여서 옮긴 것 */
 .canvas-visual {
   overflow: hidden;
   color: #dbdee1;
@@ -1605,110 +1605,90 @@ svg use {
   background: #5865f2;
 }
 
-.color-dot {
-  width: 16px;
-  height: 16px;
-  background: #1a1a1a;
-  border: 2px solid #4e5058;
-  border-radius: 5px;
-}
-
-.size-range {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: #949ba4;
-  font-size: 10px;
-}
-
-.size-range i {
+.board-stage {
   position: relative;
-  width: 44px;
-  height: 3px;
-  background: #4e5058;
+  aspect-ratio: 600 / 330;
+  background: #1f2024 radial-gradient(#3a3d44 1px, transparent 1px) 0 0 / 16px 16px;
+}
+
+.board-stage svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.board-stage path {
+  fill: none;
+  stroke: #c4c8d0;
+  stroke-width: 2;
+  stroke-linecap: round;
+  marker-end: url(#board-head);
+}
+
+.board-stage marker path {
+  fill: #c4c8d0;
+  stroke: none;
+}
+
+.board-note,
+.board-file {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  overflow: hidden;
+  padding: 10px;
+  color: #f1f1f1;
+  background: #5e5524;
+  border-radius: 4px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.board-note.pink { background: #5f3645; }
+.board-note.green { background: #2e5039; }
+
+.board-note b,
+.board-file b {
+  font-size: 11px;
+}
+
+.board-file {
+  padding: 0;
+  color: #f2f3f5;
+  background: #2b2d31;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+}
+
+.board-file b {
+  padding: 7px 10px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.board-file i {
+  height: 5px;
+  margin: 5px 10px 0;
+  background: rgba(255, 255, 255, 0.14);
   border-radius: 99px;
 }
 
-.size-range i::after {
-  content: "";
+.board-file i:nth-of-type(2) { width: 62%; }
+.board-file i:nth-of-type(4) { width: 45%; }
+
+.board-cursor {
   position: absolute;
-  top: -3px;
-  left: 2px;
-  width: 9px;
-  height: 9px;
+  padding: 2px 7px;
+  color: #fff;
   background: #5865f2;
-  border-radius: 50%;
-}
-
-.canvas-board {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 110px;
-  gap: 1px;
-  min-height: 330px;
-  background: rgba(255, 255, 255, 0.06);
-}
-
-.canvas-stage {
-  display: grid;
-  place-items: center;
-  padding: 18px;
-  background: #1e1f22;
-}
-
-.canvas-stage svg {
-  width: 100%;
-  background: #fff;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.45);
-}
-
-.canvas-stage path,
-.canvas-stage circle {
-  fill: none;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.canvas-stage .ink { stroke: #1a1a1a; stroke-width: 3; }
-.canvas-stage .ink-blue { stroke: #5865f2; stroke-width: 5; }
-.canvas-stage .ink-red { stroke: #e03131; stroke-width: 4; }
-
-.canvas-layers {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  padding: 10px 8px;
-  background: #313338;
-}
-
-.canvas-layers b {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 4px;
-  color: #f2f3f5;
-  font-size: 10px;
-}
-
-.canvas-layers span {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px;
-  color: #b5bac1;
-  border-radius: 6px;
+  border-radius: 0 7px 7px 7px;
   font-size: 9px;
-}
-
-.canvas-layers span.active {
-  color: #f2f3f5;
-  background: rgba(88, 101, 242, 0.16);
-}
-
-.thumb {
-  flex: none;
-  width: 24px;
-  height: 16px;
-  background: #fff;
-  border-radius: 3px;
+  font-weight: 800;
 }
 
 /* AI방 그림 — 실제 앱 AI방(같이 보는 대화 · #참조 · 입력 중 표시)을 줄여서 옮긴 것 */
@@ -2665,19 +2645,24 @@ svg use {
     min-height: 220px;
   }
 
-  .canvas-board {
-    grid-template-columns: 1fr 74px;
-    min-height: 280px;
+  .board-note,
+  .board-file {
+    padding: 6px;
+    font-size: 8px;
+  }
+
+  .board-note b,
+  .board-file b {
+    font-size: 9px;
+  }
+
+  .board-file {
+    padding: 0;
   }
 
   .canvas-toolbar b,
   .zoom-group {
     display: none;
-  }
-
-  .canvas-layers span {
-    flex-direction: column;
-    font-size: 6px;
   }
 
   .room-stack {
@@ -2798,14 +2783,6 @@ svg use {
   }
 
   .memo-code {
-    display: none;
-  }
-
-  .canvas-board {
-    grid-template-columns: 1fr;
-  }
-
-  .canvas-layers {
     display: none;
   }
 }

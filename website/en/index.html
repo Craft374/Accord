@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#080b16" />
     <meta
       name="description"
-      content="Accord is a self-hosted collaboration app that combines low-latency voice calls, screen sharing, chat, collaborative markdown notes, a shared canvas and a shared AI room. Open source, runs on Node.js 18+."
+      content="Accord is a self-hosted collaboration app that combines low-latency voice calls, screen sharing, chat, collaborative markdown notes, a whiteboard, a drawing room and a shared AI room. Open source, runs on Node.js 18+."
     />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Accord" />
@@ -115,7 +115,7 @@
         <div class="nav-links" id="siteMenu" data-menu>
           <a href="#features">Features</a>
           <a href="#workspace">Workspace</a>
-          <a href="#start">Get started</a>
+          <a href="#download">Download</a>
           <a href="https://github.com/Craft374/Accord" target="_blank" rel="noreferrer">GitHub</a>
           <a href="../" hreflang="ko" lang="ko">한국어</a>
         </div>
@@ -143,7 +143,7 @@
             <h1>Talk, write and build<br /><em>without switching apps.</em></h1>
             <p class="hero-lede">
               Accord starts with low-latency voice and screen sharing, then keeps going —
-              chat, collaborative markdown notes, a shared canvas and an AI room the team uses together, all in one self-hosted app.
+              chat, collaborative markdown notes, a whiteboard and an AI room the team uses together, all in one self-hosted app.
             </p>
             <div class="hero-actions">
               <a class="button button-primary" href="#download">
@@ -183,7 +183,7 @@
                     <div class="app-room-user"><i>A</i>Alex</div>
                     <div class="app-room"><span>#</span>general</div>
                     <div class="app-room"><span>📝</span>meeting-notes</div>
-                    <div class="app-room"><span>🎨</span>idea-board</div>
+                    <div class="app-room"><span>🧩</span>idea-board</div>
                     <div class="app-room"><span>🤖</span>AI room</div>
                   </div>
                   <div class="app-call">
@@ -222,7 +222,7 @@
           <span><svg><use href="#icon-mic"></use></svg>VOICE</span><i></i>
           <span><svg><use href="#icon-chat"></use></svg>CHAT</span><i></i>
           <span><svg><use href="#icon-note"></use></svg>NOTE</span><i></i>
-          <span><svg><use href="#icon-brush"></use></svg>CANVAS</span><i></i>
+          <span><svg><use href="#icon-brush"></use></svg>BOARD</span><i></i>
           <span><svg><use href="#icon-ai"></use></svg>AI</span>
         </div>
       </section>
@@ -240,8 +240,8 @@
               <div class="feature-copy">
                 <span class="feature-index">01 · TALK</span>
                 <h3>Voice that the<br />workspace is built around</h3>
-                <p>Low-latency WebRTC P2P calls with screen sharing and computer audio. Per-user volume and live quality diagnostics live in the same place.</p>
-                <ul class="feature-tags"><li>Up to 4K · 60fps</li><li>Per-app audio</li><li>Auto recovery</li></ul>
+                <p>Low-latency WebRTC P2P calls with screen sharing and computer audio. See everyone's screen shares on one grid, with per-user volume and live quality diagnostics in the same place.</p>
+                <ul class="feature-tags"><li>Up to 4K · 60fps</li><li>View all screen shares</li><li>Per-app audio</li><li>Auto recovery</li></ul>
               </div>
               <div class="voice-visual" aria-hidden="true">
                 <div class="voice-orbit orbit-a"></div><div class="voice-orbit orbit-b"></div>
@@ -270,7 +270,7 @@
               <div class="feature-copy compact">
                 <span class="feature-index">03 · NOTE</span>
                 <h3>Markdown, written together</h3>
-                <p>Real-time co-editing, remote cursors, code highlighting and a side-by-side preview turn talk into documents.</p>
+                <p>Real-time co-editing, remote cursors, code highlighting and a side-by-side preview. Split view keeps two notes open next to each other.</p>
               </div>
               <div class="memo-visual" aria-hidden="true">
                 <div class="memo-top"><span>Edit</span><span class="active">Split</span><span>Preview</span><b>2 online</b></div>
@@ -283,33 +283,29 @@
 
             <article class="feature-card feature-canvas reveal">
               <div class="feature-copy compact">
-                <span class="feature-index">04 · CANVAS</span>
-                <h3>Ideas straight onto a canvas</h3>
-                <p>Draw together with pen, eraser, fill, pasted images and layers on a shared canvas.</p>
+                <span class="feature-index">04 · BOARD</span>
+                <h3>An endless whiteboard<br />for your ideas</h3>
+                <p>Drop sticky notes, arrows and file cards on an infinite canvas and write on them together. Paste images or text straight in — and when you need a pen and layers, there's a drawing room too.</p>
+                <ul class="feature-tags"><li>Sticky notes · arrows</li><li>File previews</li><li>Live cursors</li><li>Drawing room</li></ul>
               </div>
               <div class="canvas-visual" aria-hidden="true">
                 <div class="canvas-toolbar">
-                  <b>🎨 idea-board</b>
-                  <span class="tool-group"><span class="tool active">✏️</span><span class="tool">🧽</span><span class="tool">🪣</span><span class="tool">✥</span></span>
-                  <i class="color-dot"></i>
-                  <span class="size-range"><i></i>4</span>
-                  <span class="tool-group"><span class="tool">↶</span><span class="tool">↷</span></span>
+                  <b>🧩 Idea board</b>
+                  <span class="tool-group"><span class="tool">Note</span><span class="tool active">Arrow</span><span class="tool">Upload</span></span>
                   <span class="tool-group zoom-group"><span class="tool">－</span><span class="tool">100%</span><span class="tool">＋</span></span>
                 </div>
-                <div class="canvas-board">
-                  <div class="canvas-stage">
-                    <svg viewBox="0 0 400 250">
-                      <path class="ink" d="M48 40c90-3 190-2 300 1M47 40c-2 55-1 115 2 170M348 41c2 56 1 112-1 168M49 210c100 2 200 1 298-1" />
-                      <path class="ink" d="M50 72c95 1 200 0 296 1M136 108h140M136 128h96M76 166c60 1 150 0 240-1M76 186c50 0 110 1 170 0" />
-                      <circle class="ink-blue" cx="96" cy="118" r="22" />
-                      <path class="ink-red" d="M292 94c30 4 46 24 40 52M320 136l12 11 11-14" />
-                    </svg>
-                  </div>
-                  <div class="canvas-layers">
-                    <b>Layers<span>＋</span></b>
-                    <span class="active"><i class="thumb"></i>Sketch</span>
-                    <span><i class="thumb"></i>Background</span>
-                  </div>
+                <div class="board-stage">
+                  <svg viewBox="0 0 600 330">
+                    <defs><marker id="board-head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 1L10 5L0 9z" /></marker></defs>
+                    <path d="M190 90C232 90 228 110 270 110" />
+                    <path d="M190 240C300 240 310 255 420 255" />
+                    <path d="M365 180C365 200 490 190 490 210" />
+                  </svg>
+                  <div class="board-note" style="left: 6.67%; top: 12.12%; width: 25%; height: 30.3%"><b>Launch prep</b><span>✓ Call test</span><span>Publish site</span></div>
+                  <div class="board-note pink" style="left: 6.67%; top: 57.58%; width: 25%; height: 30.3%"><b>Feedback</b><span>Move button</span></div>
+                  <div class="board-file" style="left: 45%; top: 12.12%; width: 31.67%; height: 42.42%"><b>📄 meeting-notes.md</b><i></i><i></i><i></i><i></i></div>
+                  <div class="board-note green" style="left: 70%; top: 63.64%; width: 23.33%; height: 27.27%"><b>Ship Thursday</b><span>All checked ✓</span></div>
+                  <span class="board-cursor" style="left: 86%; top: 52%">Min</span>
                 </div>
               </div>
             </article>
@@ -318,11 +314,11 @@
               <div class="feature-copy compact">
                 <span class="feature-index">05 · AI</span>
                 <h3>An AI room the whole team shares</h3>
-                <p>Everyone in the room sees the same AI conversation. Add a room like #meeting-notes to a question and it reads that note or chat before answering — and edits or appends to the note when you ask.</p>
-                <ul class="feature-tags"><li>#room references</li><li>Edits notes directly</li><li>Per-room memory & files</li><li>Image generation</li></ul>
+                <p>Everyone in the room sees the same AI conversation. Add a room like #meeting-notes and it reads that room before answering — ask, and it writes into notes and whiteboards or creates and organizes rooms. Everything runs with the permissions of the person who asked.</p>
+                <ul class="feature-tags"><li>Claude · GPT · Gemini</li><li>#room references</li><li>Writes notes &amp; whiteboards</li><li>Creates &amp; organizes rooms</li></ul>
               </div>
               <div class="ai-visual" aria-hidden="true">
-                <div class="ai-head"><b>🤖 AI room</b><span>Gemini</span></div>
+                <div class="ai-head"><b>🤖 AI room</b><span>Claude</span></div>
                 <div class="ai-messages">
                   <div class="ai-msg user"><small>Mina</small><p><em>#meeting-notes</em> pull out what we decided today and add it at the bottom</p></div>
                   <div class="ai-msg"><small>AI</small><p>I added the three decisions from today.<br />1. Release next Thursday<br />2. Reword the login screen<br />3. Take bug reports as issues<span class="ai-result">✅ Appended to the #meeting-notes note.</span></p></div>
@@ -343,13 +339,13 @@
             <p class="section-kicker">ROOMS THAT FIT THE MOMENT</p>
             <h2>Change the room,<br />change the tool.</h2>
             <p>
-              Build as many voice rooms, chat rooms, notepads, canvases, AI rooms and activity logs as you want inside a single channel.
+              Build as many voice rooms, chat rooms, notepads, whiteboards, drawing rooms, AI rooms and activity logs as you want inside a single channel.
               Your conversations and your output stay in the same context.
             </p>
             <div class="workspace-points">
-              <span><svg><use href="#icon-shield"></use></svg><b>Roles and per-room permissions</b><small>Fine-grained access, posting, voice and screen sharing</small></span>
+              <span><svg><use href="#icon-shield"></use></svg><b>Roles and per-room permissions</b><small>Fine-grained access, posting, voice, screen sharing and room management</small></span>
               <span><svg><use href="#icon-users"></use></svg><b>Invite codes and member management</b><small>From a personal space to a small team</small></span>
-              <span><svg><use href="#icon-focus"></use></svg><b>Focus mode</b><small>Give the chat, notes or canvas the whole screen</small></span>
+              <span><svg><use href="#icon-focus"></use></svg><b>Focus mode</b><small>Give the chat, notes or whiteboard the whole screen</small></span>
             </div>
           </div>
 
@@ -371,12 +367,12 @@
             </article>
             <article class="room-card room-draw">
               <span class="room-card-icon"><svg><use href="#icon-brush"></use></svg></span>
-              <div><small>CANVAS ROOM</small><h3>Visual workshop</h3><p>Layers · Paste images · Save as PNG</p></div>
-              <span class="layer-count">3 layers</span>
+              <div><small>WHITEBOARD ROOM</small><h3>Idea board</h3><p>Sticky notes · Arrows · File cards</p></div>
+              <span class="layer-count">12 cards</span>
             </article>
             <article class="room-card room-ai">
               <span class="room-card-icon"><svg><use href="#icon-ai"></use></svg></span>
-              <div><small>AI ROOM</small><h3>Shared AI</h3><p>Gemini · #room references · Edits notes</p></div>
+              <div><small>AI ROOM</small><h3>Shared AI</h3><p>Claude · GPT · Gemini · #room references</p></div>
               <span class="editing"><i></i> Answering</span>
             </article>
           </div>
@@ -392,22 +388,22 @@
           <div class="detail-grid">
             <article class="detail-card reveal"><span><svg><use href="#icon-activity"></use></svg></span><h3>Call quality you can see</h3><p>Check RTT, jitter, packet loss and codec, and let broken audio recover automatically.</p></article>
             <article class="detail-card reveal"><span><svg><use href="#icon-screen"></use></svg></span><h3>Share only the audio you mean</h3><p>On Windows you can share the audio of one selected application instead of the whole machine.</p></article>
-            <article class="detail-card reveal"><span><svg><use href="#icon-shield"></use></svg></span><h3>Permissions that fit the team</h3><p>Split access, posting, voice, audio and screen sharing rights by role and by user.</p></article>
-            <article class="detail-card reveal"><span><svg><use href="#icon-server"></use></svg></span><h3>A server you own</h3><p>Run the server with nothing but Node.js 18+, and add TURN when you need external connections to hold up.</p></article>
+            <article class="detail-card reveal"><span><svg><use href="#icon-shield"></use></svg></span><h3>Permissions that fit the team</h3><p>Split access, posting, voice, audio, screen sharing and room management rights by role and by user.</p></article>
+            <article class="detail-card reveal"><span><svg><use href="#icon-server"></use></svg></span><h3>A server you own</h3><p>Open a server with one button in the Accord Server app and set up your friends' accounts ahead of time. No port forwarding? Share an internet link instead.</p></article>
             <article class="detail-card reveal"><span><svg><use href="#icon-chat"></use></svg></span><h3>DMs outside the channel</h3><p>Start a 1:1 conversation with a unique user code and keep the important context going.</p></article>
-            <article class="detail-card reveal"><span><svg><use href="#icon-focus"></use></svg></span><h3>Focus mode that protects the flow</h3><p>Collapse the sidebars and let the chat, notes or canvas fill the screen.</p></article>
+            <article class="detail-card reveal"><span><svg><use href="#icon-focus"></use></svg></span><h3>Focus mode that protects the flow</h3><p>Collapse the sidebars and let the chat, notes or whiteboard fill the screen.</p></article>
           </div>
         </div>
       </section>
 
-      <section class="start section-pad" id="start">
+      <section class="start section-pad" id="download">
         <div class="section-shell">
           <div class="start-panel reveal">
             <div class="start-copy">
-              <p class="section-kicker">YOUR SPACE, YOUR SERVER</p>
-              <h2>One server,<br />a space of your own.</h2>
-              <p>Turn on a server with one button in the Accord Server app, then connect from the desktop app or a browser.</p>
-              <div class="downloads" id="download">
+              <p class="section-kicker">DOWNLOAD</p>
+              <h2>Download it,<br />start right away.</h2>
+              <p>Connect to a server with the Accord app. No server yet? Open your own with one button in Accord Server.</p>
+              <div class="downloads">
                 <div class="download-row">
                   <span><b>Accord</b><small>The app you connect with</small></span>
                   <a class="button button-secondary button-small" href="https://github.com/Craft374/Accord/releases/latest/download/Accord.Mac.arm64.zip"><svg aria-hidden="true"><use href="#icon-download"></use></svg>macOS</a>
