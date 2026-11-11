@@ -2618,7 +2618,10 @@ async function startProgramSystemAudioShare(options = {}) {
       throw new Error("프로그램별 오디오 트랙을 만들지 못했습니다.");
     }
 
-    await attachSystemTrack(stream, track, "선택한 프로그램 소리만 공유 중입니다.", "program", options);
+    const message = getSelectedProgramAudioPids().length
+      ? "선택한 프로그램 소리만 공유 중입니다."
+      : "프로그램 소리 공유를 켰습니다. 공유할 프로그램을 목록에서 고르세요.";
+    await attachSystemTrack(stream, track, message, "program", options);
   } catch (error) {
     dom.systemAudioToggle.checked = false;
     recordClientError("program-audio-start-failed", error.message || String(error));
@@ -2639,7 +2642,6 @@ async function getProgramSystemAudioStream({ allPrograms = false } = {}) {
     }
 
     pids = getSelectedProgramAudioCapturePids();
-    if (!pids.length) throw new Error("공유할 프로그램을 선택하세요.");
     if (!isProgramSystemAudioSupported()) throw new Error("Windows 프로그램별 캡처를 사용할 수 없습니다.");
   }
 
@@ -2693,7 +2695,9 @@ async function getProgramSystemAudioStream({ allPrograms = false } = {}) {
       stopSystemAudio();
     });
 
-    await (allPrograms ? desktop.startSystemAudioCapture() : desktop.startProgramAudioCapture(pids));
+    // 고른 프로그램이 없으면 헬퍼를 띄우지 않고 무음 트랙으로 켜 둔다 — 목록에서 고르면 restartSystemAudio 가 붙인다.
+    if (allPrograms) await desktop.startSystemAudioCapture();
+    else if (pids.length) await desktop.startProgramAudioCapture(pids);
     await context.resume().catch(() => {});
 
     state.programAudioProcess = { context, destination, node, portListener, unsubscribeData, unsubscribeStopped, pids, stopping: false };
@@ -5860,8 +5864,8 @@ function stopLocalMedia() {
   cleanupLocalScreenShare();
   stopMicOnly();
   state.ignoreSystemEndedUntil = Date.now() + 1200;
-  // 안드로이드 사운드 공유는 트랙만 멈추면 앱이 계속 캡처(MediaProjection)하므로 함께 끈다.
-  if (isAndroidApp() && state.programAudioProcess) stopProgramAudioProcess().catch(() => {});
+  // 프로그램별·전체 컴퓨터 소리(윈도우 헬퍼)와 안드로이드 사운드 공유는 트랙만 멈추면 캡처가 계속 도므로 함께 끈다.
+  if (state.programAudioProcess) stopProgramAudioProcess().catch(() => {});
   for (const track of state.systemStream?.getTracks() || []) track.stop();
   closeSystemEchoFilter();
   state.systemStream = null;
@@ -6235,6 +6239,7 @@ function scheduleProgramAudioSilenceWarning() {
   state.programAudioSilenceTimer = window.setTimeout(() => {
     state.programAudioSilenceTimer = 0;
     if (!state.systemSharing || state.systemCaptureKind !== "program") return;
+    if (!getSelectedProgramAudioPids().length) return; // 아직 고른 프로그램이 없으면 조용한 게 정상
     if ((state.liveEchoGuard.systemLevel || 0) >= 0.006) return;
     setMessage("선택한 프로그램 소리가 감지되지 않습니다. 보호된 오디오이거나 보조 프로세스에서 재생되는 앱이면 전체 컴퓨터 공유를 사용하세요.");
   }, 4500);
@@ -19033,9 +19038,12 @@ function getRelatedProgramAudioSources(source) {
       return (appId && itemAppId === appId) || (packageFamily && itemPackageFamily === packageFamily);
     });
   }
+  // 같은 이름이라도 설치 위치(경로)가 다르면 다른 프로그램이다(예: 블루아카이브 한섭·일섭). 경로를 알면 경로로 묶는다.
+  const path = String(source.path || "").trim().toLowerCase();
+  if (path) return state.programAudioSources.filter((item) => String(item.path || "").trim().toLowerCase() === path);
   const key = normalizeProgramAudioName(source.name);
   if (!key) return [];
-  return state.programAudioSources.filter((item) => normalizeProgramAudioName(item.name) === key);
+  return state.programAudioSources.filter((item) => !item.path && normalizeProgramAudioName(item.name) === key);
 }
 
 function normalizeProgramAudioName(value) {
@@ -19153,7 +19161,12 @@ function renderSelectedProgramAudioSummary(selectedPids) {
 }
 
 function getProgramAudioSourceText(item, pid) {
-  const name = item.name || `PID ${pid}`;
+  let name = item.name || `PID ${pid}`;
+  // 이름이 같은 프로그램이 둘 이상이면 설치 폴더 이름으로 구분해 보여 준다.
+  const folder = String(item.path || "").split(/[\\/]/).slice(-2, -1)[0];
+  if (folder && state.programAudioSources.some((other) => other !== item && other.name === item.name && other.path !== item.path)) {
+    name = `${name} (${folder})`;
+  }
   const title = item.title && item.title !== name ? ` · ${item.title}` : "";
   const stateText = item.state === "active" ? "재생 중" : item.state === "ready" ? "열림" : "대기";
   return `${name}${title} · PID ${pid} · ${stateText}`;

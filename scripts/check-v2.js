@@ -234,6 +234,8 @@ const checks = [
   [helperSource.includes("VAD\\\\Process_Loopback") && helperSource.includes("IncludeTargetProcessTree"), "windows native process loopback helper uses include target process tree"],
   [main.includes("start-program-audio-capture") && preload.includes("startProgramAudioCapture"), "electron exposes native program audio capture IPC"],
   [app.includes("startProgramSystemAudioShare") && app.includes("getProgramSystemAudioStream"), "renderer can create program-only system audio track"],
+  [app.includes("  if (state.programAudioProcess) stopProgramAudioProcess().catch(() => {});") && app.includes("else if (pids.length) await desktop.startProgramAudioCapture(pids);"), "leaving a room stops program capture; program share can start with nothing selected"],
+  [/const path = String\(source\.path \|\| ""\)/.test(app) && fs.readFileSync("native/windows-process-loopback/Program.cs", "utf8").includes('"name:" + item.Name + "|" + (item.Path ?? "")'), "same-name programs installed in different folders stay separate"],
   [programWorklet.includes("registerProcessor") && programWorklet.includes("voice-program-audio"), "program audio worklet registers processor"],
   [/event\.data !== "accordAndroid" \|\| event\.source \|\| !event\.ports\?\.\[0\]/.test(app) && app.includes("androidControlPort.onmessage = handleAndroidControlMessage"), "android app control port is accepted only from native (no source)"],
   [app.includes('sendAndroidControl({ type: "download", url: href, name })') && app.includes('sendAndroidControl({ type: "save", dataUrl, name })') && app.includes('closest?.("a[download]")'), "android app routes a[download] clicks to native download/save"],

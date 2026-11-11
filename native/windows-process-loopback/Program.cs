@@ -284,7 +284,8 @@ internal static class Program
     {
         if (!String.IsNullOrWhiteSpace(item.AppId)) return "app:" + item.AppId;
         if (!String.IsNullOrWhiteSpace(item.PackageFamilyName)) return "pkg:" + item.PackageFamilyName;
-        if (!String.IsNullOrWhiteSpace(item.Name)) return "name:" + item.Name;
+        // 같은 이름이라도 설치 위치가 다르면 다른 프로그램이다(예: 블루아카이브 한섭·일섭). 경로를 모르면 이름만 본다.
+        if (!String.IsNullOrWhiteSpace(item.Name)) return "name:" + item.Name + "|" + (item.Path ?? "");
         return "pid:" + item.Pid;
     }
 
@@ -389,6 +390,22 @@ internal static class Program
             }
         }
         return result;
+    }
+
+    private static string GetProcessImagePath(int pid)
+    {
+        IntPtr handle = OpenProcess(0x1000, false, pid); // PROCESS_QUERY_LIMITED_INFORMATION
+        if (handle == IntPtr.Zero) return "";
+        try
+        {
+            StringBuilder buffer = new StringBuilder(1024);
+            int size = buffer.Capacity;
+            return QueryFullProcessImageName(handle, 0, buffer, ref size) ? buffer.ToString(0, size) : "";
+        }
+        finally
+        {
+            CloseHandle(handle);
+        }
     }
 
     private static string GetProcessNameSafe(int pid)
@@ -757,6 +774,8 @@ internal static class Program
             {
                 item.Path = "";
             }
+            // 안티치트 게임 등은 MainModule 을 못 읽는다 — 제한된 권한으로도 되는 경로 조회로 다시 시도한다.
+            if (String.IsNullOrEmpty(item.Path)) item.Path = GetProcessImagePath(pid);
             string friendlyName = GetFriendlyProcessName(item.Path);
             if (!String.IsNullOrWhiteSpace(friendlyName)) item.Name = friendlyName;
         }
@@ -1014,6 +1033,9 @@ internal static class Program
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern IntPtr OpenProcess(int desiredAccess, bool inheritHandle, int processId);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool QueryFullProcessImageName(IntPtr process, int flags, StringBuilder exeName, ref int size);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
