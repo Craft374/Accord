@@ -3068,7 +3068,7 @@ function isAndroidApp() {
 // 기기 지원 여부를 서버 로그(client-log)로 남긴다 — 사용자의 실제 기기에서 무엇이 되는지 확인용.
 function logAndroidEnvironment() {
   const has = (name) => (typeof window[name] === "undefined" ? 0 : 1);
-  logClientEvent("android-env", `gdm=${navigator.mediaDevices?.getDisplayMedia ? 1 : 0} mstg=${has("MediaStreamTrackGenerator")} vtg=${has("VideoTrackGenerator")} vf=${has("VideoFrame")} vdec=${has("VideoDecoder")} screen=${screen.width}x${screen.height} dpr=${devicePixelRatio}`);
+  logClientEvent("android-env", `native=${window.AccordAndroid.nativeFeatures?.() || "old"} gdm=${navigator.mediaDevices?.getDisplayMedia ? 1 : 0} mstg=${has("MediaStreamTrackGenerator")} vtg=${has("VideoTrackGenerator")} vf=${has("VideoFrame")} vdec=${has("VideoDecoder")} screen=${screen.width}x${screen.height} dpr=${devicePixelRatio}`);
   window.addEventListener("contextmenu", (event) => logClientEvent("android-contextmenu", `pointer=${event.pointerType || "-"}`), { once: true });
   document.addEventListener("visibilitychange", () => logClientEvent("android-visibility", document.visibilityState));
 }
@@ -3093,6 +3093,10 @@ function handleAndroidControlMessage(event) {
     return;
   }
   const kind = message?.type;
+  if (kind === "audioState") {
+    logClientEvent("android-audio", message.text);
+    return;
+  }
   if (kind !== "sound" && kind !== "screen") return;
   const port = event.ports?.[0] || null;
   const reply = androidReplies[kind];
@@ -5921,25 +5925,32 @@ async function syncMobileMicCapture() {
 function syncAndroidCallMode() {
   if (!isAndroidApp()) return;
   sendAndroidControl({ type: "mic", on: !state.muted });
-  // ponytail: 마이크가 실제로 닫히길(열리길) 300ms 기다린다. 기기에서 안 바뀌면 이 값부터 늘린다.
+  logClientEvent("android-mic", `on=${!state.muted} micTrack=${state.rawMicTrack?.readyState || "none"}`);
+  // 마이크가 실제로 닫히길(열리길) 기다린 뒤 원격 소리 출력을 모두 떼었다가 다시 붙인다. 하나씩 떼었다 붙이면
+  // 크로뮴이 여러 <audio> 가 같이 쓰는 WebRTC 출력을 닫지 않아 통화 스트림이 그대로 남는다.
+  // ponytail: 기다리는 시간(400ms/150ms)은 기기에서 안 바뀌면 늘린다. 서버 로그 android-audio 로 확인.
   window.setTimeout(() => {
+    const detached = [];
     for (const peer of state.peers.values()) {
       for (const playback of [peer.remote.mic, peer.remote.system]) {
         const audio = playback?.audio;
         if (!audio?.srcObject) continue;
-        const source = audio.srcObject;
+        detached.push([audio, audio.srcObject]);
         audio.srcObject = null;
-        audio.srcObject = source;
-        audio.play().catch(() => {});
       }
     }
     const context = state.playbackAudioContext;
-    if (typeof context?.setSinkId === "function") {
-      context.setSinkId({ type: "none" })
-        .then(() => context.setSinkId(dom.outputDeviceSelect?.value || ""))
-        .catch((error) => logClientEvent("android-playback-reopen-failed", getErrorText(error)));
-    }
-  }, 300);
+    const reopenContext = typeof context?.setSinkId === "function"
+      ? context.setSinkId({ type: "none" }).then(() => context.setSinkId(dom.outputDeviceSelect?.value || ""))
+      : context?.suspend().then(() => context.resume());
+    reopenContext?.catch((error) => logClientEvent("android-playback-reopen-failed", getErrorText(error)));
+    window.setTimeout(() => {
+      for (const [audio, source] of detached) {
+        audio.srcObject = source;
+        audio.play().catch(() => {});
+      }
+    }, 150);
+  }, 400);
 }
 
 function stopMicOnly() {

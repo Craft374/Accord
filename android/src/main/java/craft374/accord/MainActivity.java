@@ -197,10 +197,31 @@ public class MainActivity extends Activity {
     private void setCallMode(boolean micOn) {
         if (micOn) {
             setVolumeControlStream(AudioManager.USE_DEFAULT_STREAM_TYPE);
-            return;
+        } else {
+            getSystemService(AudioManager.class).setMode(AudioManager.MODE_NORMAL);
+            setVolumeControlStream(AudioManager.STREAM_MUSIC);
         }
-        getSystemService(AudioManager.class).setMode(AudioManager.MODE_NORMAL);
-        setVolumeControlStream(AudioManager.STREAM_MUSIC);
+        // 진단: 페이지가 출력을 다시 연 뒤(약 0.3초)의 실제 오디오 상태를 서버 로그로 남긴다.
+        main.postDelayed(() -> reportAudioState(micOn ? "mic-on" : "mic-off"), 1500);
+    }
+
+    // 모드(0=일반, 3=통화), 녹음 중인 것 수, 재생 중인 스트림 용도(1=미디어, 2=통화)를 페이지에 보내 client-log 로 남긴다.
+    private void reportAudioState(String reason) {
+        if (control == null) return;
+        AudioManager audio = getSystemService(AudioManager.class);
+        StringBuilder usages = new StringBuilder();
+        for (android.media.AudioPlaybackConfiguration config : audio.getActivePlaybackConfigurations()) {
+            if (usages.length() > 0) usages.append(',');
+            usages.append(config.getAudioAttributes().getUsage());
+        }
+        String text = reason + " mode=" + audio.getMode()
+                + " recording=" + audio.getActiveRecordingConfigurations().size()
+                + " playUsages=[" + usages + "] volStream=" + getVolumeControlStream()
+                + " speaker=" + audio.isSpeakerphoneOn();
+        try {
+            control.postMessage(new WebMessage(new JSONObject().put("type", "audioState").put("text", text).toString()));
+        } catch (Exception ignored) {
+        }
     }
 
     private void stopCallService() {
@@ -1108,6 +1129,12 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public String defaultServer() {
             return DEFAULT_SERVER;
+        }
+
+        // 이 APK 가 가진 네이티브 기능 — 페이지(서버)만 새로 배포됐을 때 설치된 앱이 따라오는지 로그로 확인한다.
+        @JavascriptInterface
+        public String nativeFeatures() {
+            return "callmode2,screen,camera,sound";
         }
 
         @JavascriptInterface
