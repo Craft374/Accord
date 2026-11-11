@@ -2232,7 +2232,10 @@ async function handleSocketMessage(message) {
     setStatus("오류", "bad");
     recordClientError("server-error", message.message || "unknown server error");
     setMessage(message.message || "서버 오류가 발생했습니다.");
-    if (!state.currentRoom) stopLocalMedia();
+    if (!state.currentRoom) {
+      stopLocalMedia();
+      sendAndroidControl({ type: "call", active: false }); // 입장 거부(가득 참 등) — 앱의 통화 유지도 끈다
+    }
   }
 }
 
@@ -2254,6 +2257,7 @@ async function prepareForRoom() {
     setStatus("마이크 실패", "bad");
     setMessage(describeMediaError(error));
     stopLocalMedia();
+    sendAndroidControl({ type: "call", active: false }); // 방에 못 들어갔다 — 앱의 통화 유지도 끈다
     return false;
   }
 }
@@ -2265,7 +2269,10 @@ function ensureSecureAudioContext() {
 
 async function openLocalMedia() {
   stopLocalMedia();
-  await ensureDeviceLabels();
+  // 안드로이드 앱에서는 장치 이름을 얻으려고 마이크를 잠깐 여는 것도 하지 않는다. 기본 제약(에코 제거)으로 열리면
+  // 그 순간 통화 모드가 켜지고, 그때 만들어진 소리 출력이 통화 스트림으로 굳어 음소거로 들어와도 통화 모드가 된다.
+  // (웹뷰는 마이크를 한 번 허용하면 그 뒤로 장치 이름을 그냥 보여 준다.)
+  if (!isAndroidApp()) await ensureDeviceLabels();
   await refreshDevices();
   selectSafeInputDevice();
   if (dom.systemAudioToggle.checked && !await selectSafeOutputDeviceForSystemShare()) {
@@ -2536,6 +2543,15 @@ function createScriptNoiseGateNode(context) {
 }
 
 async function replaceMicTrack({ renegotiate = true } = {}) {
+  if (!isMobileWeb()) return openReplacementMic({ renegotiate });
+  // 모바일: 마이크 열기를 한 번에 하나씩만 한다. 겹치면 먼저 연 스트림이 고아로 남아 음소거해도 통화 모드가 안 풀린다.
+  state.micReplacing = (state.micReplacing || Promise.resolve())
+    .catch(() => {})
+    .then(() => openReplacementMic({ renegotiate }));
+  return state.micReplacing;
+}
+
+async function openReplacementMic({ renegotiate }) {
   // 모바일 음소거 중에는 어떤 경로(설정 변경·오디오 복구·자동 재시작)로도 마이크를 다시 열지 않는다.
   if (shouldReleaseMicWhileMuted()) {
     await syncMobileMicCapture();
@@ -2548,6 +2564,13 @@ async function replaceMicTrack({ renegotiate = true } = {}) {
   }
   assertSafeMacAudioRouting(state.systemSharing);
   await openMic();
+  // 모바일: 마이크를 여는 사이 방을 나갔거나 다시 음소거했으면 바로 놓는다(열린 채 남으면 통화 모드가 안 풀린다).
+  if (isMobileWeb() && (!state.currentRoom || state.muted)) {
+    stopMicOnly();
+    rebuildLocalStream();
+    syncAndroidCallMode();
+    return;
+  }
   rebuildLocalStream();
   dom.localMonitor.srcObject = new MediaStream([state.rawMicTrack]);
 
@@ -3087,7 +3110,8 @@ function logAndroidEnvironment() {
 }
 
 function sendAndroidControl(message) {
-  androidControlPort?.postMessage(JSON.stringify(message));
+  if (androidControlPort) androidControlPort.postMessage(JSON.stringify(message));
+  else if (isAndroidApp()) logClientEvent("android-control-dropped", message.type); // 페이지 로딩이 끝나기 전
 }
 
 // 앱이 보낸 메시지는 source 가 없다 — iframe 이 가짜 포트를 끼워 넣지 못하게 막는다.
@@ -3096,6 +3120,10 @@ window.addEventListener("message", (event) => {
   androidControlPort?.close();
   androidControlPort = event.ports[0];
   androidControlPort.onmessage = handleAndroidControlMessage;
+  // 포트는 페이지 로딩이 끝나야 온다. 그 전에 보낸 신호는 버려졌으니 지금 상태를 다시 알린다.
+  // 지난 신호를 순서대로 다시 보내면 이미 다시 연 마이크에 '꺼짐'이 늦게 도착할 수 있어(앱이 통화 모드를 끔) 쓰지 않는다.
+  if (state.currentRoom) sendAndroidControl({ type: "call", active: true });
+  syncAndroidCallMode();
 });
 
 function handleAndroidControlMessage(event) {
@@ -5319,6 +5347,10 @@ async function repairAudio() {
 }
 
 async function testAudioSettings() {
+  if (isAndroidApp() && state.rawMicTrack?.readyState !== "live") {
+    setMessage("앱에서는 통화방에서 마이크를 켠 상태로 진단할 수 있습니다.");
+    return;
+  }
   let stream = null;
   let track = state.rawMicTrack?.readyState === "live" ? state.rawMicTrack : null;
   try {
@@ -5916,6 +5948,7 @@ async function syncMobileMicCapture() {
       if (!peer.senders.mic) continue;
       await peer.senders.mic.replaceTrack(null).catch(() => {});
     }
+    if (!state.muted) return; // 놓는 사이 다시 켰다 — 마이크를 그대로 둔다
     stopMicOnly();
     rebuildLocalStream();
     updateTrackStats();
@@ -5928,44 +5961,23 @@ async function syncMobileMicCapture() {
     } catch (error) {
       recordClientError("mobile-mic-reacquire-failed", getErrorText(error));
       setMessage(error.message || "마이크를 다시 켜지 못했습니다.");
+      // 못 열었으면 음소거로 되돌린다 — 그대로 두면 상태 점검이 2초마다 마이크 열기를 끝없이 다시 시도한다.
+      state.muted = true;
+      applyMicTrackEnabled();
+      updateControls();
     }
   }
 }
 
-// 안드로이드는 소리 출력을 열 때 마이크가 열려 있으면 '통화' 스트림으로 연다 — 최소 볼륨이 1이라 0으로 못 내리고
-// 볼륨 키도 통화 볼륨을 조절한다. 마이크를 놓거나 다시 잡은 뒤 앱에 알리고(통화 모드 해제) 재생 출력을 다시 열어,
-// 음소거 중에는 미디어 스트림(0까지 내려감)으로 재생되게 한다.
+// 앱에 지금 마이크를 실제로 잡고 있는지 알린다(앱: 꺼짐이면 볼륨 키를 미디어 볼륨으로).
+// 통화 모드 자체는 크로뮴이 정한다 — 에코 제거가 켜진 마이크가 열려 있는 동안만 통화 모드이고, 그때 열린 소리 출력만
+// 통화 스트림이 된다. 그래서 '음소거면 마이크를 아예 열지 않는다'를 지키는 것이 통화 모드를 피하는 방법이다.
 function syncAndroidCallMode() {
   if (!isAndroidApp()) return;
   // 음소거 표시가 아니라 마이크를 실제로 잡고 있는지로 알린다(방 밖·권한으로 막힌 음소거 포함).
   const micOn = state.rawMicTrack?.readyState === "live";
   sendAndroidControl({ type: "mic", on: micOn });
   logClientEvent("android-mic", `on=${micOn} muted=${state.muted} room=${state.currentRoom ? 1 : 0}`);
-  // 마이크가 실제로 닫히길(열리길) 기다린 뒤 원격 소리 출력을 모두 떼었다가 다시 붙인다. 하나씩 떼었다 붙이면
-  // 크로뮴이 여러 <audio> 가 같이 쓰는 WebRTC 출력을 닫지 않아 통화 스트림이 그대로 남는다.
-  // ponytail: 기다리는 시간(400ms/150ms)은 기기에서 안 바뀌면 늘린다. 서버 로그 android-audio 로 확인.
-  window.setTimeout(() => {
-    const detached = [];
-    for (const peer of state.peers.values()) {
-      for (const playback of [peer.remote.mic, peer.remote.system]) {
-        const audio = playback?.audio;
-        if (!audio?.srcObject) continue;
-        detached.push([audio, audio.srcObject]);
-        audio.srcObject = null;
-      }
-    }
-    const context = state.playbackAudioContext;
-    const reopenContext = typeof context?.setSinkId === "function"
-      ? context.setSinkId({ type: "none" }).then(() => context.setSinkId(dom.outputDeviceSelect?.value || ""))
-      : context?.suspend().then(() => context.resume());
-    reopenContext?.catch((error) => logClientEvent("android-playback-reopen-failed", getErrorText(error)));
-    window.setTimeout(() => {
-      for (const [audio, source] of detached) {
-        audio.srcObject = source;
-        audio.play().catch(() => {});
-      }
-    }, 150);
-  }, 400);
 }
 
 function stopMicOnly() {
