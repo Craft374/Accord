@@ -2176,6 +2176,7 @@ async function handleSocketMessage(message) {
     logClientEvent("joined", `room=${message.room?.id || ""} peers=${(message.peers || []).length}`);
     setStatus("통화 중", "good");
     sendAndroidControl({ type: "call", active: true }); // 앱: 백그라운드에서도 통화 유지(음소거로 들어와 마이크를 안 잡아도)
+    syncAndroidCallMode(); // 들어온 시점의 마이크 상태로 통화/미디어 모드를 맞춘다
     setMessage(`${message.room.name}에 들어왔습니다.`);
     playUiSound("in", state.currentRoom?.id);
     renderCurrentRoom();
@@ -2271,10 +2272,16 @@ async function openLocalMedia() {
     throw new Error(getWindowsSystemShareOutputMessage());
   }
   assertSafeMacAudioRouting(Boolean(dom.systemAudioToggle.checked));
-  await openMic();
-  rebuildLocalStream();
-  dom.localMonitor.srcObject = new MediaStream([state.rawMicTrack]);
-  startLocalMeter();
+  // 모바일은 음소거로 들어오면 마이크를 아예 열지 않는다 — 한 번이라도 열면 OS 가 통화 모드로 잡는다.
+  // 마이크를 켜는 순간 syncMobileMicCapture 가 연다.
+  if (isMobileWeb() && state.muted) {
+    rebuildLocalStream();
+  } else {
+    await openMic();
+    rebuildLocalStream();
+    dom.localMonitor.srcObject = new MediaStream([state.rawMicTrack]);
+    startLocalMeter();
+  }
   updateTrackStats();
   updateControls();
   warnIfVirtualInputBleeds();
@@ -2529,6 +2536,11 @@ function createScriptNoiseGateNode(context) {
 }
 
 async function replaceMicTrack({ renegotiate = true } = {}) {
+  // 모바일 음소거 중에는 어떤 경로(설정 변경·오디오 복구·자동 재시작)로도 마이크를 다시 열지 않는다.
+  if (shouldReleaseMicWhileMuted()) {
+    await syncMobileMicCapture();
+    return;
+  }
   stopMicOnly();
   selectSafeInputDevice();
   if ((state.systemSharing || dom.systemAudioToggle.checked) && !await selectSafeOutputDeviceForSystemShare()) {
@@ -2556,6 +2568,7 @@ async function replaceMicTrack({ renegotiate = true } = {}) {
   startLocalMeter();
   updateTrackStats();
   warnIfVirtualInputBleeds();
+  syncAndroidCallMode();
 }
 
 function rebuildLocalStream() {
@@ -5821,6 +5834,7 @@ function leaveRoom(message = "방에서 나갔습니다.", notifyServer = true) 
 function resetRoomState() {
   for (const peerId of [...state.peers.keys()]) removePeer(peerId);
   stopLocalMedia();
+  syncAndroidCallMode(); // 방을 나오면(끊김 포함) 미디어 모드로 되돌린다
   stopStatsTimer();
   stopHealthTimer();
   state.currentRoom = null;
@@ -5915,7 +5929,6 @@ async function syncMobileMicCapture() {
       recordClientError("mobile-mic-reacquire-failed", getErrorText(error));
       setMessage(error.message || "마이크를 다시 켜지 못했습니다.");
     }
-    syncAndroidCallMode();
   }
 }
 
@@ -5924,8 +5937,10 @@ async function syncMobileMicCapture() {
 // 음소거 중에는 미디어 스트림(0까지 내려감)으로 재생되게 한다.
 function syncAndroidCallMode() {
   if (!isAndroidApp()) return;
-  sendAndroidControl({ type: "mic", on: !state.muted });
-  logClientEvent("android-mic", `on=${!state.muted} micTrack=${state.rawMicTrack?.readyState || "none"}`);
+  // 음소거 표시가 아니라 마이크를 실제로 잡고 있는지로 알린다(방 밖·권한으로 막힌 음소거 포함).
+  const micOn = state.rawMicTrack?.readyState === "live";
+  sendAndroidControl({ type: "mic", on: micOn });
+  logClientEvent("android-mic", `on=${micOn} muted=${state.muted} room=${state.currentRoom ? 1 : 0}`);
   // 마이크가 실제로 닫히길(열리길) 기다린 뒤 원격 소리 출력을 모두 떼었다가 다시 붙인다. 하나씩 떼었다 붙이면
   // 크로뮴이 여러 <audio> 가 같이 쓰는 WebRTC 출력을 닫지 않아 통화 스트림이 그대로 남는다.
   // ponytail: 기다리는 시간(400ms/150ms)은 기기에서 안 바뀌면 늘린다. 서버 로그 android-audio 로 확인.
@@ -6336,6 +6351,8 @@ async function checkMediaHealth() {
   try {
     // 모바일 뮤트 상태에선 마이크 캡처를 의도적으로 놓아둔다 — 재시작 금지.
     const micReleased = shouldReleaseMicWhileMuted();
+    // 안전망: 음소거인데 마이크가 잡혀 있으면(권한으로 강제 음소거 등 어떤 경로든) 놓는다.
+    if (micReleased && state.rawMicTrack) await syncMobileMicCapture();
     if (!micReleased) {
       if (
         !state.rawMicTrack ||
